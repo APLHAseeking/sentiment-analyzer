@@ -39,6 +39,15 @@ Single-file Flask backend (`app.py`) with a vanilla JS frontend — no build ste
 - Retries up to 3 times on `RateLimitError` with exponential back-off (5s, 10s, 20s)
 - 0.4s sleep between each row to stay within rate limits
 
+## Git workflow
+
+After completing any meaningful piece of work — a new feature, a bug fix, a refactor — commit and push to GitHub immediately. Do not batch up multiple unrelated changes into one commit.
+
+- Use clean, descriptive commit messages in the imperative mood (e.g. `Add export filter for date range`, `Fix pagination off-by-one`)
+- Always include the co-author trailer: `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
+- Push after every commit: `git push`
+- Never commit `signals.db`, uploaded data files, `.env`, or secrets
+
 ## Key constraints
 
 - `signals.db` is excluded from git (runtime data). The uploaded data file is also not committed.
