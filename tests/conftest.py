@@ -1,4 +1,15 @@
 import os
+
+_DEFAULTS = {
+    "ANTHROPIC_API_KEY": "test-anthropic-key",
+    "ALPACA_API_KEY": "test-alpaca-key",
+    "ALPACA_SECRET_KEY": "test-alpaca-secret",
+    "PROPUBLICA_API_KEY": "test-propublica-key",
+    "ALPACA_BASE_URL": "https://paper-api.alpaca.markets",
+}
+for _k, _v in _DEFAULTS.items():
+    os.environ.setdefault(_k, _v)
+
 import pytest
 import importlib
 

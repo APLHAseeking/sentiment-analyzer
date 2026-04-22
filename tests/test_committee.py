@@ -29,4 +29,4 @@ def test_get_committees_calls_propublica(mocker):
 
 def test_get_committees_returns_empty_for_unknown(mocker):
     mocker.patch("bot.committee._search_propublica_member", return_value={"results": []})
-    assert get_committees_for_politician("Nobody Known") == []
+    assert get_committees_for_politician("Nobody Known") == ()
