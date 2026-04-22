@@ -44,3 +44,18 @@ def test_insert_and_delete_position(db):
     assert any(p["ticker"] == "MSFT" for p in positions)
     db.delete_position("MSFT")
     assert not any(p["ticker"] == "MSFT" for p in db.get_open_positions())
+
+def test_risk_flags_json_serialisation(db):
+    import json
+    disc = {
+        "id": "test-004", "politician": "Jane Doe", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-22T08:00:00",
+    }
+    db.insert_disclosures([disc])
+    db.insert_signal("test-004", "AAPL", 7, 4.5, "Good", ["lag", "small size"])
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT risk_flags FROM signals WHERE disclosure_id='test-004'").fetchone()
+    flags = json.loads(row["risk_flags"])
+    assert flags == ["lag", "small size"]

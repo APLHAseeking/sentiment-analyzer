@@ -2,6 +2,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, UTC
 import os
+import json
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS disclosures (
@@ -49,6 +50,7 @@ def _db_path() -> str:
 @contextmanager
 def get_conn():
     conn = sqlite3.connect(_db_path())
+    conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     try:
         yield conn
@@ -86,7 +88,7 @@ def insert_signal(disclosure_id: str, ticker: str, conviction: int,
                rationale, risk_flags, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (disclosure_id, ticker, conviction, position_pct, rationale,
-             str(risk_flags), datetime.now(UTC).isoformat()),
+             json.dumps(risk_flags), datetime.now(UTC).isoformat()),
         )
         return cur.lastrowid
 
