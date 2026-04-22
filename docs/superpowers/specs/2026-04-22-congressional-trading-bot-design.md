@@ -131,15 +131,19 @@ bot/
 
 ## Daily Schedule
 
-| Time (ET) | Action |
-|-----------|--------|
-| 08:00 | Scrape Capitol Trades for new disclosures |
-| 08:15 | Run signal filter + committee check |
-| 08:30 | Send qualifying signals to Claude for entry scoring |
-| 08:45 | Place new position orders (market open at 09:30) |
-| 09:00 | Send open positions to Claude for exit review |
-| 09:15 | Place exit/reduce orders if instructed |
-| 16:30 | Log daily portfolio snapshot to `portfolio_log` |
+The bot runs on the user's machine in Amsterdam (CET/CEST). All scheduling uses `zoneinfo` to convert to US/Eastern — never hardcoded offsets — because the US and EU change clocks on different dates each year, causing the gap to briefly become 5 or 7 hours instead of the usual 6.
+
+| Time (ET) | Time (Amsterdam) | Action |
+|-----------|-----------------|--------|
+| 08:00 | 14:00 | Scrape Capitol Trades for new disclosures |
+| 08:15 | 14:15 | Run signal filter + committee check |
+| 08:30 | 14:30 | Send qualifying signals to Claude for entry scoring |
+| 08:45 | 14:45 | Place new position orders (market open at 09:30 ET) |
+| 09:00 | 15:00 | Send open positions to Claude for exit review |
+| 09:15 | 15:15 | Place exit/reduce orders if instructed |
+| 16:30 | 22:30 | Log daily portfolio snapshot to `portfolio_log` |
+
+The scheduler skips weekends and US market holidays automatically (using the `exchange_calendars` library). No manual intervention needed from Amsterdam.
 
 ---
 
