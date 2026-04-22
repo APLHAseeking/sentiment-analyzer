@@ -18,6 +18,8 @@ def _fetch_russell1000() -> pd.DataFrame:
     resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     df = pd.read_csv(io.StringIO(resp.text), skiprows=9)
+    if "Ticker" not in df.columns:
+        raise ValueError(f"Unexpected iShares CSV format. Columns found: {df.columns.tolist()}")
     return df[["Ticker"]].dropna()
 
 
@@ -33,4 +35,6 @@ def refresh_universe() -> None:
 
 
 def is_in_universe(ticker: str) -> bool:
-    return ticker.upper() in _UNIVERSE
+    if not _UNIVERSE:
+        raise RuntimeError("Universe not initialized. Call refresh_universe() first.")
+    return ticker.strip().upper() in _UNIVERSE
