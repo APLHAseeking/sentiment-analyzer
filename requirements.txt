@@ -1,4 +1,10 @@
-flask>=3.0
-pandas>=2.0
-openpyxl>=3.1
-anthropic>=0.25
+anthropic>=0.40.0
+alpaca-py>=0.26.0
+apscheduler>=3.10.4
+beautifulsoup4>=4.12.3
+requests>=2.31.0
+yfinance>=0.2.40
+exchange-calendars>=4.5.4
+python-dotenv>=1.0.1
+pytest>=8.1.0
+pytest-mock>=3.14.0
