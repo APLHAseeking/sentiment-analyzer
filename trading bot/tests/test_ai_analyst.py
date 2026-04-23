@@ -47,7 +47,7 @@ def test_parse_exit_hold():
 def test_review_exit_returns_exit_decision(mocker):
     payload = json.dumps({"action": "exit", "rationale": "Stop loss near"})
     _mock_claude(mocker, payload)
-    result = review_exit("AAPL", 150.0, 125.0, 20, ["Bad news"])
+    result = review_exit("AAPL", 150.0, 125.0, 20)
     assert isinstance(result, ExitDecision)
     assert result.action == "exit"
 
@@ -113,3 +113,34 @@ def test_score_entry_without_research_omits_research_block(mocker):
     call_kwargs = mock_client.messages.create.call_args[1]
     user_content = call_kwargs["messages"][0]["content"]
     assert "INDEPENDENT RESEARCH" not in user_content
+
+
+def test_review_exit_with_research_injects_research_block(mocker):
+    payload = json.dumps({"action": "hold", "rationale": "Fundamentals strong"})
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text=payload)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_resp
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    review_exit("AAPL", 150.0, 160.0, 10, research=_make_research(
+        ticker="AAPL", company_name="Apple Inc.", sector="Technology",
+        headlines=("Record quarter",),
+    ))
+
+    call_kwargs = mock_client.messages.create.call_args[1]
+    user_content = call_kwargs["messages"][0]["content"]
+    assert "INDEPENDENT RESEARCH" in user_content
+    assert "Record quarter" in user_content
+
+
+def test_review_exit_without_research_still_works(mocker):
+    payload = json.dumps({"action": "exit", "rationale": "Stop loss"})
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text=payload)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_resp
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    result = review_exit("AAPL", 150.0, 125.0, 20)
+    assert result.action == "exit"

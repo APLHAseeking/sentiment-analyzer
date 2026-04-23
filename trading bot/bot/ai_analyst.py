@@ -113,17 +113,18 @@ def score_entry(disclosure: dict, committees: list[str], sector: str,
 
 
 def review_exit(ticker: str, entry_price: float, current_price: float,
-                days_held: int, recent_headlines: list[str]) -> ExitDecision:
+                days_held: int, research: "ResearchReport | None" = None) -> ExitDecision:
+    from bot.researcher import format_research_for_prompt
     pnl_pct = (current_price - entry_price) / entry_price * 100
-    headlines_text = "\n".join(f"- {h}" for h in recent_headlines[:5]) or "None"
     prompt = (
         f"Ticker: {ticker}\n"
         f"Entry: ${entry_price:.2f} | Current: ${current_price:.2f} | "
         f"P&L: {pnl_pct:+.1f}%\n"
         f"Days held: {days_held}\n"
-        f"Recent headlines:\n{headlines_text}\n"
-        f"Hold, reduce, or exit?"
     )
+    if research is not None:
+        prompt += "\n" + format_research_for_prompt(research) + "\n"
+    prompt += "Hold, reduce, or exit?"
     client = _get_client()
     resp = client.messages.create(
         model="claude-sonnet-4-6",
