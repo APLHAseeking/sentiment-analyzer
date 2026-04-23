@@ -35,6 +35,7 @@ def test_morning_opens_on_buy_signal(mocker, db):
     mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["House Energy and Commerce"])
     mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Energy")
     mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.gather_research", return_value=None)
     mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
         conviction=8, position_pct=5.0, rationale="Good", entry="buy", risk_flags=()
     ))
@@ -55,11 +56,57 @@ def test_exit_review_closes_on_exit(mocker, db):
     db.insert_position("AAPL", 150.0, 10.0, 5.0, "2026-04-01", sid, "Test")
     mocker.patch("bot.scheduler._is_trading_day", return_value=True)
     mocker.patch("bot.scheduler.yf.Ticker").return_value.info = {"regularMarketPrice": 155.0}
-    mocker.patch("bot.scheduler.yf.Ticker").return_value.news = []
+    mocker.patch("bot.scheduler.gather_research", return_value=None)
     mocker.patch("bot.scheduler.review_exit", return_value=ExitDecision("exit", "Take profit"))
     portfolio = _make_portfolio(mocker)
     run_exit_review(portfolio)
     portfolio.close_position.assert_called_once_with("AAPL", 10.0)
+
+def test_morning_calls_gather_research_per_qualified_signal(mocker, db):
+    disc = {
+        "id": "x1", "politician": "Jane Doe", "ticker": "XOM",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
+        "amount_range": "$50,001 - $100,000",
+    }
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[disc])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[disc])
+    mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["Energy"])
+    mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Energy")
+    mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
+        conviction=8, position_pct=5.0, rationale="Good", entry="buy", risk_flags=()
+    ))
+    mocker.patch("bot.scheduler.insert_signal", return_value=1)
+    mocker.patch("bot.scheduler.yf.Ticker").return_value.info = {"regularMarketPrice": 100.0}
+    mock_research = mocker.patch("bot.scheduler.gather_research", return_value=None)
+    portfolio = _make_portfolio(mocker)
+
+    run_morning_pipeline(portfolio)
+
+    mock_research.assert_called_once_with("XOM")
+
+
+def test_exit_review_calls_gather_research(mocker, db):
+    db.insert_disclosures([{
+        "id": "pos1", "politician": "Jane", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-22T08:00:00",
+    }])
+    sid = db.insert_signal("pos1", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 150.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.yf.Ticker").return_value.info = {"regularMarketPrice": 155.0}
+    mocker.patch("bot.scheduler.review_exit", return_value=ExitDecision("hold", "Ok"))
+    mock_research = mocker.patch("bot.scheduler.gather_research", return_value=None)
+    portfolio = _make_portfolio(mocker)
+
+    run_exit_review(portfolio)
+
+    mock_research.assert_called_once_with("AAPL")
+
 
 def test_eod_snapshot(mocker, db):
     portfolio = _make_portfolio(mocker)

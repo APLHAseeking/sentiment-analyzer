@@ -6,6 +6,7 @@ import yfinance as yf
 import exchange_calendars as xcals
 from apscheduler.schedulers.blocking import BlockingScheduler
 
+from bot.researcher import gather_research
 from bot.scraper import run_scraper
 from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days
 from bot.committee import get_committees_for_politician
@@ -40,9 +41,11 @@ def run_morning_pipeline(portfolio: Portfolio) -> None:
             committees = get_committees_for_politician(disc["politician"])
             sector = get_sector_for_ticker(disc["ticker"])
             lag = compute_lag_days(disc["transaction_date"], disc["disclosure_date"])
+            research = gather_research(disc["ticker"])
             score: EntryScore = score_entry(
                 disc, committees=committees, sector=sector,
                 lag_days=lag, estimated_cost_pct=_ESTIMATED_COST_PCT,
+                research=research,
             )
             if score.entry != "buy":
                 log.info(f"Skipping {disc['ticker']}: conviction {score.conviction}")
@@ -72,9 +75,10 @@ def run_exit_review(portfolio: Portfolio) -> None:
             info = yf.Ticker(pos["ticker"]).info
             current_price = info.get("regularMarketPrice", pos["entry_price"])
             days_held = (date.today() - date.fromisoformat(pos["entry_date"])).days
-            headlines = [h.get("content", {}).get("title", "") for h in yf.Ticker(pos["ticker"]).news[:5]]
+            research = gather_research(pos["ticker"])
             decision = review_exit(
-                pos["ticker"], pos["entry_price"], current_price, days_held, headlines
+                pos["ticker"], pos["entry_price"], current_price, days_held,
+                research=research,
             )
             if decision.action == "exit":
                 portfolio.close_position(pos["ticker"], pos["shares"])
