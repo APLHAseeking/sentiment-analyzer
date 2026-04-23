@@ -15,7 +15,8 @@ Rules:
 - Only set entry="buy" if expected return exceeds estimated_cost_pct by at least 2x
 - Penalise conviction -2 if lag_days is 15-30
 - Penalise conviction -3 and cap position_pct at 2.0 if lag_days is 31-45
-- Raise conviction for larger transaction sizes or multiple members buying same stock"""
+- Raise conviction for larger transaction sizes or multiple members buying same stock
+- If independent research is provided, weigh it alongside the congressional signal. Penalise conviction 1-2 points for a fundamentally weak or clearly overvalued company. Raise conviction 1-2 points for a financially healthy, undervalued company with positive momentum."""
 
 _EXIT_SYSTEM = """You are a quantitative analyst reviewing an open stock position.
 Respond with ONLY valid JSON: {"action": <"hold"|"exit"|"reduce">, "rationale": <str>}
@@ -84,7 +85,9 @@ def parse_exit_response(text: str) -> ExitDecision:
 
 
 def score_entry(disclosure: dict, committees: list[str], sector: str,
-                lag_days: int, estimated_cost_pct: float) -> EntryScore:
+                lag_days: int, estimated_cost_pct: float,
+                research: "ResearchReport | None" = None) -> EntryScore:
+    from bot.researcher import format_research_for_prompt
     prompt = (
         f"Politician: {disclosure['politician']}\n"
         f"Ticker: {disclosure['ticker']} | Sector: {sector}\n"
@@ -94,8 +97,10 @@ def score_entry(disclosure: dict, committees: list[str], sector: str,
         f"Amount range: {disclosure['amount_range']}\n"
         f"Committees held: {', '.join(committees)}\n"
         f"Estimated round-trip cost: {estimated_cost_pct:.2f}% of position\n"
-        f"Score this signal."
     )
+    if research is not None:
+        prompt += "\n" + format_research_for_prompt(research) + "\n"
+    prompt += "Score this signal."
     client = _get_client()
     resp = client.messages.create(
         model="claude-sonnet-4-6",
