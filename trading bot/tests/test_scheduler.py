@@ -1,0 +1,78 @@
+from unittest.mock import MagicMock, patch
+from bot.scheduler import run_morning_pipeline, run_exit_review, run_eod_snapshot
+from bot.ai_analyst import EntryScore, ExitDecision
+
+def _make_portfolio(mocker):
+    p = MagicMock()
+    p.can_open_new_position.return_value = True
+    p.get_cash.return_value = 100_000.0
+    return p
+
+def test_morning_skips_on_non_trading_day(mocker):
+    mocker.patch("bot.scheduler._is_trading_day", return_value=False)
+    portfolio = _make_portfolio(mocker)
+    run_morning_pipeline(portfolio)
+    portfolio.open_position.assert_not_called()
+
+def test_morning_no_signals(mocker):
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[])
+    portfolio = _make_portfolio(mocker)
+    run_morning_pipeline(portfolio)
+    portfolio.open_position.assert_not_called()
+
+def test_morning_opens_on_buy_signal(mocker, db):
+    disc = {
+        "id": "x1", "politician": "Jane Doe", "ticker": "XOM",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
+        "amount_range": "$50,001 - $100,000",
+    }
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[disc])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[disc])
+    mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["House Energy and Commerce"])
+    mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Energy")
+    mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
+        conviction=8, position_pct=5.0, rationale="Good", entry="buy", risk_flags=()
+    ))
+    mocker.patch("bot.scheduler.insert_signal", return_value=1)
+    mocker.patch("bot.scheduler.yf.Ticker").return_value.info = {"regularMarketPrice": 100.0}
+    portfolio = _make_portfolio(mocker)
+    run_morning_pipeline(portfolio)
+    portfolio.open_position.assert_called_once()
+
+def test_exit_review_closes_on_exit(mocker, db):
+    db.insert_disclosures([{
+        "id": "pos1", "politician": "Jane", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-22T08:00:00",
+    }])
+    sid = db.insert_signal("pos1", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 150.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.yf.Ticker").return_value.info = {"regularMarketPrice": 155.0}
+    mocker.patch("bot.scheduler.yf.Ticker").return_value.news = []
+    mocker.patch("bot.scheduler.review_exit", return_value=ExitDecision("exit", "Take profit"))
+    portfolio = _make_portfolio(mocker)
+    run_exit_review(portfolio)
+    portfolio.close_position.assert_called_once_with("AAPL", 10.0)
+
+def test_eod_snapshot(mocker, db):
+    portfolio = _make_portfolio(mocker)
+    portfolio.broker = MagicMock()
+    portfolio.broker.get_cash.return_value = 95_000.0
+    portfolio.broker.get_positions.return_value = [
+        {"ticker": "AAPL", "qty": 10.0, "current_price": 155.0, "avg_entry_price": 150.0}
+    ]
+    from bot.portfolio import Portfolio
+    real_portfolio = Portfolio(broker=portfolio.broker)
+    run_eod_snapshot(real_portfolio)
+    with db.get_conn() as conn:
+        rows = conn.execute("SELECT * FROM portfolio_log").fetchall()
+    assert len(rows) == 1
+    import pytest
+    assert rows[0]["total_nav"] == pytest.approx(95_000.0 + 1_550.0)
