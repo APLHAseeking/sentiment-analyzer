@@ -81,3 +81,89 @@ def format_research_for_prompt(report: ResearchReport) -> str:
         f"Recent headlines:\n{headline_lines}\n"
         "---"
     )
+
+
+import sys
+import os
+import yfinance as yf
+
+
+def _setup_fincept_path() -> None:
+    from bot.config import FINCEPT_SCRIPTS_PATH
+    if FINCEPT_SCRIPTS_PATH not in sys.path:
+        sys.path.insert(0, FINCEPT_SCRIPTS_PATH)
+
+
+_RATING_MAP: dict[str, str] = {
+    "strong_buy": "Buy", "buy": "Buy",
+    "hold": "Hold", "neutral": "Hold",
+    "sell": "Sell", "strong_sell": "Sell",
+}
+
+
+def gather_research(ticker: str) -> ResearchReport | None:
+    try:
+        _setup_fincept_path()
+        from equityInvestment.base.data_providers import YahooFinanceProvider
+
+        company = YahooFinanceProvider().get_company_data(ticker)
+        fd = company.financial_data
+        md = company.market_data
+
+        hist = yf.Ticker(ticker).history(period="3mo")
+        momentum_1m = momentum_3m = None
+        if not hist.empty and len(hist) >= 2:
+            current = hist["Close"].iloc[-1]
+            price_1m = hist["Close"].iloc[max(0, len(hist) - 21)]
+            price_3m = hist["Close"].iloc[0]
+            momentum_1m = (current / price_1m - 1) * 100
+            momentum_3m = (current / price_3m - 1) * 100
+
+        info = yf.Ticker(ticker).info
+        raw_rating = (info.get("recommendationKey") or "").lower()
+        analyst_rating = _RATING_MAP.get(raw_rating)
+        analyst_target = info.get("targetMeanPrice")
+        ev_ebitda_raw = info.get("enterpriseToEbitda")
+
+        news_items = yf.Ticker(ticker).news[:8]
+        headlines = tuple(
+            item.get("content", {}).get("title", "")
+            for item in news_items
+            if item.get("content", {}).get("title")
+        )
+
+        def _f(val: object) -> float | None:
+            return float(val) if val else None
+
+        return ResearchReport(
+            ticker=ticker.upper(),
+            company_name=company.name,
+            sector=company.sector,
+            market_cap=company.market_cap,
+            pe_trailing=_f(md.get("pe_ratio")),
+            pe_forward=_f(md.get("forward_pe")),
+            pb_ratio=_f(md.get("pb_ratio")),
+            ps_ratio=_f(md.get("ps_ratio")),
+            peg_ratio=_f(md.get("peg_ratio")),
+            ev_ebitda=_f(ev_ebitda_raw),
+            roe=_f(fd.get("roe")),
+            roa=_f(fd.get("roa")),
+            profit_margin=_f(fd.get("profit_margin")),
+            debt_to_equity=_f(fd.get("debt_to_equity")),
+            current_ratio=_f(fd.get("current_ratio")),
+            free_cash_flow=_f(fd.get("free_cash_flow")),
+            revenue_growth=_f(md.get("revenue_growth")),
+            earnings_growth=_f(md.get("earnings_growth")),
+            beta=_f(md.get("beta")),
+            week52_high=_f(md.get("52_week_high")),
+            week52_low=_f(md.get("52_week_low")),
+            momentum_1m=momentum_1m,
+            momentum_3m=momentum_3m,
+            analyst_target=_f(analyst_target),
+            analyst_rating=analyst_rating,
+            headlines=headlines,
+        )
+
+    except Exception as exc:
+        log.warning("gather_research(%s) failed — skipping research: %s", ticker, exc)
+        return None
