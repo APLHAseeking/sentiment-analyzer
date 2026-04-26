@@ -22,6 +22,7 @@ COMMITTEE_SECTOR_MAP: dict[str, list[str]] = {
     "Senate Appropriations": ["All"],
     "House Appropriations": ["All"],
     "Senate Foreign Relations": ["Energy", "Basic Materials", "Industrials"],
+    "House Foreign Affairs": ["Energy", "Basic Materials", "Industrials"],
     "Senate Judiciary": ["Technology", "Communication Services"],
     "House Judiciary": ["Technology", "Communication Services"],
 }

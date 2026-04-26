@@ -6,7 +6,7 @@ from bot.committee import (
 )
 
 def test_map_has_entries():
-    assert len(COMMITTEE_SECTOR_MAP) >= 10
+    assert len(COMMITTEE_SECTOR_MAP) >= 21
     assert "Financial Services" in COMMITTEE_SECTOR_MAP["Senate Banking"]
 
 def test_overlap_true():

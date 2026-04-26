@@ -1,5 +1,5 @@
 import re
-from datetime import date, timedelta
+from datetime import date
 import yfinance as yf
 
 import bot.db as db
@@ -7,7 +7,7 @@ from bot.universe import is_in_universe
 from bot.committee import get_committees_for_politician, sector_has_committee_overlap
 
 MAX_LAG_DAYS = 45
-MIN_TRADE_USD = 15_000
+MIN_TRADE_USD = 15_000  # lower bound of the "$15,001 – $50,000" Capitol Trades bracket
 
 
 def compute_lag_days(transaction_date: str, disclosure_date: str) -> int:
@@ -31,9 +31,9 @@ def is_large_enough_trade(amount_range: str, min_usd: int = MIN_TRADE_USD) -> bo
 
 
 def get_cluster_count(ticker: str, since_date: str) -> int:
-    """Count unique purchase disclosures for ticker since since_date (30d window)."""
+    """Count distinct politicians with purchase disclosures for ticker since since_date."""
     rows = db.get_recent_disclosures_for_ticker(ticker, since_date)
-    return sum(1 for r in rows if r["transaction_type"] == "purchase")
+    return len({r["politician"] for r in rows if r["transaction_type"] == "purchase"})
 
 
 def is_qualified_signal(disclosure: dict) -> bool:

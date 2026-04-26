@@ -84,11 +84,7 @@ def test_parse_amount_min_usd_unknown():
 
 def test_small_trade_disqualifies():
     disc = _disc(amount_range="$1,001 - $15,000")
-    with patch("bot.signal_engine.is_in_universe", return_value=True), \
-         patch("bot.signal_engine.get_committees_for_politician", return_value=["Senate Banking"]), \
-         patch("bot.signal_engine.get_sector_for_ticker", return_value="Financial Services"), \
-         patch("bot.signal_engine.sector_has_committee_overlap", return_value=True):
-        assert is_qualified_signal(disc) is False
+    assert is_qualified_signal(disc) is False
 
 def test_large_trade_qualifies():
     disc = _disc(amount_range="$50,001 - $100,000")
@@ -102,16 +98,24 @@ def test_large_trade_qualifies():
 
 def test_get_cluster_count_returns_int(mocker):
     mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
-        {"transaction_type": "purchase"},
-        {"transaction_type": "purchase"},
+        {"transaction_type": "purchase", "politician": "Jane Doe"},
+        {"transaction_type": "purchase", "politician": "John Smith"},
     ])
     count = get_cluster_count("AAPL", since_date="2026-03-26")
     assert count == 2
 
 def test_get_cluster_count_excludes_sales(mocker):
     mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
-        {"transaction_type": "purchase"},
-        {"transaction_type": "sale"},
+        {"transaction_type": "purchase", "politician": "Jane Doe"},
+        {"transaction_type": "sale", "politician": "John Smith"},
     ])
     count = get_cluster_count("AAPL", since_date="2026-03-26")
     assert count == 1
+
+def test_get_cluster_count_deduplicates_same_politician(mocker):
+    mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
+        {"transaction_type": "purchase", "politician": "Jane Doe"},
+        {"transaction_type": "purchase", "politician": "Jane Doe"},  # same politician twice
+    ])
+    count = get_cluster_count("AAPL", since_date="2026-03-26")
+    assert count == 1  # same person buying twice = 1, not 2
