@@ -40,11 +40,19 @@ def test_open_position_caps_at_max_pct(portfolio, mock_broker):
     expected_shares = 100_000.0 * (8.0 / 100) / 100.0
     assert kwargs["qty"] == pytest.approx(expected_shares)
 
-def test_stop_loss_triggers(portfolio, mock_broker):
+def test_stop_loss_triggers(portfolio, mock_broker, db):
     mock_broker.get_positions.return_value = [{
         "ticker": "AAPL", "qty": 33.0,
         "current_price": 100.0, "avg_entry_price": 120.0,
     }]
+    db.insert_disclosures([{
+        "id": "sl-001", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("sl-001", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 120.0, 33.0, 5.0, "2026-04-01", sid, "Test")
     closed = portfolio.enforce_stop_losses(stop_loss_pct=15.0)
     assert "AAPL" in closed
     mock_broker.place_order.assert_called_with(ticker="AAPL", side="sell", qty=33.0)
@@ -56,3 +64,97 @@ def test_stop_loss_does_not_trigger_within_threshold(portfolio, mock_broker):
     }]
     closed = portfolio.enforce_stop_losses(stop_loss_pct=15.0)
     assert closed == []
+
+# --- Trailing stop tests ---
+
+def test_trailing_stop_triggers_from_peak(portfolio, mock_broker, db):
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0,
+        "current_price": 108.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "tr-001", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("tr-001", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+    db.update_position_peak("AAPL", 130.0)
+    closed = portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+    assert "AAPL" in closed
+    mock_broker.place_order.assert_called_with(ticker="AAPL", side="sell", qty=10.0)
+
+def test_trailing_stop_does_not_trigger_within_15pct_of_peak(portfolio, mock_broker, db):
+    mock_broker.get_positions.return_value = [{
+        "ticker": "MSFT", "qty": 5.0,
+        "current_price": 115.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "tr-002", "politician": "J", "ticker": "MSFT",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("tr-002", "MSFT", 7, 4.0, "Good", [])
+    db.insert_position("MSFT", 100.0, 5.0, 4.0, "2026-04-01", sid, "Test")
+    db.update_position_peak("MSFT", 120.0)
+    closed = portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+    assert closed == []
+
+# --- Take-profit tests ---
+
+def test_take_profit_reduces_on_25pct_gain(portfolio, mock_broker, db):
+    mock_broker.get_positions.return_value = [{
+        "ticker": "XOM", "qty": 10.0,
+        "current_price": 130.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "tp-001", "politician": "J", "ticker": "XOM",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("tp-001", "XOM", 8, 5.0, "Good", [])
+    db.insert_position("XOM", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+    reduced = portfolio.enforce_take_profits(take_profit_pct=25.0)
+    assert "XOM" in reduced
+    mock_broker.place_order.assert_called_with(ticker="XOM", side="sell", qty=5.0)
+
+def test_take_profit_does_not_trigger_below_threshold(portfolio, mock_broker):
+    mock_broker.get_positions.return_value = [{
+        "ticker": "GOOG", "qty": 5.0,
+        "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    reduced = portfolio.enforce_take_profits(take_profit_pct=25.0)
+    assert reduced == []
+
+# --- Sector cap tests ---
+
+def test_sector_cap_blocks_new_position(portfolio):
+    sector_allocation = {"Technology": 40.0}
+    assert portfolio.is_sector_capped("Technology", sector_allocation, cap_pct=30.0) is True
+
+def test_sector_cap_allows_below_cap(portfolio):
+    sector_allocation = {"Technology": 25.0}
+    assert portfolio.is_sector_capped("Technology", sector_allocation, cap_pct=30.0) is False
+
+# --- Liquidity tests ---
+
+def test_liquidity_check_blocks_illiquid_position(portfolio):
+    assert portfolio.is_liquid_enough(
+        position_size_usd=50_000, avg_daily_volume_usd=200_000, max_adv_pct=10.0
+    ) is False
+
+def test_liquidity_check_passes_liquid_position(portfolio):
+    assert portfolio.is_liquid_enough(
+        position_size_usd=10_000, avg_daily_volume_usd=500_000, max_adv_pct=10.0
+    ) is True
+
+# --- Drawdown guard tests ---
+
+def test_drawdown_guard_blocks_new_positions(portfolio):
+    assert portfolio.is_in_drawdown(peak_nav=100_000, current_nav=87_000, max_drawdown_pct=10.0) is True
+
+def test_drawdown_guard_allows_within_limit(portfolio):
+    assert portfolio.is_in_drawdown(peak_nav=100_000, current_nav=93_000, max_drawdown_pct=10.0) is False
