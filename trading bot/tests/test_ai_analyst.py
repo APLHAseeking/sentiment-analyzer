@@ -63,8 +63,10 @@ def _make_research(**overrides) -> ResearchReport:
         roe=0.15, roa=0.08, profit_margin=0.10, debt_to_equity=0.3,
         current_ratio=1.2, free_cash_flow=2e10, revenue_growth=0.05,
         earnings_growth=0.08, beta=0.9, week52_high=120.0, week52_low=85.0,
-        momentum_1m=2.0, momentum_3m=8.0, analyst_target=115.0,
-        analyst_rating="Buy", headlines=("Dividend raised",),
+        momentum_1m=2.0, momentum_3m=8.0,
+        short_interest_pct=1.5, avg_daily_volume_usd=500_000_000,
+        analyst_target=115.0, analyst_rating="Buy", num_analysts=20,
+        headlines=("Dividend raised",),
     )
     defaults.update(overrides)
     return ResearchReport(**defaults)
