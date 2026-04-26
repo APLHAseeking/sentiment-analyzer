@@ -15,6 +15,9 @@ CREATE TABLE IF NOT EXISTS disclosures (
     amount_range TEXT NOT NULL,
     scraped_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_disclosures_ticker ON disclosures(ticker);
+CREATE INDEX IF NOT EXISTS idx_disclosures_disclosure_date ON disclosures(disclosure_date);
+
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     disclosure_id TEXT NOT NULL REFERENCES disclosures(id),
@@ -25,6 +28,8 @@ CREATE TABLE IF NOT EXISTS signals (
     risk_flags TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals(ticker);
+
 CREATE TABLE IF NOT EXISTS positions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ticker TEXT NOT NULL UNIQUE,
@@ -33,8 +38,25 @@ CREATE TABLE IF NOT EXISTS positions (
     position_pct REAL NOT NULL,
     entry_date TEXT NOT NULL,
     signal_id INTEGER REFERENCES signals(id),
-    rationale TEXT NOT NULL
+    rationale TEXT NOT NULL,
+    peak_price REAL
 );
+
+CREATE TABLE IF NOT EXISTS closed_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    exit_price REAL NOT NULL,
+    shares REAL NOT NULL,
+    entry_date TEXT NOT NULL,
+    exit_date TEXT NOT NULL,
+    exit_reason TEXT NOT NULL,
+    realized_pnl REAL NOT NULL,
+    signal_id INTEGER REFERENCES signals(id),
+    closed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_closed_positions_exit_date ON closed_positions(exit_date);
+
 CREATE TABLE IF NOT EXISTS portfolio_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,
@@ -98,9 +120,9 @@ def insert_position(ticker: str, entry_price: float, shares: float,
     with get_conn() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO positions
-               (ticker, entry_price, shares, position_pct, entry_date, signal_id, rationale)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (ticker, entry_price, shares, position_pct, entry_date, signal_id, rationale),
+               (ticker, entry_price, shares, position_pct, entry_date, signal_id, rationale, peak_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker, entry_price, shares, position_pct, entry_date, signal_id, rationale, entry_price),
         )
 
 def get_open_positions() -> list[sqlite3.Row]:
@@ -111,9 +133,54 @@ def update_position_shares(ticker: str, shares: float) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE positions SET shares = ? WHERE ticker = ?", (shares, ticker))
 
+def update_position_peak(ticker: str, peak_price: float) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE positions SET peak_price = ? WHERE ticker = ? AND (peak_price IS NULL OR peak_price < ?)",
+            (peak_price, ticker, peak_price),
+        )
+
 def delete_position(ticker: str) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
+
+def log_closed_position(ticker: str, entry_price: float, exit_price: float,
+                        shares: float, entry_date: str, exit_date: str,
+                        exit_reason: str, signal_id: int) -> None:
+    realized_pnl = (exit_price - entry_price) * shares
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO closed_positions
+               (ticker, entry_price, exit_price, shares, entry_date, exit_date,
+                exit_reason, realized_pnl, signal_id, closed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker, entry_price, exit_price, shares, entry_date, exit_date,
+             exit_reason, realized_pnl, signal_id, datetime.now(UTC).isoformat()),
+        )
+
+def get_closed_positions() -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM closed_positions ORDER BY exit_date DESC"
+        ).fetchall()
+
+def get_portfolio_stats() -> dict:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT realized_pnl FROM closed_positions"
+        ).fetchall()
+    if not rows:
+        return {"total_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "total_realized_pnl": 0.0}
+    pnls = [r["realized_pnl"] for r in rows]
+    wins = sum(1 for p in pnls if p > 0)
+    losses = sum(1 for p in pnls if p <= 0)
+    return {
+        "total_trades": len(pnls),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": wins / len(pnls),
+        "total_realized_pnl": sum(pnls),
+    }
 
 def log_portfolio(date: str, cash: float, positions_value: float, total_nav: float) -> None:
     with get_conn() as conn:
@@ -121,3 +188,12 @@ def log_portfolio(date: str, cash: float, positions_value: float, total_nav: flo
             "INSERT INTO portfolio_log (date, cash, positions_value, total_nav) VALUES (?, ?, ?, ?)",
             (date, cash, positions_value, total_nav),
         )
+
+def get_recent_disclosures_for_ticker(ticker: str, since_date: str) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM disclosures
+               WHERE ticker = ? AND transaction_date >= ?
+               ORDER BY transaction_date DESC""",
+            (ticker.upper(), since_date),
+        ).fetchall()
