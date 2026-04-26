@@ -3,7 +3,7 @@ def test_init_creates_tables(db):
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()}
-    assert {"disclosures", "signals", "positions", "portfolio_log"} <= tables
+    assert {"disclosures", "signals", "positions", "portfolio_log", "closed_positions"} <= tables
 
 def test_insert_and_get_disclosure(db):
     disc = {
@@ -69,7 +69,6 @@ def test_log_closed_position_creates_record(db):
     }
     db.insert_disclosures([disc])
     sid = db.insert_signal("cl-001", "AAPL", 8, 5.0, "Good", [])
-    db.insert_position("AAPL", 150.0, 10.0, 5.0, "2026-04-01", sid, "Test")
     db.log_closed_position(
         ticker="AAPL",
         entry_price=150.0,
@@ -105,3 +104,18 @@ def test_get_portfolio_stats_win_rate(db):
     assert abs(stats["win_rate"] - 0.5) < 0.01
     # Net PnL: (165-150)*10 + (285-300)*5 = 150 - 75 = 75
     assert abs(stats["total_realized_pnl"] - 75.0) < 0.01
+
+def test_get_recent_disclosures_for_ticker(db):
+    disc = {
+        "id": "rd-001", "politician": "Jane Doe", "ticker": "AAPL",
+        "transaction_date": "2026-04-10", "disclosure_date": "2026-04-15",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }
+    db.insert_disclosures([disc])
+    rows = db.get_recent_disclosures_for_ticker("AAPL", "2026-04-01")
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "AAPL"
+    # before the since_date: should return nothing
+    rows2 = db.get_recent_disclosures_for_ticker("AAPL", "2026-04-20")
+    assert len(rows2) == 0

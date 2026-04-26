@@ -173,7 +173,7 @@ def get_portfolio_stats() -> dict:
         return {"total_trades": 0, "wins": 0, "losses": 0, "win_rate": 0.0, "total_realized_pnl": 0.0}
     pnls = [r["realized_pnl"] for r in rows]
     wins = sum(1 for p in pnls if p > 0)
-    losses = sum(1 for p in pnls if p <= 0)
+    losses = sum(1 for p in pnls if p <= 0)  # break-even counted as loss
     return {
         "total_trades": len(pnls),
         "wins": wins,
