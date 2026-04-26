@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from dataclasses import dataclass
 
 import yfinance as yf
@@ -101,12 +103,8 @@ _RATING_MAP: dict[str, str] = {
 
 def _try_fincept(ticker: str) -> dict | None:
     """Attempt to load extended data from FinceptTerminal if available."""
-    import os
-    import sys
-    fincept_path = os.environ.get(
-        "FINCEPT_SCRIPTS_PATH",
-        "/Users/thomasvromen/Documents/FinceptTerminal/fincept-qt/scripts/Analytics",
-    )
+    from bot.config import FINCEPT_SCRIPTS_PATH
+    fincept_path = FINCEPT_SCRIPTS_PATH
     if fincept_path not in sys.path:
         sys.path.insert(0, fincept_path)
     try:
@@ -213,7 +211,7 @@ def gather_research(ticker: str) -> ResearchReport | None:
             pb_ratio=pb_ratio,
             ps_ratio=ps_ratio,
             peg_ratio=peg_ratio,
-            ev_ebitda=_f(info.get("enterpriseToEbitda")),
+            ev_ebitda=_f(info.get("enterpriseToEbitda")),  # always from yfinance; not in Fincept provider
             roe=roe,
             roa=roa,
             profit_margin=profit_margin,

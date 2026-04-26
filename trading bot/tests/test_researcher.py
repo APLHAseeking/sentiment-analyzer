@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 from bot.researcher import ResearchReport, format_research_for_prompt, gather_research
 
@@ -73,7 +73,7 @@ def test_gather_research_includes_avg_daily_volume_usd(mocker):
     _make_mock_ticker(mocker)
     report = gather_research("AAPL")
     assert report.avg_daily_volume_usd is not None
-    assert report.avg_daily_volume_usd > 0
+    assert abs(report.avg_daily_volume_usd - 55_000_000 * 185.0) < 1.0
 
 
 def test_gather_research_includes_num_analysts(mocker):
@@ -119,3 +119,21 @@ def test_gather_research_no_adv_when_price_missing(mocker):
     _make_mock_ticker(mocker, info_overrides={"regularMarketPrice": 0})
     report = gather_research("AAPL")
     assert report.avg_daily_volume_usd is None
+
+
+def test_rating_strong_buy_normalises_to_buy(mocker):
+    _make_mock_ticker(mocker, info_overrides={"recommendationKey": "strong_buy"})
+    report = gather_research("AAPL")
+    assert report.analyst_rating == "Buy"
+
+
+def test_rating_strong_sell_normalises_to_sell(mocker):
+    _make_mock_ticker(mocker, info_overrides={"recommendationKey": "strong_sell"})
+    report = gather_research("AAPL")
+    assert report.analyst_rating == "Sell"
+
+
+def test_rating_unknown_key_returns_none(mocker):
+    _make_mock_ticker(mocker, info_overrides={"recommendationKey": "underperform"})
+    report = gather_research("AAPL")
+    assert report.analyst_rating is None
