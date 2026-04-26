@@ -30,3 +30,9 @@ def test_get_committees_calls_propublica(mocker):
 def test_get_committees_returns_empty_for_unknown(mocker):
     mocker.patch("bot.committee._search_propublica_member", return_value={"results": []})
     assert get_committees_for_politician("Nobody Known") == ()
+
+def test_intelligence_committee_covers_technology():
+    assert sector_has_committee_overlap("Technology", ["Senate Intelligence"]) is True
+
+def test_appropriations_covers_all_sectors():
+    assert sector_has_committee_overlap("Healthcare", ["Senate Appropriations"]) is True

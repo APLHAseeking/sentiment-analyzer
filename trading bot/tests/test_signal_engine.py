@@ -1,5 +1,8 @@
 from unittest.mock import patch
-from bot.signal_engine import compute_lag_days, is_qualified_signal, filter_disclosures
+from bot.signal_engine import (
+    compute_lag_days, is_qualified_signal, filter_disclosures,
+    parse_amount_min_usd, is_large_enough_trade, get_cluster_count,
+)
 
 def _disc(**kwargs):
     base = {
@@ -62,3 +65,53 @@ def test_filter_disclosures():
         result = filter_disclosures(discs)
     assert len(result) == 1
     assert result[0]["id"] == "a"
+
+# --- Amount range parsing ---
+
+def test_parse_amount_min_usd_small():
+    assert parse_amount_min_usd("$1,001 - $15,000") == 1001
+
+def test_parse_amount_min_usd_medium():
+    assert parse_amount_min_usd("$15,001 - $50,000") == 15001
+
+def test_parse_amount_min_usd_large():
+    assert parse_amount_min_usd("$50,001 - $100,000") == 50001
+
+def test_parse_amount_min_usd_unknown():
+    assert parse_amount_min_usd("Unknown") == 0
+
+# --- Trade size filter ---
+
+def test_small_trade_disqualifies():
+    disc = _disc(amount_range="$1,001 - $15,000")
+    with patch("bot.signal_engine.is_in_universe", return_value=True), \
+         patch("bot.signal_engine.get_committees_for_politician", return_value=["Senate Banking"]), \
+         patch("bot.signal_engine.get_sector_for_ticker", return_value="Financial Services"), \
+         patch("bot.signal_engine.sector_has_committee_overlap", return_value=True):
+        assert is_qualified_signal(disc) is False
+
+def test_large_trade_qualifies():
+    disc = _disc(amount_range="$50,001 - $100,000")
+    with patch("bot.signal_engine.is_in_universe", return_value=True), \
+         patch("bot.signal_engine.get_committees_for_politician", return_value=["Senate Banking"]), \
+         patch("bot.signal_engine.get_sector_for_ticker", return_value="Financial Services"), \
+         patch("bot.signal_engine.sector_has_committee_overlap", return_value=True):
+        assert is_qualified_signal(disc) is True
+
+# --- Cluster detection ---
+
+def test_get_cluster_count_returns_int(mocker):
+    mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
+        {"transaction_type": "purchase"},
+        {"transaction_type": "purchase"},
+    ])
+    count = get_cluster_count("AAPL", since_date="2026-03-26")
+    assert count == 2
+
+def test_get_cluster_count_excludes_sales(mocker):
+    mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
+        {"transaction_type": "purchase"},
+        {"transaction_type": "sale"},
+    ])
+    count = get_cluster_count("AAPL", since_date="2026-03-26")
+    assert count == 1

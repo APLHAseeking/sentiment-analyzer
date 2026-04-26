@@ -17,6 +17,13 @@ COMMITTEE_SECTOR_MAP: dict[str, list[str]] = {
     "House Ways and Means": ["All"],
     "House Science": ["Technology"],
     "Senate Commerce Science": ["Technology", "Communication Services"],
+    "Senate Intelligence": ["Technology", "Communication Services", "Industrials"],
+    "House Intelligence": ["Technology", "Communication Services", "Industrials"],
+    "Senate Appropriations": ["All"],
+    "House Appropriations": ["All"],
+    "Senate Foreign Relations": ["Energy", "Basic Materials", "Industrials"],
+    "Senate Judiciary": ["Technology", "Communication Services"],
+    "House Judiciary": ["Technology", "Communication Services"],
 }
 
 _PROPUBLICA_BASE = "https://api.propublica.org/congress/v1"
