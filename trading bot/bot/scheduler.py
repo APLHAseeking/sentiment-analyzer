@@ -81,10 +81,23 @@ def run_exit_review(portfolio: Portfolio) -> None:
                 research=research,
             )
             if decision.action == "exit":
-                portfolio.close_position(pos["ticker"], pos["shares"])
+                portfolio.close_position(
+                    pos["ticker"], pos["shares"],
+                    exit_price=current_price,
+                    exit_reason="ai_exit",
+                    signal_id=pos["signal_id"] or 0,
+                    entry_price=pos["entry_price"],
+                    entry_date=pos["entry_date"],
+                )
                 log.info(f"Closed {pos['ticker']}: {decision.rationale}")
             elif decision.action == "reduce":
-                portfolio.reduce_position(pos["ticker"], pos["shares"])
+                portfolio.reduce_position(
+                    pos["ticker"], pos["shares"],
+                    exit_price=current_price,
+                    signal_id=pos["signal_id"] or 0,
+                    entry_price=pos["entry_price"],
+                    entry_date=pos["entry_date"],
+                )
                 log.info(f"Reduced {pos['ticker']}: {decision.rationale}")
         except Exception:
             log.exception(f"Exit review failed for {pos.get('ticker', '?')} — skipping")

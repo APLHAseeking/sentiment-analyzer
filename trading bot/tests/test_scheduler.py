@@ -60,7 +60,10 @@ def test_exit_review_closes_on_exit(mocker, db):
     mocker.patch("bot.scheduler.review_exit", return_value=ExitDecision("exit", "Take profit"))
     portfolio = _make_portfolio(mocker)
     run_exit_review(portfolio)
-    portfolio.close_position.assert_called_once_with("AAPL", 10.0)
+    assert portfolio.close_position.call_count == 1
+    call_kwargs = portfolio.close_position.call_args
+    assert call_kwargs[0][0] == "AAPL"  # ticker
+    assert call_kwargs[1]["exit_reason"] == "ai_exit"
 
 def test_morning_calls_gather_research_per_qualified_signal(mocker, db):
     disc = {

@@ -158,3 +158,38 @@ def test_drawdown_guard_blocks_new_positions(portfolio):
 
 def test_drawdown_guard_allows_within_limit(portfolio):
     assert portfolio.is_in_drawdown(peak_nav=100_000, current_nav=93_000, max_drawdown_pct=10.0) is False
+
+# --- Boundary tests ---
+
+def test_sector_cap_at_exact_boundary(portfolio):
+    assert portfolio.is_sector_capped("Technology", {"Technology": 30.0}, cap_pct=30.0) is True
+
+def test_liquidity_at_exact_boundary(portfolio):
+    # exactly 10% of ADV is allowed (<=)
+    assert portfolio.is_liquid_enough(10_000, 100_000, max_adv_pct=10.0) is True
+
+def test_drawdown_at_exact_boundary(portfolio):
+    # exactly 10% drawdown triggers the guard
+    assert portfolio.is_in_drawdown(100_000, 90_000, max_drawdown_pct=10.0) is True
+
+# --- Stop-loss DB write test ---
+
+def test_stop_loss_writes_closed_position_record(portfolio, mock_broker, db):
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": 5.0,
+        "current_price": 80.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "sl-wr-001", "politician": "J", "ticker": "TSLA",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("sl-wr-001", "TSLA", 8, 5.0, "Good", [])
+    db.insert_position("TSLA", 100.0, 5.0, 5.0, "2026-04-01", sid, "Test")
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+    rows = db.get_closed_positions()
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "TSLA"
+    assert rows[0]["exit_reason"] == "stop_loss"
+    assert abs(rows[0]["realized_pnl"] - (-100.0)) < 0.01  # (80-100)*5 = -100

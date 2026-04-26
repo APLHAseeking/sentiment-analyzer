@@ -104,6 +104,8 @@ class Portfolio:
 
         for pos in self.broker.get_positions():
             ticker = pos["ticker"]
+            if ticker in reduced:
+                continue
             entry = pos["avg_entry_price"]
             current = pos["current_price"]
             gain_pct = (current - entry) / entry * 100
