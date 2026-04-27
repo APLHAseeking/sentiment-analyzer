@@ -1,4 +1,6 @@
-from bot.scraper import _parse_trades_page
+import pytest
+import requests
+from bot.scraper import _parse_trades_page, _validate_trade, _fetch_page
 
 SAMPLE_HTML = """
 <html><body><table class="q-table"><tbody>
@@ -41,3 +43,84 @@ def test_parse_fields():
 def test_parse_skips_rows_missing_id_or_ticker():
     html = "<html><body><table class='q-table'><tbody><tr><td></td></tr></tbody></table></body></html>"
     assert _parse_trades_page(html) == []
+
+
+def test_validate_trade_passes_valid():
+    trade = {
+        "id": "abc123",
+        "politician": "Nancy Pelosi",
+        "ticker": "NVDA",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-01",
+        "disclosure_date": "2026-04-10",
+        "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }
+    assert _validate_trade(trade) is True
+
+
+def test_validate_trade_rejects_bad_date():
+    trade = {
+        "id": "abc123", "politician": "Nancy Pelosi", "ticker": "NVDA",
+        "transaction_type": "purchase",
+        "transaction_date": "April 1, 2026",
+        "disclosure_date": "2026-04-10",
+        "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }
+    assert _validate_trade(trade) is False
+
+
+def test_validate_trade_rejects_empty_ticker():
+    trade = {
+        "id": "abc123", "politician": "Nancy Pelosi", "ticker": "",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
+        "amount_range": "$50,001 - $100,000", "scraped_at": "2026-04-26T08:00:00",
+    }
+    assert _validate_trade(trade) is False
+
+
+def test_validate_trade_rejects_non_alpha_ticker():
+    trade = {
+        "id": "abc123", "politician": "Nancy Pelosi", "ticker": "123XY",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
+        "amount_range": "$50,001 - $100,000", "scraped_at": "2026-04-26T08:00:00",
+    }
+    assert _validate_trade(trade) is False
+
+
+def test_validate_trade_rejects_missing_id():
+    trade = {
+        "id": "", "politician": "Nancy Pelosi", "ticker": "NVDA",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
+        "amount_range": "$50,001 - $100,000", "scraped_at": "2026-04-26T08:00:00",
+    }
+    assert _validate_trade(trade) is False
+
+
+def test_fetch_page_retries_on_transient_error(mocker):
+    call_count = {"n": 0}
+    def flaky(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise requests.exceptions.ConnectionError("timeout")
+        mock_resp = mocker.MagicMock()
+        mock_resp.text = "<html></html>"
+        mock_resp.raise_for_status = mocker.MagicMock()
+        return mock_resp
+    mocker.patch("bot.scraper.requests.get", side_effect=flaky)
+    mocker.patch("bot.scraper.time.sleep")
+    result = _fetch_page(1)
+    assert call_count["n"] == 3
+    assert result == "<html></html>"
+
+
+def test_fetch_page_raises_after_all_retries_exhausted(mocker):
+    mocker.patch("bot.scraper.requests.get",
+                 side_effect=requests.exceptions.ConnectionError("always fails"))
+    mocker.patch("bot.scraper.time.sleep")
+    with pytest.raises(requests.exceptions.ConnectionError):
+        _fetch_page(1, max_retries=3)
