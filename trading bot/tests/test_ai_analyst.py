@@ -146,3 +146,50 @@ def test_review_exit_without_research_still_works(mocker):
 
     result = review_exit("AAPL", 150.0, 125.0, 20)
     assert result.action == "exit"
+
+
+def test_score_entry_includes_cluster_count_in_prompt(mocker):
+    payload = json.dumps({"conviction": 9, "position_pct": 6.0,
+                          "rationale": "Strong cluster", "entry": "buy", "risk_flags": []})
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text=payload)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_resp
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+    disc = {"id": "x1", "politician": "Jane Doe", "ticker": "XOM",
+            "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
+            "amount_range": "$50,001 - $100,000"}
+    score_entry(disc, committees=["House Energy and Commerce"],
+                sector="Energy", lag_days=2, estimated_cost_pct=0.05,
+                cluster_count=4)
+    call_args = mock_client.messages.create.call_args
+    prompt_text = call_args[1]["messages"][0]["content"]
+    assert "Cluster count" in prompt_text
+    assert "4" in prompt_text
+
+
+def test_score_entry_cluster_count_defaults_to_1(mocker):
+    payload = json.dumps({"conviction": 7, "position_pct": 4.0,
+                          "rationale": "Ok", "entry": "buy", "risk_flags": []})
+    _mock_claude(mocker, payload)
+    disc = {"id": "x2", "politician": "Jane Doe", "ticker": "XOM",
+            "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
+            "amount_range": "$50,001 - $100,000"}
+    result = score_entry(disc, committees=["House Energy and Commerce"],
+                         sector="Energy", lag_days=2, estimated_cost_pct=0.05)
+    assert isinstance(result, EntryScore)
+
+
+def test_parse_entry_invalid_conviction_raises():
+    raw = json.dumps({"conviction": 11, "position_pct": 5.0,
+                      "rationale": "Bad", "entry": "buy", "risk_flags": []})
+    import pytest
+    with pytest.raises(ValueError, match="conviction"):
+        parse_entry_response(raw)
+
+
+def test_review_exit_has_no_headlines_param():
+    import inspect
+    sig = inspect.signature(review_exit)
+    assert "headlines" not in sig.parameters
+    assert "research" in sig.parameters
