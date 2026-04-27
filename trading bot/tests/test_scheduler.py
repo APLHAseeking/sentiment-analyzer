@@ -6,6 +6,8 @@ def _make_portfolio(mocker):
     p = MagicMock()
     p.can_open_new_position.return_value = True
     p.get_cash.return_value = 100_000.0
+    p.is_sector_capped.return_value = False
+    p.broker.get_positions.return_value = []
     return p
 
 def test_morning_skips_on_non_trading_day(mocker):
@@ -35,6 +37,7 @@ def test_morning_opens_on_buy_signal(mocker, db):
     mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["House Energy and Commerce"])
     mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Energy")
     mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.get_cluster_count", return_value=1)
     mocker.patch("bot.scheduler.gather_research", return_value=None)
     mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
         conviction=8, position_pct=5.0, rationale="Good", entry="buy", risk_flags=()
@@ -78,6 +81,7 @@ def test_morning_calls_gather_research_per_qualified_signal(mocker, db):
     mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["Energy"])
     mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Energy")
     mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.get_cluster_count", return_value=1)
     mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
         conviction=8, position_pct=5.0, rationale="Good", entry="buy", risk_flags=()
     ))
@@ -126,3 +130,59 @@ def test_eod_snapshot(mocker, db):
     assert len(rows) == 1
     import pytest
     assert rows[0]["total_nav"] == pytest.approx(95_000.0 + 1_550.0)
+
+
+def test_morning_pipeline_skips_sector_capped_trade(mocker, db):
+    disc = {
+        "id": "sc-001", "politician": "Jane Doe", "ticker": "NVDA",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
+        "amount_range": "$50,001 - $100,000",
+    }
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[disc])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[disc])
+    mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["Senate Commerce"])
+    mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.get_cluster_count", return_value=1)
+    mocker.patch("bot.scheduler.gather_research", return_value=None)
+    portfolio = mocker.MagicMock()
+    portfolio.can_open_new_position.return_value = True
+    portfolio.get_cash.return_value = 100_000.0
+    portfolio.broker.get_positions.return_value = []
+    # Sector already capped at 35% (above 30% cap)
+    mocker.patch("bot.scheduler._compute_sector_allocation", return_value={"Technology": 35.0})
+    run_morning_pipeline(portfolio)
+    portfolio.open_position.assert_not_called()
+
+
+def test_morning_pipeline_passes_cluster_count_to_score_entry(mocker, db):
+    disc = {
+        "id": "cl-001", "politician": "Jane Doe", "ticker": "MSFT",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
+        "amount_range": "$50,001 - $100,000",
+    }
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[disc])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[disc])
+    mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["Senate Commerce"])
+    mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.get_cluster_count", return_value=3)
+    mocker.patch("bot.scheduler.gather_research", return_value=None)
+    mocker.patch("bot.scheduler._compute_sector_allocation", return_value={})
+    from bot.ai_analyst import EntryScore
+    mock_score_entry = mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
+        conviction=3, position_pct=0.0, rationale="Skip", entry="skip", risk_flags=()
+    ))
+    mocker.patch("bot.scheduler.insert_signal", return_value=1)
+    portfolio = mocker.MagicMock()
+    portfolio.can_open_new_position.return_value = True
+    portfolio.get_cash.return_value = 100_000.0
+    portfolio.broker.get_positions.return_value = []
+    portfolio.is_sector_capped.return_value = False
+    run_morning_pipeline(portfolio)
+    call_kwargs = mock_score_entry.call_args[1]
+    assert call_kwargs["cluster_count"] == 3
