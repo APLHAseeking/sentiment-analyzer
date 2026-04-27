@@ -25,6 +25,7 @@ Respond with ONLY valid JSON matching this exact schema:
 - cluster_count 4+: +2 conviction (strong institutional knowledge signal)
 
 ## Transaction Size
+- Amount > $100,000: +1 conviction (large conviction trade)
 - Amount $50,001-$100,000: full conviction
 - Amount $15,001-$50,000: neutral (no bonus)
 
@@ -46,8 +47,8 @@ Respond with ONLY valid JSON: {"action": <"hold"|"exit"|"reduce">, "rationale": 
 
 ## Exit Rules
 - P&L < -12%: exit immediately (approaching hard stop — don't wait for -15%)
-- P&L > +25%: reduce (lock in half the gain; let the other half run)
 - P&L > +40%: exit (full profit-taking)
+- P&L +25% to +40%: reduce (lock in half the gain; let the other half run)
 - days_held > 60 with P&L < +5%: exit (cost of capital exceeds return; redeploy)
 - days_held > 90: exit regardless (information advantage fully priced in by now)
 - Hold if P&L -12% to +25% and no material negative news

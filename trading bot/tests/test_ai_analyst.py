@@ -171,13 +171,19 @@ def test_score_entry_includes_cluster_count_in_prompt(mocker):
 def test_score_entry_cluster_count_defaults_to_1(mocker):
     payload = json.dumps({"conviction": 7, "position_pct": 4.0,
                           "rationale": "Ok", "entry": "buy", "risk_flags": []})
-    _mock_claude(mocker, payload)
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text=payload)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_resp
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
     disc = {"id": "x2", "politician": "Jane Doe", "ticker": "XOM",
             "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
             "amount_range": "$50,001 - $100,000"}
     result = score_entry(disc, committees=["House Energy and Commerce"],
                          sector="Energy", lag_days=2, estimated_cost_pct=0.05)
     assert isinstance(result, EntryScore)
+    prompt_text = mock_client.messages.create.call_args[1]["messages"][0]["content"]
+    assert "Cluster count (other members buying same stock last 30d): 1" in prompt_text
 
 
 def test_parse_entry_invalid_conviction_raises():
@@ -193,3 +199,16 @@ def test_review_exit_has_no_headlines_param():
     sig = inspect.signature(review_exit)
     assert "headlines" not in sig.parameters
     assert "research" in sig.parameters
+
+
+def test_parse_exit_invalid_action_raises():
+    import pytest
+    raw = json.dumps({"action": "yolo", "rationale": "Bad"})
+    with pytest.raises(ValueError, match="action"):
+        parse_exit_response(raw)
+
+
+def test_parse_exit_malformed_json_raises():
+    import pytest
+    with pytest.raises(ValueError, match="invalid JSON"):
+        parse_exit_response("not json")
