@@ -6,6 +6,7 @@ import yfinance as yf
 import exchange_calendars as xcals
 from apscheduler.schedulers.blocking import BlockingScheduler
 
+from bot.analytics import log_weekly_report
 from bot.researcher import gather_research
 from bot.scraper import run_scraper
 from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days
@@ -112,5 +113,6 @@ def start(portfolio: Portfolio) -> None:
     scheduler.add_job(lambda: run_morning_pipeline(portfolio), "cron", hour=14, minute=0)
     scheduler.add_job(lambda: run_exit_review(portfolio), "cron", hour=15, minute=0)
     scheduler.add_job(lambda: run_eod_snapshot(portfolio), "cron", hour=22, minute=30)
+    scheduler.add_job(log_weekly_report, "cron", day_of_week="fri", hour=22, minute=45)
     log.info("Scheduler started — running in Amsterdam time (Europe/Amsterdam)")
     scheduler.start()
