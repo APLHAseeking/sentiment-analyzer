@@ -11,11 +11,12 @@ log = logging.getLogger(__name__)
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; congress-bot/1.0; research-only)"}
 TRADES_URL = "https://capitoltrades.com/trades"
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_TICKER_RE = re.compile(r"^[A-Z]{1,5}$")
+_TICKER_RE = re.compile(r"^[A-Z]{1,5}$")  # covers standard US tickers; excludes BRK.B-style dot suffixes
 
 
 def _validate_trade(trade: dict) -> bool:
-    if not trade.get("ticker") or not _TICKER_RE.match(trade["ticker"].upper()):
+    """Validate a parsed trade dict. Expects ticker already uppercased."""
+    if not trade.get("ticker") or not _TICKER_RE.match(trade["ticker"]):
         return False
     if not _ISO_DATE_RE.match(trade.get("transaction_date", "")):
         return False
@@ -74,7 +75,6 @@ def _fetch_page(page: int, max_retries: int = 3) -> str:
                         page, attempt + 1, max_retries, exc, delay)
             time.sleep(delay)
             delay *= 2
-    raise RuntimeError("unreachable")
 
 
 def run_scraper(max_pages: int = 3) -> list[dict]:
@@ -88,7 +88,8 @@ def run_scraper(max_pages: int = 3) -> list[dict]:
             break
         trades = _parse_trades_page(html)
         if not trades:
-            log.warning("No trades parsed from page %d — scraper may need updating", page)
+            if page == 1:
+                log.warning("No trades parsed from page 1 — scraper may need updating")
             break
         fresh = [t for t in trades if t["id"] not in existing]
         new_trades.extend(fresh)

@@ -1,6 +1,6 @@
 import pytest
 import requests
-from bot.scraper import _parse_trades_page, _validate_trade, _fetch_page
+from bot.scraper import _parse_trades_page, _validate_trade, _fetch_page, run_scraper
 
 SAMPLE_HTML = """
 <html><body><table class="q-table"><tbody>
@@ -124,3 +124,11 @@ def test_fetch_page_raises_after_all_retries_exhausted(mocker):
     mocker.patch("bot.scraper.time.sleep")
     with pytest.raises(requests.exceptions.ConnectionError):
         _fetch_page(1, max_retries=3)
+
+
+def test_run_scraper_returns_empty_on_persistent_fetch_failure(mocker, db):
+    mocker.patch("bot.scraper.requests.get",
+                 side_effect=requests.exceptions.ConnectionError("always fails"))
+    mocker.patch("bot.scraper.time.sleep")
+    result = run_scraper(max_pages=1)
+    assert result == []
