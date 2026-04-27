@@ -186,3 +186,49 @@ def test_morning_pipeline_passes_cluster_count_to_score_entry(mocker, db):
     run_morning_pipeline(portfolio)
     call_kwargs = mock_score_entry.call_args[1]
     assert call_kwargs["cluster_count"] == 3
+
+
+def test_morning_pipeline_skips_illiquid_trade(mocker, db):
+    from bot.researcher import ResearchReport
+    disc = {
+        "id": "lq-001", "politician": "Jane Doe", "ticker": "ILLIQ",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
+        "amount_range": "$50,001 - $100,000",
+    }
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[disc])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[disc])
+    mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["Senate Banking"])
+    mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Financial Services")
+    mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.get_cluster_count", return_value=1)
+    mocker.patch("bot.scheduler._compute_sector_allocation", return_value={})
+    from bot.ai_analyst import EntryScore
+    mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
+        conviction=8, position_pct=5.0, rationale="Good", entry="buy", risk_flags=()
+    ))
+    mocker.patch("bot.scheduler.insert_signal", return_value=1)
+    mocker.patch("bot.scheduler.yf.Ticker").return_value.info = {"regularMarketPrice": 100.0}
+    # Research with tiny ADV: position is $5K, ADV is $30K → 16.7% > 10% → blocked
+    illiquid_report = ResearchReport(
+        ticker="ILLIQ", company_name="Illiquid Corp", sector="Financial Services",
+        market_cap=1e8, pe_trailing=None, pe_forward=None, pb_ratio=None,
+        ps_ratio=None, peg_ratio=None, ev_ebitda=None, roe=None, roa=None,
+        profit_margin=None, debt_to_equity=None, current_ratio=None,
+        free_cash_flow=None, revenue_growth=None, earnings_growth=None,
+        beta=None, week52_high=None, week52_low=None, momentum_1m=None,
+        momentum_3m=None, short_interest_pct=None,
+        avg_daily_volume_usd=30_000.0,  # $30K ADV
+        analyst_target=None, analyst_rating=None, num_analysts=None,
+        headlines=(),
+    )
+    mocker.patch("bot.scheduler.gather_research", return_value=illiquid_report)
+    portfolio = mocker.MagicMock()
+    portfolio.can_open_new_position.return_value = True
+    portfolio.get_cash.return_value = 100_000.0
+    portfolio.broker.get_positions.return_value = []
+    portfolio.is_sector_capped.return_value = False
+    portfolio.is_liquid_enough.return_value = False  # explicitly say not liquid
+    run_morning_pipeline(portfolio)
+    portfolio.open_position.assert_not_called()

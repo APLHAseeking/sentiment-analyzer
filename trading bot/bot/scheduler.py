@@ -107,7 +107,7 @@ def run_morning_pipeline(portfolio: Portfolio) -> None:
                 ticker=disc["ticker"], position_pct=score.position_pct,
                 signal_id=signal_id, rationale=score.rationale, entry_price=entry_price,
             )
-            sector_allocation[sector] = sector_allocation.get(sector, 0.0) + score.position_pct
+            sector_allocation = _compute_sector_allocation(portfolio)
             log.info(f"Opened {disc['ticker']} conviction={score.conviction} cluster={cluster_count}")
         except Exception:
             log.exception(f"Failed processing {disc.get('ticker', '?')} — skipping")
