@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS positions (
     entry_date TEXT NOT NULL,
     signal_id INTEGER REFERENCES signals(id),
     rationale TEXT NOT NULL,
-    peak_price REAL
+    peak_price REAL,
+    signal_source TEXT NOT NULL DEFAULT 'congressional'
 );
 
 CREATE TABLE IF NOT EXISTS closed_positions (
@@ -53,7 +54,8 @@ CREATE TABLE IF NOT EXISTS closed_positions (
     exit_reason TEXT NOT NULL,
     realized_pnl REAL NOT NULL,
     signal_id INTEGER REFERENCES signals(id),
-    closed_at TEXT NOT NULL
+    closed_at TEXT NOT NULL,
+    signal_source TEXT NOT NULL DEFAULT 'congressional'
 );
 CREATE INDEX IF NOT EXISTS idx_closed_positions_exit_date ON closed_positions(exit_date);
 
@@ -115,9 +117,24 @@ def get_conn():
     finally:
         conn.close()
 
+def _migrate_db() -> None:
+    """Add columns introduced after initial schema. Safe to run on existing DBs."""
+    migrations = [
+        "ALTER TABLE positions ADD COLUMN signal_source TEXT NOT NULL DEFAULT 'congressional'",
+        "ALTER TABLE closed_positions ADD COLUMN signal_source TEXT NOT NULL DEFAULT 'congressional'",
+    ]
+    with get_conn() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(stmt)
+            except Exception:
+                pass  # column already exists
+
+
 def init_db() -> None:
     with get_conn() as conn:
         conn.executescript(_SCHEMA)
+    _migrate_db()
 
 def get_existing_ids() -> set[str]:
     with get_conn() as conn:
@@ -148,13 +165,16 @@ def insert_signal(disclosure_id: str, ticker: str, conviction: int,
 
 def insert_position(ticker: str, entry_price: float, shares: float,
                     position_pct: float, entry_date: str,
-                    signal_id: int, rationale: str) -> None:
+                    signal_id: int | None, rationale: str,
+                    signal_source: str = "congressional") -> None:
     with get_conn() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO positions
-               (ticker, entry_price, shares, position_pct, entry_date, signal_id, rationale, peak_price)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (ticker, entry_price, shares, position_pct, entry_date, signal_id, rationale, entry_price),
+               (ticker, entry_price, shares, position_pct, entry_date, signal_id,
+                rationale, peak_price, signal_source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker, entry_price, shares, position_pct, entry_date, signal_id,
+             rationale, entry_price, signal_source),
         )
 
 def get_open_positions() -> list[sqlite3.Row]:
@@ -178,16 +198,18 @@ def delete_position(ticker: str) -> None:
 
 def log_closed_position(ticker: str, entry_price: float, exit_price: float,
                         shares: float, entry_date: str, exit_date: str,
-                        exit_reason: str, signal_id: int) -> None:
+                        exit_reason: str, signal_id: int | None,
+                        signal_source: str = "congressional") -> None:
     realized_pnl = (exit_price - entry_price) * shares
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO closed_positions
                (ticker, entry_price, exit_price, shares, entry_date, exit_date,
-                exit_reason, realized_pnl, signal_id, closed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                exit_reason, realized_pnl, signal_id, closed_at, signal_source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, entry_price, exit_price, shares, entry_date, exit_date,
-             exit_reason, realized_pnl, signal_id, datetime.now(UTC).isoformat()),
+             exit_reason, realized_pnl, signal_id, datetime.now(UTC).isoformat(),
+             signal_source),
         )
 
 def get_closed_positions() -> list[sqlite3.Row]:
@@ -213,6 +235,19 @@ def get_portfolio_stats() -> dict:
         "win_rate": wins / len(pnls),
         "total_realized_pnl": sum(pnls),
     }
+
+def get_performance_by_source() -> dict[str, list[float]]:
+    """Returns {signal_source: [realized_pnl, ...]} for all closed positions."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT signal_source, realized_pnl FROM closed_positions"
+        ).fetchall()
+    result: dict[str, list[float]] = {}
+    for row in rows:
+        src = row["signal_source"] or "congressional"
+        result.setdefault(src, []).append(float(row["realized_pnl"]))
+    return result
+
 
 def log_portfolio(date: str, cash: float, positions_value: float, total_nav: float) -> None:
     with get_conn() as conn:

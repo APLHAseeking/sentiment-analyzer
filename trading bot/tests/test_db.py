@@ -119,3 +119,49 @@ def test_get_recent_disclosures_for_ticker(db):
     # before the since_date: should return nothing
     rows2 = db.get_recent_disclosures_for_ticker("AAPL", "2026-04-20")
     assert len(rows2) == 0
+
+
+def test_insert_position_stores_signal_source(db):
+    db.insert_disclosures([{
+        "id": "src-001", "politician": "Jane", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-28T08:00:00",
+    }])
+    sid = db.insert_signal("src-001", "AAPL", 7, 4.0, "test", [])
+    db.insert_position("AAPL", 100.0, 10.0, 4.0, "2026-04-28", sid, "test",
+                       signal_source="fundamental")
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "AAPL")
+    assert pos["signal_source"] == "fundamental"
+
+
+def test_log_closed_position_stores_signal_source(db):
+    db.log_closed_position(
+        "AAPL", 100.0, 110.0, 10.0,
+        "2026-04-01", "2026-04-28", "ai_exit", None,
+        signal_source="fundamental",
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["signal_source"] == "fundamental"
+
+
+def test_signal_source_defaults_to_congressional(db):
+    db.log_closed_position(
+        "MSFT", 200.0, 220.0, 5.0,
+        "2026-04-01", "2026-04-28", "ai_exit", None,
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["signal_source"] == "congressional"
+
+
+def test_get_performance_by_source_groups_by_source(db):
+    import pytest
+    db.log_closed_position("A", 100.0, 110.0, 10.0, "2026-04-01", "2026-04-28",
+                           "ai_exit", None, signal_source="fundamental")
+    db.log_closed_position("B", 100.0, 90.0, 10.0, "2026-04-01", "2026-04-28",
+                           "ai_exit", None, signal_source="congressional")
+    result = db.get_performance_by_source()
+    assert "fundamental" in result
+    assert "congressional" in result
+    assert pytest.approx(result["fundamental"][0]) == 100.0
+    assert pytest.approx(result["congressional"][0]) == -100.0
