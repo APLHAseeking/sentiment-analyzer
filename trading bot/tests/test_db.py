@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_init_creates_tables(db):
     with db.get_conn() as conn:
         tables = {r[0] for r in conn.execute(
@@ -155,7 +158,6 @@ def test_signal_source_defaults_to_congressional(db):
 
 
 def test_get_performance_by_source_groups_by_source(db):
-    import pytest
     db.log_closed_position("A", 100.0, 110.0, 10.0, "2026-04-01", "2026-04-28",
                            "ai_exit", None, signal_source="fundamental")
     db.log_closed_position("B", 100.0, 90.0, 10.0, "2026-04-01", "2026-04-28",
