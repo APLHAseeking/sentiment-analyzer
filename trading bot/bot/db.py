@@ -64,6 +64,38 @@ CREATE TABLE IF NOT EXISTS portfolio_log (
     positions_value REAL NOT NULL,
     total_nav REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS regime_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    regime_label TEXT NOT NULL,
+    regime_index INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    is_stable INTEGER NOT NULL DEFAULT 1,
+    n_regimes INTEGER NOT NULL,
+    logged_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regime_log_date ON regime_log(date);
+
+CREATE TABLE IF NOT EXISTS risk_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    description TEXT NOT NULL,
+    data TEXT NOT NULL,
+    logged_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS backtest_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    train_start TEXT NOT NULL,
+    train_end TEXT NOT NULL,
+    test_start TEXT NOT NULL,
+    test_end TEXT NOT NULL,
+    n_regimes INTEGER NOT NULL,
+    metrics TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 def _db_path() -> str:
@@ -187,6 +219,53 @@ def log_portfolio(date: str, cash: float, positions_value: float, total_nav: flo
         conn.execute(
             "INSERT INTO portfolio_log (date, cash, positions_value, total_nav) VALUES (?, ?, ?, ?)",
             (date, cash, positions_value, total_nav),
+        )
+
+def log_regime(date: str, regime_label: str, regime_index: int,
+               confidence: float, is_stable: bool, n_regimes: int) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO regime_log
+               (date, regime_label, regime_index, confidence, is_stable, n_regimes, logged_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (date, regime_label, regime_index, confidence, int(is_stable),
+             n_regimes, datetime.now(UTC).isoformat()),
+        )
+
+def get_regime_history(days: int = 90) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM regime_log
+               WHERE date >= date('now', ?)
+               ORDER BY date ASC""",
+            (f"-{days} days",),
+        ).fetchall()
+
+def get_latest_regime() -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM regime_log ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+
+def log_risk_event(event_type: str, description: str, data: dict) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO risk_events (event_type, description, data, logged_at)
+               VALUES (?, ?, ?, ?)""",
+            (event_type, description, json.dumps(data), datetime.now(UTC).isoformat()),
+        )
+
+def log_backtest_result(run_id: str, train_start: str, train_end: str,
+                        test_start: str, test_end: str, n_regimes: int,
+                        metrics: dict) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO backtest_results
+               (run_id, train_start, train_end, test_start, test_end,
+                n_regimes, metrics, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (run_id, train_start, train_end, test_start, test_end,
+             n_regimes, json.dumps(metrics), datetime.now(UTC).isoformat()),
         )
 
 def get_recent_disclosures_for_ticker(ticker: str, since_date: str) -> list[sqlite3.Row]:

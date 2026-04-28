@@ -1,0 +1,310 @@
+"""HMM-based regime detection engine.
+
+Design principles:
+1. NO LOOK-AHEAD BIAS: The model is fitted only on training data. For
+   out-of-sample inference we use forward-only prediction (viterbi /
+   posterior on the sequence seen so far).
+2. MODEL SELECTION: We fit candidate HMMs with n_components in
+   cfg.candidate_counts and choose the best by BIC (or AIC).
+3. LABELING: Regimes are ordered by mean return so the labels are
+   economically interpretable (lowest return = crash, highest = euphoria).
+4. PERSISTENCE: The fitted model + scaler are saved to disk so they can
+   be reloaded without refitting on restart.
+"""
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+from typing import Any
+
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+
+from regime.gaussian_hmm import GaussianHMM
+
+from features.feature_pipeline import (
+    FeatureConfig,
+    build_feature_matrix,
+    build_feature_matrix_with_scaler,
+)
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class FitResult:
+    model: GaussianHMM
+    scaler: StandardScaler
+    n_regimes: int
+    bic: float
+    aic: float
+    score: float                     # log-likelihood on training data
+    label_map: list[str]             # model_state_index → regime name
+    label_options: list[str]         # rank → human label (ascending return order)
+    state_to_rank: dict[int, int]    # model_state → rank (0=worst)
+    train_index: pd.DatetimeIndex
+    train_regimes: np.ndarray        # ranked regime index per training bar
+
+
+@dataclass
+class RegimeState:
+    date: str
+    regime_index: int
+    regime_label: str
+    confidence: float                 # posterior probability of the predicted regime
+    is_stable: bool
+    n_regimes: int
+    raw_posteriors: list[float]       # full posterior distribution over regimes
+
+
+class HMMRegimeEngine:
+    """Fit and query a Gaussian HMM for market regime classification."""
+
+    def __init__(self, cfg: Any) -> None:
+        """
+        Parameters
+        ----------
+        cfg : system.config.RegimeConfig (or any object with matching attrs)
+        """
+        self._cfg = cfg
+        self._result: FitResult | None = None
+        self._recent_labels: list[int] = []   # sliding window for stability filter
+
+    # ------------------------------------------------------------------
+    # Fitting
+    # ------------------------------------------------------------------
+
+    def fit(self, data: pd.DataFrame, feature_cfg: FeatureConfig | None = None) -> FitResult:
+        """Fit all candidate HMMs and select the best by BIC.
+
+        Parameters
+        ----------
+        data : raw market data (from market_data.market_feed)
+        feature_cfg : optional feature configuration
+
+        This method MUST be called only on training data. Passing the full
+        dataset here would leak future information into regime labels.
+        """
+        if feature_cfg is None:
+            feature_cfg = FeatureConfig()
+
+        X, index, scaler = build_feature_matrix(data, feature_cfg)
+
+        if len(X) < feature_cfg.min_history_bars:
+            raise ValueError(
+                f"Insufficient training data: {len(X)} bars, need {feature_cfg.min_history_bars}"
+            )
+
+        best: FitResult | None = None
+        for n in self._cfg.candidate_counts:
+            try:
+                result = self._fit_single(n, X, index, scaler)
+                log.info(
+                    "HMM n=%d | log-lik=%.1f | BIC=%.1f | AIC=%.1f",
+                    n, result.score, result.bic, result.aic,
+                )
+                if best is None or self._is_better(result, best):
+                    best = result
+            except Exception as exc:
+                log.warning("HMM n=%d fit failed: %s", n, exc)
+
+        if best is None:
+            raise RuntimeError("All HMM candidate fits failed")
+
+        log.info(
+            "Selected n=%d regimes by %s (BIC=%.1f). Labels: %s",
+            best.n_regimes, self._cfg.selection_criterion, best.bic, best.label_map,
+        )
+        self._result = best
+        self._recent_labels = []
+        return best
+
+    def _fit_single(
+        self, n: int, X: np.ndarray, index: pd.DatetimeIndex, scaler: StandardScaler
+    ) -> FitResult:
+        model = GaussianHMM(
+            n_components=n,
+            covariance_type=self._cfg.covariance_type,
+            n_iter=self._cfg.n_iter,
+            random_state=self._cfg.random_state,
+        )
+        model.fit(X)
+
+        # Viterbi path for labeling (training data only)
+        train_regimes = model.predict(X)
+
+        # Label regimes by ascending mean return so regime 0 = worst
+        label_map = self._assign_labels(model, X, train_regimes, n)
+
+        # Relabel the Viterbi path using the sorted order
+        # The label_map gives us: sorted_index[k] = model's internal state
+        # for the k-th regime in return order.
+        # We need a mapping from model state → sorted position.
+        mean_rets = np.array([X[train_regimes == s, 0].mean() if (train_regimes == s).any()
+                               else 0.0 for s in range(n)])
+        sorted_states = np.argsort(mean_rets)  # sorted_states[k] = model's state for rank k
+        state_to_rank = {state: rank for rank, state in enumerate(sorted_states)}
+        train_regimes_ranked = np.array([state_to_rank[s] for s in train_regimes])
+
+        log_lik = model.score(X)
+        n_params = n ** 2 + n * X.shape[1] + n * X.shape[1]  # approximate
+        bic = -2 * log_lik + n_params * np.log(len(X))
+        aic = -2 * log_lik + 2 * n_params
+
+        label_options = self._cfg.label_maps.get(n)
+        if label_options is None:
+            label_options = [f"regime_{i}" for i in range(n)]
+
+        return FitResult(
+            model=model,
+            scaler=scaler,
+            n_regimes=n,
+            bic=bic,
+            aic=aic,
+            score=log_lik,
+            label_map=label_map,
+            label_options=list(label_options),
+            state_to_rank=state_to_rank,
+            train_index=index,
+            train_regimes=train_regimes_ranked,
+        )
+
+    def _assign_labels(
+        self, model: GaussianHMM, X: np.ndarray, regimes: np.ndarray, n: int
+    ) -> list[str]:
+        """Assign human-readable labels ordered by mean return (ascending).
+
+        Returns label_map where label_map[model_state] = human label string.
+        """
+        mean_rets = np.array([
+            X[regimes == s, 0].mean() if (regimes == s).any() else 0.0
+            for s in range(n)
+        ])
+        sorted_states = np.argsort(mean_rets)  # ascending: worst to best
+
+        label_options = self._cfg.label_maps.get(n)
+        if label_options is None:
+            label_options = [f"regime_{i}" for i in range(n)]
+
+        # label_map[model_state] = human label
+        label_map: list[str] = [""] * n
+        for rank, state in enumerate(sorted_states):
+            label_map[state] = label_options[rank]
+        return label_map
+
+    def _is_better(self, candidate: FitResult, current_best: FitResult) -> bool:
+        if self._cfg.selection_criterion == "aic":
+            return candidate.aic < current_best.aic
+        return candidate.bic < current_best.bic
+
+    # ------------------------------------------------------------------
+    # Inference (forward-only, no look-ahead)
+    # ------------------------------------------------------------------
+
+    def classify(
+        self, data: pd.DataFrame, feature_cfg: FeatureConfig | None = None
+    ) -> list[RegimeState]:
+        """Classify regimes for the given data using the fitted model.
+
+        IMPORTANT: data must end at or before the current bar. We use
+        model.predict_proba() on the full sequence up to each bar,
+        which is causal (forward-only) for the HMM — no future leakage.
+        """
+        if self._result is None:
+            raise RuntimeError("Call fit() before classify()")
+
+        if feature_cfg is None:
+            feature_cfg = FeatureConfig()
+
+        X, index = build_feature_matrix_with_scaler(
+            data, self._result.scaler, feature_cfg
+        )
+
+        # Posterior probabilities — causal because HMM uses past sequence only
+        posteriors = self._result.model.predict_proba(X)  # shape (T, n_regimes)
+        viterbi = self._result.model.predict(X)
+
+        n = self._result.n_regimes
+        # Use the state→rank mapping computed and stored at fit time
+        state_to_rank = self._result.state_to_rank
+        label_options = self._result.label_options
+
+        states: list[RegimeState] = []
+        for i, (ts, raw_state) in enumerate(zip(index, viterbi)):
+            rank = state_to_rank.get(int(raw_state), int(raw_state))
+            label = label_options[rank] if rank < len(label_options) else str(rank)
+
+            # Remap posteriors to rank order
+            ranked_posteriors = [0.0] * n
+            for s in range(n):
+                r = state_to_rank.get(s, s)
+                if r < n:
+                    ranked_posteriors[r] += float(posteriors[i, s])
+
+            confidence = ranked_posteriors[rank]
+            is_stable = self._check_stability(rank)
+            states.append(RegimeState(
+                date=str(ts.date()),
+                regime_index=rank,
+                regime_label=label,
+                confidence=confidence,
+                is_stable=is_stable,
+                n_regimes=n,
+                raw_posteriors=ranked_posteriors,
+            ))
+        return states
+
+    def current_regime(
+        self, data: pd.DataFrame, feature_cfg: FeatureConfig | None = None
+    ) -> RegimeState:
+        """Return the regime for the latest bar in data."""
+        states = self.classify(data, feature_cfg)
+        if not states:
+            raise RuntimeError("No regime states computed — insufficient data")
+        state = states[-1]
+        self._recent_labels.append(state.regime_index)
+        # Keep a sliding window of min_stable_bars * 3
+        window = self._cfg.min_stable_bars * 3
+        if len(self._recent_labels) > window:
+            self._recent_labels = self._recent_labels[-window:]
+        return state
+
+    def _check_stability(self, current_rank: int) -> bool:
+        """Return True if the regime has been stable for min_stable_bars."""
+        window = self._cfg.min_stable_bars
+        if len(self._recent_labels) < window:
+            return False
+        return all(r == current_rank for r in self._recent_labels[-window:])
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def save(self, path: str) -> None:
+        if self._result is None:
+            raise RuntimeError("Nothing to save — model not fitted")
+        joblib.dump({"result": self._result, "recent_labels": self._recent_labels}, path)
+        log.info("Regime model saved to %s", path)
+
+    def load(self, path: str) -> None:
+        payload = joblib.load(path)
+        self._result = payload["result"]
+        self._recent_labels = payload.get("recent_labels", [])
+        log.info(
+            "Regime model loaded from %s (n=%d, labels=%s)",
+            path, self._result.n_regimes, self._result.label_map,
+        )
+
+    @property
+    def is_fitted(self) -> bool:
+        return self._result is not None
+
+    @property
+    def n_regimes(self) -> int:
+        return self._result.n_regimes if self._result else 0
+
+    @property
+    def label_map(self) -> list[str]:
+        return self._result.label_map if self._result else []
