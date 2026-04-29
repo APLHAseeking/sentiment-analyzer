@@ -27,6 +27,7 @@ class AlpacaBroker(BrokerInterface):
     def __init__(self, api_client: TradingClient | None = None) -> None:
         if api_client is not None:
             self._api = api_client
+            self._is_paper = True  # injected client = always paper/test mode
         else:
             api_key = os.environ.get("ALPACA_API_KEY", "")
             secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
@@ -35,11 +36,12 @@ class AlpacaBroker(BrokerInterface):
                 raise RuntimeError(
                     "ALPACA_API_KEY and ALPACA_SECRET_KEY are required for Alpaca paper trading"
                 )
-            self._api = TradingClient(api_key, secret_key, paper="paper" in base_url)
+            self._is_paper = "paper" in base_url
+            self._api = TradingClient(api_key, secret_key, paper=self._is_paper)
 
     @property
     def is_paper(self) -> bool:
-        return True
+        return self._is_paper
 
     def get_cash(self) -> float:
         try:
@@ -68,6 +70,11 @@ class AlpacaBroker(BrokerInterface):
             raise RuntimeError(f"Alpaca get_positions failed: {exc}") from exc
 
     def place_order(self, ticker: str, side: str, qty: float) -> Order:
+        if side not in ("buy", "sell"):
+            order = Order(ticker=ticker.upper(), side=OrderSide("buy"), qty=qty, order_type=OrderType.MARKET)
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = f"Invalid side: {side!r}"
+            return order
         req = MarketOrderRequest(
             symbol=ticker.upper(),
             qty=qty,
@@ -86,7 +93,6 @@ class AlpacaBroker(BrokerInterface):
         except Exception as exc:
             order.status = OrderStatus.REJECTED
             order.reject_reason = str(exc)
-            raise RuntimeError(f"Alpaca submit_order failed for {ticker} {side}: {exc}") from exc
         return order
 
     def cancel_order(self, order_id: str) -> bool:

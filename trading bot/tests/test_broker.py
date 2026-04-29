@@ -56,6 +56,19 @@ def test_place_order_sell():
     broker = AlpacaBroker(api_client=mock_api)
     order = broker.place_order(ticker="AAPL", side="sell", qty=5.0)
     assert order.ticker == "AAPL"
+    assert order.status == OrderStatus.PENDING
+    submitted_req = mock_api.submit_order.call_args[0][0]
+    from alpaca.trading.enums import OrderSide as AlpacaSide
+    assert submitted_req.side == AlpacaSide.SELL
+
+
+def test_place_order_rejected_when_api_fails():
+    mock_api = MagicMock()
+    mock_api.submit_order.side_effect = Exception("insufficient funds")
+    broker = AlpacaBroker(api_client=mock_api)
+    order = broker.place_order(ticker="AAPL", side="buy", qty=999_999.0)
+    assert order.status == OrderStatus.REJECTED
+    assert "insufficient funds" in order.reject_reason
 
 
 def test_cancel_order_success():
