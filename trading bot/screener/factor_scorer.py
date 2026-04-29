@@ -14,6 +14,13 @@ log = logging.getLogger(__name__)
 _MIN_VALID_METRICS = 4
 
 
+def _to_float(v: object) -> float | None:
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass(frozen=True)
 class FactorCandidate:
     ticker: str
@@ -40,8 +47,6 @@ def _fetch_momentum_batch(
         raw = yf.download(tickers, period="3mo", auto_adjust=True, progress=False)
         if isinstance(raw.columns, pd.MultiIndex):
             close = raw["Close"]
-        elif "Close" in raw.columns:
-            close = raw[["Close"]].rename(columns={"Close": tickers[0]})
         else:
             return {t: (None, None) for t in tickers}
 
@@ -75,19 +80,13 @@ def _build_factor_df(
         if info is None:
             continue
         try:
-            def _f(v: object) -> float | None:
-                try:
-                    return float(v) if v is not None else None
-                except (TypeError, ValueError):
-                    return None
-
-            pe = _f(info.get("trailingPE"))
-            pb = _f(info.get("priceToBook"))
-            fcf = _f(info.get("freeCashflow"))
-            mcap = _f(info.get("marketCap"))
-            roe = _f(info.get("returnOnEquity"))
-            margin = _f(info.get("profitMargins"))
-            de = _f(info.get("debtToEquity"))
+            pe = _to_float(info.get("trailingPE"))
+            pb = _to_float(info.get("priceToBook"))
+            fcf = _to_float(info.get("freeCashflow"))
+            mcap = _to_float(info.get("marketCap"))
+            roe = _to_float(info.get("returnOnEquity"))
+            margin = _to_float(info.get("profitMargins"))
+            de = _to_float(info.get("debtToEquity"))
             fcf_yield = fcf / mcap if fcf and mcap and mcap > 0 else None
             mom1m, mom3m = momentum.get(ticker, (None, None))
 
@@ -103,6 +102,7 @@ def _build_factor_df(
                 "mom_3m": mom3m,
             })
         except Exception:
+            log.debug("Skipping %s in factor_df build", ticker, exc_info=True)
             continue
 
     if not rows:
