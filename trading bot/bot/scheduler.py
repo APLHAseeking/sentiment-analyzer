@@ -172,6 +172,7 @@ def run_morning_pipeline(portfolio: Portfolio) -> None:
                 opened = _try_open(portfolio, ticker, score, None, candidate.research,
                                    sector_allocation, sector, signal_type)
                 if opened:
+                    already_open.add(ticker)
                     sector_allocation = _compute_sector_allocation(portfolio)
                     log.info("Opened %s (%s) conviction=%d factor=%d",
                              ticker, signal_type, score.conviction, candidate.composite_score)
@@ -188,19 +189,20 @@ def run_exit_review(portfolio: Portfolio) -> None:
         return
     log.info("Exit review started")
     for pos in get_open_positions():
+        ticker = pos["ticker"]
         try:
-            info = yf.Ticker(pos["ticker"]).info
+            info = yf.Ticker(ticker).info
             current_price = info.get("regularMarketPrice", pos["entry_price"])
             days_held = (date.today() - date.fromisoformat(pos["entry_date"])).days
-            research = gather_research(pos["ticker"])
+            research = gather_research(ticker)
             decision = review_exit(
-                pos["ticker"], pos["entry_price"], current_price, days_held,
+                ticker, pos["entry_price"], current_price, days_held,
                 research=research,
             )
             signal_source = pos["signal_source"] if pos["signal_source"] else "congressional"
             if decision.action == "exit":
                 portfolio.close_position(
-                    pos["ticker"], pos["shares"],
+                    ticker, pos["shares"],
                     exit_price=current_price,
                     exit_reason="ai_exit",
                     signal_id=pos["signal_id"],
@@ -208,19 +210,19 @@ def run_exit_review(portfolio: Portfolio) -> None:
                     entry_date=pos["entry_date"],
                     signal_source=signal_source,
                 )
-                log.info("Closed %s: %s", pos["ticker"], decision.rationale)
+                log.info("Closed %s: %s", ticker, decision.rationale)
             elif decision.action == "reduce":
                 portfolio.reduce_position(
-                    pos["ticker"], pos["shares"],
+                    ticker, pos["shares"],
                     exit_price=current_price,
                     signal_id=pos["signal_id"],
                     entry_price=pos["entry_price"],
                     entry_date=pos["entry_date"],
                     signal_source=signal_source,
                 )
-                log.info("Reduced %s: %s", pos["ticker"], decision.rationale)
+                log.info("Reduced %s: %s", ticker, decision.rationale)
         except Exception:
-            log.exception("Exit review failed for %s — skipping", pos["ticker"])
+            log.exception("Exit review failed for %s — skipping", ticker)
 
 
 def run_eod_snapshot(portfolio: Portfolio) -> None:
