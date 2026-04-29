@@ -97,3 +97,66 @@ def test_slippage_reduces_pnl():
     sim_slip = simulate_portfolio(signals, price_data, slippage_bps=50, commission_pct=0)
     if sim_no_slip.trades and sim_slip.trades:
         assert sim_no_slip.trades[0].pnl >= sim_slip.trades[0].pnl
+
+
+def test_walk_forward_accepts_alloc_cfg():
+    """alloc_cfg parameter is accepted and run completes without error."""
+    import numpy as np
+    import pandas as pd
+    from dataclasses import dataclass, field
+    from backtesting.walk_forward import run_walk_forward
+    from features.feature_pipeline import FeatureConfig
+
+    @dataclass
+    class _RCfg:
+        candidate_counts: tuple = (3,)
+        selection_criterion: str = "bic"
+        n_iter: int = 10
+        random_state: int = 42
+        covariance_type: str = "diag"
+        min_stable_bars: int = 2
+        instability_penalty: float = 0.5
+        label_maps: dict = field(default_factory=lambda: {3: ["bear", "neutral", "bull"]})
+        model_path: str = "test_wf_alloc.joblib"
+
+    @dataclass
+    class _ACfg:
+        regime_size_multiplier: dict = field(default_factory=lambda: {
+            "bear": 0.0, "neutral": 0.5, "bull": 1.0
+        })
+        min_confidence_to_trade: float = 0.0
+        confidence_scale: bool = False
+        instability_penalty: float = 0.5
+
+    @dataclass
+    class _BCfg:
+        train_years: int = 1
+        test_months: int = 3
+        step_months: int = 3
+        slippage_bps: float = 0.0
+        commission_pct: float = 0.0
+        benchmark_ticker: str = "SPY"
+        min_train_bars: int = 100
+
+    rng = np.random.default_rng(42)
+    n = 700
+    dates = pd.date_range("2020-01-01", periods=n, freq="B")
+    close = 100 * np.cumprod(1 + rng.normal(0.0003, 0.01, n))
+    market_data = pd.DataFrame({
+        "close": close,
+        "volume": rng.integers(1_000_000, 10_000_000, n).astype(float),
+        "vix": np.clip(15 + rng.normal(0, 3, n), 10, 50),
+    }, index=dates)
+
+    result = run_walk_forward(
+        market_data=market_data,
+        signal_data=[],
+        price_data={},
+        regime_cfg=_RCfg(),
+        backtest_cfg=_BCfg(),
+        feature_cfg=FeatureConfig(vol_window=20, trend_window=50,
+                                   min_history_bars=100, use_vix=False),
+        alloc_cfg=_ACfg(),
+        persist_to_db=False,
+    )
+    assert isinstance(result.aggregated_metrics, dict)

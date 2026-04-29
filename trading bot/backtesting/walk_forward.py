@@ -61,6 +61,7 @@ def run_walk_forward(
     regime_cfg: Any,                  # system.config.RegimeConfig
     backtest_cfg: Any,                # system.config.BacktestConfig
     feature_cfg: FeatureConfig | None = None,
+    alloc_cfg: Any = None,
     persist_to_db: bool = True,
 ) -> WalkForwardResult:
     """Run walk-forward validation over the full dataset.
@@ -141,10 +142,12 @@ def run_walk_forward(
 
             # Apply regime scaling to position_pct
             base_pct = float(sig.get("position_pct", 5.0))
-            mult = regime_cfg.regime_size_multiplier.get(
-                regime.regime_label,
-                1.0,
-            ) if hasattr(regime_cfg, "regime_size_multiplier") else 1.0
+            mult = (
+                alloc_cfg.regime_size_multiplier.get(regime.regime_label, 1.0)
+                if alloc_cfg is not None
+                and hasattr(alloc_cfg, "regime_size_multiplier")
+                else 1.0
+            )
             enriched_signals.append({
                 **sig,
                 "position_pct": base_pct * mult,

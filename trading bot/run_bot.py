@@ -107,9 +107,15 @@ def run_backtest() -> None:
         price_data=price_data,
         regime_cfg=settings.regime,
         backtest_cfg=settings.backtest,
+        alloc_cfg=settings.allocation,
         feature_cfg=FeatureConfig(
             vol_window=settings.features.vol_window,
             trend_window=settings.features.trend_window,
+            momentum_window=settings.features.momentum_window,
+            use_vix=settings.features.use_vix,
+            use_momentum=settings.features.use_momentum,
+            use_drawdown=settings.features.use_drawdown,
+            min_history_bars=settings.features.min_history_bars,
         ),
     )
 
