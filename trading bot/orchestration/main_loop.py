@@ -262,7 +262,10 @@ class RegimeAwareOrchestrator:
         try:
             universe = list(get_universe())
             candidates = run_factor_screen(universe, top_n=_SCREENER_TOP_N)
-            already_open = {p["ticker"] for p in self._broker.get_positions()}
+            already_open = (
+                {p["ticker"] for p in self._broker.get_positions()}
+                | {pos["ticker"] for pos in get_open_positions()}
+            )
 
             for candidate in candidates:
                 if not self._portfolio.can_open_new_position():
