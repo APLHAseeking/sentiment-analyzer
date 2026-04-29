@@ -42,7 +42,7 @@ from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute
 from bot.committee import get_committees_for_politician
 from bot.ai_analyst import score_entry, review_exit, EntryScore
 from bot.db import get_open_positions, insert_signal, log_regime
-from bot.universe import refresh_universe
+from bot.universe import refresh_universe, get_universe
 from bot.portfolio import Portfolio
 
 # New regime-aware modules
@@ -52,12 +52,14 @@ from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
 from risk.risk_manager import RiskManager
+from screener.factor_scorer import run_factor_screen, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
 from dashboard.data_store import DashboardStore
 
 log = logging.getLogger(__name__)
 _AMS = ZoneInfo("Europe/Amsterdam")
 _NYSE = xcals.get_calendar("XNYS")
+_SCREENER_TOP_N = 12
 
 
 class RegimeAwareOrchestrator:
@@ -245,6 +247,8 @@ class RegimeAwareOrchestrator:
         except Exception as exc:
             log.warning("Sector allocation computation failed: %s", exc)
 
+        congress_tickers: set[str] = {disc["ticker"] for disc in qualified}
+
         for disc in qualified:
             if not self._portfolio.can_open_new_position():
                 log.info("Position limit reached — stopping")
@@ -253,6 +257,32 @@ class RegimeAwareOrchestrator:
                 self._process_signal(disc, sector_allocation)
             except Exception:
                 log.exception("Failed processing %s — skipping", disc.get("ticker", "?"))
+
+        # ── Phase 2: fundamental screener (regime-aware) ─────────────────────
+        try:
+            universe = list(get_universe())
+            candidates = run_factor_screen(universe, top_n=_SCREENER_TOP_N)
+            already_open = {p["ticker"] for p in self._broker.get_positions()}
+
+            for candidate in candidates:
+                if not self._portfolio.can_open_new_position():
+                    log.info("Position limit reached — stopping Phase 2")
+                    break
+                if candidate.ticker in already_open:
+                    continue
+                try:
+                    opened = self._process_fundamental_candidate(
+                        candidate, sector_allocation, congress_tickers
+                    )
+                    if opened:
+                        already_open.add(candidate.ticker)
+                except Exception:
+                    log.exception(
+                        "Failed processing fundamental candidate %s — skipping",
+                        candidate.ticker,
+                    )
+        except Exception:
+            log.exception("Phase 2 fundamental screener failed — skipping")
 
     def _process_signal(self, disc: dict, sector_allocation: dict) -> None:
         ticker = disc["ticker"]
@@ -322,6 +352,93 @@ class RegimeAwareOrchestrator:
                    data={"ticker": ticker, "pct": final_pct,
                          "regime": self._regime_state.regime_label if self._regime_state else "?",
                          "conviction": score.conviction})
+
+    def _process_fundamental_candidate(
+        self,
+        candidate: FactorCandidate,
+        sector_allocation: dict,
+        congress_tickers: set,
+    ) -> bool:
+        """Score a fundamental screener candidate and open a position if approved.
+
+        Returns True if a position was opened.
+        """
+        ticker = candidate.ticker
+        signal_type = "both" if ticker in congress_tickers else "fundamental"
+        sector = get_sector_for_ticker(ticker)
+
+        score: EntryScore = score_entry(
+            disclosure=None,
+            committees=[],
+            sector=sector,
+            lag_days=0,
+            estimated_cost_pct=0.05,
+            research=candidate.research,
+            signal_type=signal_type,
+            factor_score=candidate.composite_score,
+            ticker=ticker,
+        )
+
+        if score.entry != "buy":
+            log.info("Skipping %s (%s): conviction %d", ticker, signal_type, score.conviction)
+            return False
+
+        base_pct = score.position_pct
+        if self._regime_state is not None:
+            alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
+            final_pct = alloc_decision.final_position_pct
+            if final_pct < 0.1:
+                emit_event(
+                    log, EventType.SIGNAL_REJECTED,
+                    f"{ticker} blocked by regime ({alloc_decision.rationale})",
+                )
+                return False
+        else:
+            final_pct = base_pct
+
+        entry_price = yf.Ticker(ticker).info.get("regularMarketPrice", 0)
+        if not entry_price:
+            log.warning("No price for %s — skipping", ticker)
+            return False
+
+        position_size_usd = self._broker.get_cash() * final_pct / 100
+        adv_usd = candidate.research.avg_daily_volume_usd if candidate.research else None
+        veto = self._risk.validate_order(
+            ticker=ticker,
+            position_pct=final_pct,
+            sector=sector,
+            sector_allocation=sector_allocation,
+            position_size_usd=position_size_usd,
+            adv_usd=adv_usd,
+        )
+
+        if not veto.allowed:
+            emit_event(log, EventType.RISK_VETO, f"{ticker} vetoed: {veto.reason}")
+            return False
+
+        final_pct *= veto.size_multiplier
+
+        self._portfolio.open_position(
+            ticker=ticker,
+            position_pct=final_pct,
+            signal_id=None,
+            rationale=score.rationale,
+            entry_price=entry_price,
+            signal_source=signal_type,
+        )
+        sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
+        emit_event(
+            log, EventType.ORDER_PLACED,
+            f"Opened {ticker} ({signal_type}) pct={final_pct:.1f}% conv={score.conviction}",
+            data={
+                "ticker": ticker, "pct": final_pct,
+                "regime": self._regime_state.regime_label if self._regime_state else "?",
+                "conviction": score.conviction,
+                "signal_type": signal_type,
+                "factor_score": candidate.composite_score,
+            },
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Exit review
