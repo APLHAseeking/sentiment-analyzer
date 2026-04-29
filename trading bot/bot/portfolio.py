@@ -24,8 +24,9 @@ class Portfolio:
     def reset_daily_counter(self) -> None:
         self._opened_today = 0
 
-    def open_position(self, ticker: str, position_pct: float, signal_id: int,
-                      rationale: str, entry_price: float) -> None:
+    def open_position(self, ticker: str, position_pct: float, signal_id: int | None,
+                      rationale: str, entry_price: float,
+                      signal_source: str = "congressional") -> None:
         position_pct = min(position_pct, MAX_POSITION_PCT)
         shares = (self.get_cash() * position_pct / 100) / entry_price
         self.broker.place_order(ticker=ticker, side="buy", qty=shares)
@@ -37,12 +38,13 @@ class Portfolio:
             entry_date=date.today().isoformat(),
             signal_id=signal_id,
             rationale=rationale,
+            signal_source=signal_source,
         )
         self._opened_today += 1
 
     def close_position(self, ticker: str, shares: float, exit_price: float,
-                       exit_reason: str, signal_id: int, entry_price: float,
-                       entry_date: str) -> None:
+                       exit_reason: str, signal_id: int | None, entry_price: float,
+                       entry_date: str, signal_source: str = "congressional") -> None:
         self.broker.place_order(ticker=ticker, side="sell", qty=shares)
         db.log_closed_position(
             ticker=ticker,
@@ -53,11 +55,13 @@ class Portfolio:
             exit_date=date.today().isoformat(),
             exit_reason=exit_reason,
             signal_id=signal_id,
+            signal_source=signal_source,
         )
         db.delete_position(ticker)
 
     def reduce_position(self, ticker: str, shares: float, exit_price: float,
-                        signal_id: int, entry_price: float, entry_date: str) -> None:
+                        signal_id: int | None, entry_price: float, entry_date: str,
+                        signal_source: str = "congressional") -> None:
         sell_qty = shares / 2
         self.broker.place_order(ticker=ticker, side="sell", qty=sell_qty)
         db.log_closed_position(
@@ -69,6 +73,7 @@ class Portfolio:
             exit_date=date.today().isoformat(),
             exit_reason="reduce",
             signal_id=signal_id,
+            signal_source=signal_source,
         )
         db.update_position_shares(ticker, shares - sell_qty)
 
@@ -91,9 +96,10 @@ class Portfolio:
                     shares=pos["qty"],
                     exit_price=current,
                     exit_reason="stop_loss",
-                    signal_id=meta.get("signal_id") or 0,
+                    signal_id=meta.get("signal_id"),
                     entry_price=meta.get("entry_price") or pos["avg_entry_price"],
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
+                    signal_source=meta.get("signal_source", "congressional"),
                 )
                 closed.append(ticker)
         return closed
@@ -116,9 +122,10 @@ class Portfolio:
                     ticker=ticker,
                     shares=pos["qty"],
                     exit_price=current,
-                    signal_id=meta.get("signal_id") or 0,
+                    signal_id=meta.get("signal_id"),
                     entry_price=meta.get("entry_price") or entry,
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
+                    signal_source=meta.get("signal_source", "congressional"),
                 )
                 reduced.append(ticker)
         return reduced

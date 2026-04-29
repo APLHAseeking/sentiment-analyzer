@@ -174,6 +174,43 @@ def test_drawdown_at_exact_boundary(portfolio):
 
 # --- Stop-loss DB write test ---
 
+def test_open_position_stores_signal_source(mock_broker, db):
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    db.insert_disclosures([{
+        "id": "src-p1", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-28T08:00:00",
+    }])
+    portfolio.open_position("AAPL", 5.0, None, "test", 100.0, signal_source="fundamental")
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "AAPL")
+    assert pos["signal_source"] == "fundamental"
+
+
+def test_close_position_stores_signal_source(mock_broker, db):
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.close_position(
+        ticker="AAPL", shares=10.0, exit_price=110.0,
+        exit_reason="ai_exit", signal_id=None,
+        entry_price=100.0, entry_date="2026-04-01",
+        signal_source="fundamental",
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["signal_source"] == "fundamental"
+
+
+def test_open_position_defaults_source_to_congressional(mock_broker, db):
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("MSFT", 4.0, None, "test", 200.0)
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "MSFT")
+    assert pos["signal_source"] == "congressional"
+
+
+# --- Stop-loss DB write test ---
+
 def test_stop_loss_writes_closed_position_record(portfolio, mock_broker, db):
     mock_broker.get_positions.return_value = [{
         "ticker": "TSLA", "qty": 5.0,
