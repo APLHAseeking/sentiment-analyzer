@@ -38,3 +38,8 @@ def is_in_universe(ticker: str) -> bool:
     if not _UNIVERSE:
         raise RuntimeError("Universe not initialized. Call refresh_universe() first.")
     return ticker.strip().upper() in _UNIVERSE
+
+
+def get_universe() -> set[str]:
+    """Return a copy of the current universe. Empty set if not yet initialized."""
+    return set(_UNIVERSE)
