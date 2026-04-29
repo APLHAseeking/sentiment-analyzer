@@ -71,3 +71,10 @@ def log_weekly_report() -> None:
         report.avg_hold_days,
         report.best_trade_pnl, report.worst_trade_pnl,
     )
+    by_source = db.get_performance_by_source()
+    for source, pnls in sorted(by_source.items()):
+        wins = sum(1 for p in pnls if p > 0)
+        log.info(
+            "  [%s] %d trades | %d wins | $%.2f P&L",
+            source, len(pnls), wins, sum(pnls),
+        )

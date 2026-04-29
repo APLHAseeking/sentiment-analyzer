@@ -69,3 +69,16 @@ def test_performance_report_best_and_worst(db):
     report = compute_performance_report()
     assert abs(report.best_trade_pnl - 500.0) < 0.01
     assert abs(report.worst_trade_pnl - (-150.0)) < 0.01
+
+
+def test_log_weekly_report_includes_per_source_breakdown(db, caplog):
+    import logging
+    db.log_closed_position("A", 100.0, 120.0, 10.0, "2026-04-01", "2026-04-28",
+                           "ai_exit", None, signal_source="fundamental")
+    db.log_closed_position("B", 100.0, 90.0, 10.0, "2026-04-01", "2026-04-28",
+                           "ai_exit", None, signal_source="congressional")
+    with caplog.at_level(logging.INFO, logger="bot.analytics"):
+        from bot.analytics import log_weekly_report
+        log_weekly_report()
+    assert "fundamental" in caplog.text
+    assert "congressional" in caplog.text
