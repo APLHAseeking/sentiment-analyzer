@@ -2,7 +2,6 @@ import json
 from dataclasses import dataclass
 
 from anthropic import Anthropic
-from bot.config import ANTHROPIC_API_KEY
 
 # ── System prompt blocks ──────────────────────────────────────────────────────
 
@@ -86,7 +85,11 @@ _client: Anthropic | None = None
 def _get_client() -> Anthropic:
     global _client
     if _client is None:
-        _client = Anthropic(api_key=ANTHROPIC_API_KEY)
+        import os
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("Missing required env var: ANTHROPIC_API_KEY")
+        _client = Anthropic(api_key=api_key)
     return _client
 
 
