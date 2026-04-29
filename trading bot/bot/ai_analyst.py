@@ -45,7 +45,7 @@ The composite factor score (0-99) combines value, momentum, and quality percenti
 
 _BOTH_BONUS = """
 ## Combined Signal Bonus
-Both a congressional disclosure and the fundamental factor screen flag this ticker: +1 conviction bonus."""
+A congressional member recently purchased this ticker (disclosure details not shown here) AND the fundamental factor screen flags it: +1 conviction bonus. Apply this bonus regardless of whether you see congressional details in the prompt."""
 
 _RESEARCH_ADJUSTMENTS = """
 ## Fundamental Adjustment (if research provided)
@@ -78,6 +78,7 @@ Respond with ONLY valid JSON: {"action": <"hold"|"exit"|"reduce">, "rationale": 
 
 _VALID_ENTRY_VALUES = {"buy", "skip"}
 _VALID_ACTION_VALUES = {"hold", "exit", "reduce"}
+_VALID_SIGNAL_TYPES = {"congressional", "fundamental", "both"}
 
 _client: Anthropic | None = None
 
@@ -90,6 +91,8 @@ def _get_client() -> Anthropic:
 
 
 def _build_entry_system(signal_type: str, has_disclosure: bool = True) -> str:
+    if signal_type not in _VALID_SIGNAL_TYPES:
+        raise ValueError(f"signal_type {signal_type!r} not in {_VALID_SIGNAL_TYPES}")
     parts = [_ENTRY_SCHEMA]
     # Only include congressional lag/cluster rules when actual disclosure data is present
     if signal_type in ("congressional", "both") and has_disclosure:

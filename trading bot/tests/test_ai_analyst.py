@@ -1,9 +1,11 @@
 import json
+import pytest
 from unittest.mock import MagicMock
 from bot.ai_analyst import (
     EntryScore, ExitDecision,
     parse_entry_response, parse_exit_response,
     score_entry, review_exit,
+    _build_entry_system,
 )
 
 def _mock_claude(mocker, text: str):
@@ -284,3 +286,27 @@ def test_score_entry_both_no_disclosure_omits_congressional_fields(mocker):
     assert "Politician" not in prompt
     assert "factor score" in prompt.lower()
     assert isinstance(result, EntryScore)
+
+
+def test_build_entry_system_congressional_includes_lag_rules():
+    system = _build_entry_system("congressional", has_disclosure=True)
+    assert "Lag Decay" in system
+    assert "Fundamental Factor Score Rules" not in system
+
+
+def test_build_entry_system_fundamental_excludes_congressional_rules():
+    system = _build_entry_system("fundamental", has_disclosure=False)
+    assert "Lag Decay" not in system
+    assert "Fundamental Factor Score Rules" in system
+
+
+def test_build_entry_system_both_no_disclosure_excludes_lag_rules():
+    system = _build_entry_system("both", has_disclosure=False)
+    assert "Lag Decay" not in system
+    assert "Fundamental Factor Score Rules" in system
+    assert "conviction bonus" in system.lower()
+
+
+def test_build_entry_system_invalid_type_raises():
+    with pytest.raises(ValueError, match="signal_type"):
+        _build_entry_system("unknown")
