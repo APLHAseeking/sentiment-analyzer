@@ -1,9 +1,12 @@
 import json
 from dataclasses import dataclass
+
 from anthropic import Anthropic
 from bot.config import ANTHROPIC_API_KEY
 
-_ENTRY_SYSTEM = """You are a quantitative analyst evaluating congressional stock trade signals.
+# ── System prompt blocks ──────────────────────────────────────────────────────
+
+_ENTRY_SCHEMA = """You are a quantitative analyst evaluating a stock trade signal.
 Respond with ONLY valid JSON matching this exact schema:
 {"conviction": <int 1-10>, "position_pct": <float>, "rationale": <str>, "entry": <"buy"|"skip">, "risk_flags": [<str>]}
 
@@ -14,7 +17,10 @@ Respond with ONLY valid JSON matching this exact schema:
 - conviction 9-10: position_pct 6.0-8.0
 
 ## Entry Hurdle
-- Only set entry="buy" if expected return exceeds estimated_cost_pct by at least 2x
+- Only set entry="buy" if expected return exceeds estimated_cost_pct by at least 2x"""
+
+_CONGRESSIONAL_RULES = """
+## Congressional Signal Rules
 
 ## Lag Decay
 - lag_days 15-30: penalise conviction -2
@@ -27,8 +33,21 @@ Respond with ONLY valid JSON matching this exact schema:
 ## Transaction Size
 - Amount > $100,000: +1 conviction (large conviction trade)
 - Amount $50,001-$100,000: full conviction
-- Amount $15,001-$50,000: neutral (no bonus)
+- Amount $15,001-$50,000: neutral (no bonus)"""
 
+_FUNDAMENTAL_RULES = """
+## Fundamental Factor Score Rules
+The composite factor score (0-99) combines value, momentum, and quality percentile ranks within the S&P 500 + Russell 1000 universe.
+- score 80-99: strong factor signal, +2 conviction
+- score 60-79: moderate factor signal, +1 conviction
+- score 40-59: neutral
+- score <40: weak factor signal, -1 conviction"""
+
+_BOTH_BONUS = """
+## Combined Signal Bonus
+Both a congressional disclosure and the fundamental factor screen flag this ticker: +1 conviction bonus."""
+
+_RESEARCH_ADJUSTMENTS = """
 ## Fundamental Adjustment (if research provided)
 - Cyclical company at peak earnings (high ROE, high margins, late-cycle sector like Materials/Energy): mentally normalize earnings — do NOT take headline P/E at face value
 - Negative earnings (P/E = n/a): conviction -1 unless revenue growth >30% and sector is high-growth tech/biotech
@@ -68,6 +87,19 @@ def _get_client() -> Anthropic:
     if _client is None:
         _client = Anthropic(api_key=ANTHROPIC_API_KEY)
     return _client
+
+
+def _build_entry_system(signal_type: str, has_disclosure: bool = True) -> str:
+    parts = [_ENTRY_SCHEMA]
+    # Only include congressional lag/cluster rules when actual disclosure data is present
+    if signal_type in ("congressional", "both") and has_disclosure:
+        parts.append(_CONGRESSIONAL_RULES)
+    if signal_type in ("fundamental", "both"):
+        parts.append(_FUNDAMENTAL_RULES)
+    if signal_type == "both":
+        parts.append(_BOTH_BONUS)
+    parts.append(_RESEARCH_ADJUSTMENTS)
+    return "\n".join(parts)
 
 
 @dataclass(frozen=True)
@@ -116,30 +148,51 @@ def parse_exit_response(text: str) -> ExitDecision:
     return ExitDecision(action=action, rationale=data["rationale"])
 
 
-def score_entry(disclosure: dict, committees: list[str], sector: str,
-                lag_days: int, estimated_cost_pct: float,
-                research: "ResearchReport | None" = None,
-                cluster_count: int = 1) -> EntryScore:
+def score_entry(
+    disclosure: dict | None,
+    committees: list[str],
+    sector: str,
+    lag_days: int,
+    estimated_cost_pct: float,
+    research: "ResearchReport | None" = None,
+    cluster_count: int = 1,
+    signal_type: str = "congressional",
+    factor_score: int | None = None,
+    ticker: str | None = None,
+) -> EntryScore:
     from bot.researcher import format_research_for_prompt
-    prompt = (
-        f"Politician: {disclosure['politician']}\n"
-        f"Ticker: {disclosure['ticker']} | Sector: {sector}\n"
-        f"Transaction date: {disclosure['transaction_date']} | "
-        f"Disclosure date: {disclosure['disclosure_date']}\n"
-        f"Lag days: {lag_days}\n"
-        f"Amount range: {disclosure['amount_range']}\n"
-        f"Committees held: {', '.join(committees)}\n"
-        f"Cluster count (other members buying same stock last 30d): {cluster_count}\n"
-        f"Estimated round-trip cost: {estimated_cost_pct:.2f}% of position\n"
-    )
+    _ticker = (disclosure["ticker"] if disclosure else ticker) or "UNKNOWN"
+
+    lines = [f"Ticker: {_ticker} | Sector: {sector}"]
+
+    if signal_type in ("congressional", "both") and disclosure:
+        lines += [
+            f"Politician: {disclosure['politician']}",
+            f"Transaction date: {disclosure['transaction_date']} | "
+            f"Disclosure date: {disclosure['disclosure_date']}",
+            f"Lag days: {lag_days}",
+            f"Amount range: {disclosure['amount_range']}",
+            f"Committees held: {', '.join(committees)}",
+            f"Cluster count (other members buying same stock last 30d): {cluster_count}",
+        ]
+
+    if signal_type in ("fundamental", "both") and factor_score is not None:
+        lines.append(f"Composite factor score: {factor_score}/99")
+
+    lines.append(f"Estimated round-trip cost: {estimated_cost_pct:.2f}% of position")
+
     if research is not None:
-        prompt += "\n" + format_research_for_prompt(research) + "\n"
-    prompt += "Score this signal."
+        lines.append("\n" + format_research_for_prompt(research))
+
+    lines.append("Score this signal.")
+    prompt = "\n".join(lines)
+
+    system_text = _build_entry_system(signal_type, has_disclosure=disclosure is not None)
     client = _get_client()
     resp = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=512,
-        system=[{"type": "text", "text": _ENTRY_SYSTEM,
+        system=[{"type": "text", "text": system_text,
                  "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": prompt}],
     )

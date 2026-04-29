@@ -212,3 +212,75 @@ def test_parse_exit_malformed_json_raises():
     import pytest
     with pytest.raises(ValueError, match="invalid JSON"):
         parse_exit_response("not json")
+
+
+def _get_prompt(mocker) -> str:
+    """Retrieve the user prompt text from the last messages.create call."""
+    import bot.ai_analyst as m
+    return m._get_client().messages.create.call_args[1]["messages"][0]["content"]
+
+
+def test_score_entry_fundamental_omits_congressional_fields(mocker):
+    payload = json.dumps({"conviction": 7, "position_pct": 4.0,
+                          "rationale": "Good fundamentals", "entry": "buy", "risk_flags": []})
+    _mock_claude(mocker, payload)
+    result = score_entry(
+        disclosure=None, committees=[], sector="Technology",
+        lag_days=0, estimated_cost_pct=0.05,
+        signal_type="fundamental", factor_score=82, ticker="MSFT",
+    )
+    prompt = _get_prompt(mocker)
+    assert "Politician" not in prompt
+    assert "Committees" not in prompt
+    assert "factor score" in prompt.lower()
+    assert "82" in prompt
+    assert isinstance(result, EntryScore)
+
+
+def test_score_entry_both_includes_fundamental_and_congressional_fields(mocker):
+    payload = json.dumps({"conviction": 9, "position_pct": 6.0,
+                          "rationale": "Strong both", "entry": "buy", "risk_flags": []})
+    _mock_claude(mocker, payload)
+    disc = {"id": "b1", "politician": "Jane Doe", "ticker": "AAPL",
+            "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
+            "amount_range": "$50,001 - $100,000"}
+    result = score_entry(
+        disclosure=disc, committees=["House Energy"],
+        sector="Technology", lag_days=2, estimated_cost_pct=0.05,
+        signal_type="both", factor_score=78, cluster_count=2,
+    )
+    prompt = _get_prompt(mocker)
+    assert "Politician" in prompt
+    assert "factor score" in prompt.lower()
+    assert "78" in prompt
+    assert isinstance(result, EntryScore)
+
+
+def test_score_entry_congressional_default_unchanged(mocker):
+    payload = json.dumps({"conviction": 8, "position_pct": 5.0,
+                          "rationale": "Good", "entry": "buy", "risk_flags": []})
+    _mock_claude(mocker, payload)
+    disc = {"id": "c1", "politician": "Jane Doe", "ticker": "XOM",
+            "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
+            "amount_range": "$50,001 - $100,000"}
+    result = score_entry(disc, committees=["House Energy"],
+                         sector="Energy", lag_days=2, estimated_cost_pct=0.05)
+    prompt = _get_prompt(mocker)
+    assert "Politician" in prompt
+    assert "factor score" not in prompt.lower()
+    assert isinstance(result, EntryScore)
+
+
+def test_score_entry_both_no_disclosure_omits_congressional_fields(mocker):
+    payload = json.dumps({"conviction": 8, "position_pct": 5.0,
+                          "rationale": "Both signal", "entry": "buy", "risk_flags": []})
+    _mock_claude(mocker, payload)
+    result = score_entry(
+        disclosure=None, committees=[], sector="Technology",
+        lag_days=0, estimated_cost_pct=0.05,
+        signal_type="both", factor_score=75, ticker="AAPL",
+    )
+    prompt = _get_prompt(mocker)
+    assert "Politician" not in prompt
+    assert "factor score" in prompt.lower()
+    assert isinstance(result, EntryScore)
