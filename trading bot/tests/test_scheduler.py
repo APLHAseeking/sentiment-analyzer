@@ -232,3 +232,79 @@ def test_morning_pipeline_skips_illiquid_trade(mocker, db):
     portfolio.is_liquid_enough.return_value = False  # explicitly say not liquid
     run_morning_pipeline(portfolio)
     portfolio.open_position.assert_not_called()
+
+
+def test_phase2_opens_fundamental_position(mocker, db):
+    from screener.factor_scorer import FactorCandidate
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[])
+    mocker.patch("bot.scheduler.get_universe", return_value={"MSFT"})
+    mocker.patch("bot.scheduler.run_factor_screen", return_value=[
+        FactorCandidate(ticker="MSFT", composite_score=85, value_score=30,
+                        momentum_score=28, quality_score=27, research=None),
+    ])
+    mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
+        conviction=8, position_pct=5.0, rationale="Good", entry="buy", risk_flags=()
+    ))
+    mocker.patch("bot.scheduler.yf.Ticker").return_value.info = {"regularMarketPrice": 300.0}
+    portfolio = _make_portfolio(mocker)
+    run_morning_pipeline(portfolio)
+    portfolio.open_position.assert_called_once()
+    call_kwargs = portfolio.open_position.call_args[1]
+    assert call_kwargs["signal_source"] == "fundamental"
+
+
+def test_phase2_skips_already_opened_ticker(mocker, db):
+    from screener.factor_scorer import FactorCandidate
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[])
+    mocker.patch("bot.scheduler.get_open_positions", return_value=[
+        {"ticker": "MSFT", "entry_price": 300.0, "shares": 10.0,
+         "entry_date": "2026-04-01", "signal_id": 1, "signal_source": "congressional"},
+    ])
+    mocker.patch("bot.scheduler.get_universe", return_value={"MSFT"})
+    mocker.patch("bot.scheduler.run_factor_screen", return_value=[
+        FactorCandidate(ticker="MSFT", composite_score=85, value_score=30,
+                        momentum_score=28, quality_score=27, research=None),
+    ])
+    mock_score = mocker.patch("bot.scheduler.score_entry")
+    portfolio = _make_portfolio(mocker)
+    run_morning_pipeline(portfolio)
+    mock_score.assert_not_called()
+    portfolio.open_position.assert_not_called()
+
+
+def test_phase2_uses_both_signal_type_when_congress_skipped(mocker, db):
+    from screener.factor_scorer import FactorCandidate
+    disc = {
+        "id": "both-001", "politician": "Jane Doe", "ticker": "AAPL",
+        "transaction_type": "purchase",
+        "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
+        "amount_range": "$50,001 - $100,000",
+    }
+    mocker.patch("bot.scheduler._is_trading_day", return_value=True)
+    mocker.patch("bot.scheduler.run_scraper", return_value=[disc])
+    mocker.patch("bot.scheduler.filter_disclosures", return_value=[disc])
+    mocker.patch("bot.scheduler.get_committees_for_politician", return_value=["House Energy"])
+    mocker.patch("bot.scheduler.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("bot.scheduler.compute_lag_days", return_value=2)
+    mocker.patch("bot.scheduler.get_cluster_count", return_value=1)
+    mocker.patch("bot.scheduler.gather_research", return_value=None)
+    mocker.patch("bot.scheduler.get_universe", return_value={"AAPL"})
+    mocker.patch("bot.scheduler.run_factor_screen", return_value=[
+        FactorCandidate(ticker="AAPL", composite_score=82, value_score=29,
+                        momentum_score=27, quality_score=26, research=None),
+    ])
+    mock_score = mocker.patch("bot.scheduler.score_entry", return_value=EntryScore(
+        conviction=3, position_pct=0.0, rationale="Skip", entry="skip", risk_flags=()
+    ))
+    mocker.patch("bot.scheduler.yf.Ticker").return_value.info = {"regularMarketPrice": 170.0}
+    portfolio = _make_portfolio(mocker)
+    run_morning_pipeline(portfolio)
+    # Phase 2 call should use signal_type="both"
+    assert mock_score.call_count >= 2
+    phase2_call = mock_score.call_args_list[-1]
+    assert phase2_call[1].get("signal_type") == "both"
