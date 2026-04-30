@@ -28,6 +28,7 @@ from features.feature_pipeline import (
     FeatureConfig,
     build_feature_matrix,
     build_feature_matrix_with_scaler,
+    compute_features,
 )
 
 log = logging.getLogger(__name__)
@@ -73,6 +74,11 @@ class HMMRegimeEngine:
         self._cfg = cfg
         self._result: FitResult | None = None
         self._recent_labels: list[int] = []   # sliding window for stability filter
+
+        # Incremental inference state (populated by initialize_incremental)
+        self._last_log_alpha: np.ndarray | None = None
+        self._feature_cfg_cache: FeatureConfig | None = None
+        self._data_tail: pd.DataFrame | None = None
 
     # ------------------------------------------------------------------
     # Fitting
@@ -274,6 +280,152 @@ class HMMRegimeEngine:
         if len(self._recent_labels) > window:
             self._recent_labels = self._recent_labels[-window:]
         return state
+
+    def initialize_incremental(
+        self,
+        data: pd.DataFrame,
+        feature_cfg: FeatureConfig | None = None,
+    ) -> RegimeState:
+        """Run full forward pass on historical data, caching the final alpha vector.
+
+        Must be called once after fit() before using update_single(). Subsequent
+        calls to update_single() are O(K²) per bar and fully causal.
+
+        Parameters
+        ----------
+        data : historical market data (columns: close, volume, vix)
+        feature_cfg : feature configuration; uses FeatureConfig defaults if None
+
+        Returns the current regime state at the end of the data.
+        """
+        if self._result is None:
+            raise RuntimeError("Call fit() before initialize_incremental()")
+        if feature_cfg is None:
+            feature_cfg = FeatureConfig()
+        self._feature_cfg_cache = feature_cfg
+
+        X, _ = build_feature_matrix_with_scaler(data, self._result.scaler, feature_cfg)
+        if len(X) == 0:
+            raise RuntimeError("No features computed — check data length and feature config")
+
+        log_emis = self._result.model._log_emission(X)
+        log_alpha = self._result.model._forward(log_emis)
+        self._last_log_alpha = log_alpha[-1].copy()
+
+        # Cache a rolling tail large enough for rolling-window features
+        tail_bars = feature_cfg.trend_window * 2 + feature_cfg.vol_window
+        self._data_tail = data.iloc[-tail_bars:].copy()
+
+        return self.current_regime(data, feature_cfg)
+
+    def update_single(
+        self,
+        new_bar: pd.DataFrame,
+        date_str: str | None = None,
+    ) -> RegimeState:
+        """Classify one new bar using the cached forward state.
+
+        Causal (filter-only): uses only the forward algorithm, no backward pass.
+        O(K²) per bar instead of O(T·K²) for full re-classification.
+
+        Requires initialize_incremental() to have been called first.
+
+        Parameters
+        ----------
+        new_bar : single-row DataFrame with close, volume, vix columns
+        date_str : date label for the returned RegimeState (uses today if None)
+        """
+        if self._result is None:
+            raise RuntimeError("Call fit() before update_single()")
+        if self._last_log_alpha is None or self._data_tail is None:
+            raise RuntimeError(
+                "Call initialize_incremental() before update_single()"
+            )
+
+        feature_cfg = self._feature_cfg_cache or FeatureConfig()
+
+        # Extend the cached tail with the new bar for feature computation
+        extended = pd.concat([self._data_tail, new_bar]).sort_index()
+        extended = extended[~extended.index.duplicated(keep="last")]
+
+        feat_df = compute_features(extended, feature_cfg)
+        if feat_df.empty:
+            raise RuntimeError(
+                "Could not compute features for the new bar — insufficient tail data"
+            )
+
+        # Select the same feature columns as training
+        cols = ["ret_1d", "vol_20d", "trend_z", "vol_z"]
+        if feature_cfg.use_vix and "vix_level" in feat_df.columns:
+            if feat_df["vix_level"].notna().all():
+                cols += ["vix_level", "vix_change"]
+        if feature_cfg.use_momentum and "momentum" in feat_df.columns:
+            cols.append("momentum")
+        if feature_cfg.use_drawdown and "drawdown" in feat_df.columns:
+            cols.append("drawdown")
+
+        available = [c for c in cols if c in feat_df.columns]
+        last_row = feat_df[available].dropna().iloc[-1:].values  # (1, D)
+
+        if last_row.shape[0] == 0:
+            raise RuntimeError("New bar produced all-NaN features — tail too short")
+
+        # Align to scaler's expected feature count
+        n_expected = self._result.scaler.n_features_in_
+        if last_row.shape[1] < n_expected:
+            pad = np.zeros((1, n_expected - last_row.shape[1]))
+            last_row = np.hstack([last_row, pad])
+        else:
+            last_row = last_row[:, :n_expected]
+        obs_scaled = self._result.scaler.transform(last_row)[0]  # (D,)
+
+        # One causal forward step
+        new_log_alpha = self._result.model.forward_step(
+            self._last_log_alpha, obs_scaled
+        )
+        self._last_log_alpha = new_log_alpha
+
+        # Compute filtered state probabilities
+        from scipy.special import logsumexp as _logsumexp
+        log_z = _logsumexp(new_log_alpha)
+        posteriors_raw = np.exp(new_log_alpha - log_z)  # (K,)
+
+        # Map to ranked regime
+        n = self._result.n_regimes
+        state_to_rank = self._result.state_to_rank
+        label_options = self._result.label_options
+        ranked_posteriors = [0.0] * n
+        for s in range(n):
+            r = state_to_rank.get(s, s)
+            if r < n:
+                ranked_posteriors[r] += float(posteriors_raw[s])
+
+        rank = int(np.argmax(ranked_posteriors))
+        label = label_options[rank] if rank < len(label_options) else str(rank)
+        confidence = ranked_posteriors[rank]
+
+        # Update recent labels and data tail
+        self._recent_labels.append(rank)
+        window = self._cfg.min_stable_bars * 3
+        if len(self._recent_labels) > window:
+            self._recent_labels = self._recent_labels[-window:]
+        tail_bars = feature_cfg.trend_window * 2 + feature_cfg.vol_window
+        self._data_tail = extended.iloc[-tail_bars:].copy()
+
+        is_stable, transition_rate, instability_score = self._compute_stability_metrics(rank)
+
+        from datetime import date as _date
+        return RegimeState(
+            date=date_str or _date.today().isoformat(),
+            regime_index=rank,
+            regime_label=label,
+            confidence=confidence,
+            is_stable=is_stable,
+            n_regimes=n,
+            raw_posteriors=ranked_posteriors,
+            transition_rate=transition_rate,
+            instability_score=instability_score,
+        )
 
     def _compute_stability_metrics(self, current_rank: int) -> tuple[bool, float, float]:
         """Compute stability state for the current regime rank.

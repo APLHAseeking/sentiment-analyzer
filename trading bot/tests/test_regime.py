@@ -224,3 +224,83 @@ def test_check_stability_backward_compat():
     assert result is True
     engine._recent_labels = [0, 1, 0]
     assert engine._check_stability(0) is False
+
+
+def test_forward_step_output_shape(fitted_engine):
+    """forward_step(log_alpha, obs) returns (K,) array."""
+    engine, _, _ = fitted_engine
+    model = engine._result.model
+    K = model.n_components
+    D = model.means_.shape[1]
+    log_alpha_prev = np.zeros(K)
+    obs = np.zeros(D)
+    result = model.forward_step(log_alpha_prev, obs)
+    assert result.shape == (K,)
+
+
+def test_forward_step_gives_valid_distribution(fitted_engine):
+    """Normalised forward step sums to 1.0."""
+    from scipy.special import logsumexp
+    engine, _, _ = fitted_engine
+    model = engine._result.model
+    K = model.n_components
+    D = model.means_.shape[1]
+    log_alpha_prev = np.log(np.ones(K) / K)
+    obs = model.means_[0]
+    new_alpha = model.forward_step(log_alpha_prev, obs)
+    probs = np.exp(new_alpha - logsumexp(new_alpha))
+    assert abs(probs.sum() - 1.0) < 1e-6
+
+
+def test_initialize_incremental_returns_regime_state(fitted_engine):
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    state = engine.initialize_incremental(data.iloc[:500], feature_cfg)
+    assert isinstance(state, RegimeState)
+    assert engine._last_log_alpha is not None
+    assert engine._data_tail is not None
+    assert engine._last_log_alpha.shape == (engine.n_regimes,)
+
+
+def test_update_single_returns_regime_state(fitted_engine):
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    engine.initialize_incremental(data.iloc[:500], feature_cfg)
+    new_bar = data.iloc[500:501]
+    state = engine.update_single(new_bar, date_str="2021-06-01")
+    assert isinstance(state, RegimeState)
+    assert state.date == "2021-06-01"
+    assert 0.0 <= state.confidence <= 1.0 + 1e-9
+    assert 0 <= state.regime_index < engine.n_regimes
+
+
+def test_update_single_is_deterministic(fitted_engine):
+    """Same bar processed twice from the same initial state gives the same result."""
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+
+    engine.initialize_incremental(data.iloc[:500], feature_cfg)
+    state_a = engine.update_single(data.iloc[500:501])
+
+    engine.initialize_incremental(data.iloc[:500], feature_cfg)
+    state_b = engine.update_single(data.iloc[500:501])
+
+    assert state_a.regime_index == state_b.regime_index
+    assert state_a.confidence == pytest.approx(state_b.confidence, abs=1e-9)
+
+
+def test_update_single_requires_initialization(fitted_engine):
+    engine, data, _ = fitted_engine
+    with pytest.raises(RuntimeError, match="initialize_incremental"):
+        engine.update_single(data.iloc[0:1])
+
+
+def test_update_single_advances_recent_labels(fitted_engine):
+    """Three sequential update_single calls add three entries to _recent_labels."""
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    engine.initialize_incremental(data.iloc[:500], feature_cfg)
+    count_before = len(engine._recent_labels)
+    for i in range(3):
+        engine.update_single(data.iloc[500 + i : 501 + i])
+    assert len(engine._recent_labels) == count_before + 3

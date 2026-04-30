@@ -187,3 +187,19 @@ class GaussianHMM:
         for t in range(T - 2, -1, -1):
             states[t] = psi[t + 1, states[t + 1]]
         return states
+
+    def forward_step(self, log_alpha_prev: np.ndarray, obs: np.ndarray) -> np.ndarray:
+        """One step of the forward (filter) algorithm for causal inference.
+
+        Parameters
+        ----------
+        log_alpha_prev : (K,) log-scaled filter from the previous time step
+        obs : (D,) scaled observation vector for the new bar
+
+        Returns
+        -------
+        log_alpha_new : (K,) updated log-filter (unnormalised)
+        """
+        log_emis_new = self._log_emission(obs.reshape(1, -1))[0]  # (K,)
+        log_trans = np.log(self.transmat_ + 1e-300)
+        return logsumexp(log_alpha_prev[:, None] + log_trans, axis=0) + log_emis_new
