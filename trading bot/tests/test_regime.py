@@ -164,3 +164,63 @@ def test_fit_raises_with_insufficient_data():
     feature_cfg = FeatureConfig(vol_window=20, trend_window=200, min_history_bars=500)
     with pytest.raises(ValueError, match="Insufficient"):
         engine.fit(data, feature_cfg)
+
+
+def test_regime_state_has_instability_fields(fitted_engine):
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    states = engine.classify(data, feature_cfg)
+    for s in states:
+        assert hasattr(s, "transition_rate")
+        assert hasattr(s, "instability_score")
+        assert 0.0 <= s.transition_rate <= 1.0 + 1e-9
+        assert 0.0 <= s.instability_score <= 1.0 + 1e-9
+
+
+def test_compute_stability_metrics_empty_history():
+    cfg = _MockRegimeCfg(min_stable_bars=3)
+    engine = HMMRegimeEngine(cfg)
+    is_stable, tr, score = engine._compute_stability_metrics(0)
+    assert not is_stable
+    assert tr == pytest.approx(1.0)
+    assert score == pytest.approx(1.0)
+
+
+def test_compute_stability_metrics_fully_stable():
+    cfg = _MockRegimeCfg(min_stable_bars=3)
+    engine = HMMRegimeEngine(cfg)
+    engine._recent_labels = [0, 0, 0]
+    is_stable, tr, score = engine._compute_stability_metrics(0)
+    assert is_stable
+    assert tr == pytest.approx(0.0)
+    assert score == pytest.approx(0.0)
+
+
+def test_compute_stability_metrics_flickering():
+    cfg = _MockRegimeCfg(min_stable_bars=4)
+    engine = HMMRegimeEngine(cfg)
+    engine._recent_labels = [0, 1, 0, 1]
+    is_stable, tr, score = engine._compute_stability_metrics(1)
+    assert not is_stable
+    assert tr == pytest.approx(1.0)
+    assert score == pytest.approx(1.0)
+
+
+def test_compute_stability_metrics_partial_flickering():
+    cfg = _MockRegimeCfg(min_stable_bars=4)
+    engine = HMMRegimeEngine(cfg)
+    engine._recent_labels = [0, 0, 1, 0]
+    is_stable, tr, score = engine._compute_stability_metrics(0)
+    assert not is_stable
+    assert tr == pytest.approx(2 / 3, abs=1e-6)
+
+
+def test_check_stability_backward_compat():
+    cfg = _MockRegimeCfg(min_stable_bars=3)
+    engine = HMMRegimeEngine(cfg)
+    engine._recent_labels = [0, 0, 0]
+    result = engine._check_stability(0)
+    assert isinstance(result, bool)
+    assert result is True
+    engine._recent_labels = [0, 1, 0]
+    assert engine._check_stability(0) is False

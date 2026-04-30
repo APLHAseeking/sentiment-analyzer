@@ -57,6 +57,8 @@ class RegimeState:
     is_stable: bool
     n_regimes: int
     raw_posteriors: list[float]       # full posterior distribution over regimes
+    transition_rate: float = 0.0    # fraction of last N bar-pairs where regime changed
+    instability_score: float = 0.0  # same value, alias for callers reading it as a score
 
 
 class HMMRegimeEngine:
@@ -244,7 +246,7 @@ class HMMRegimeEngine:
                     ranked_posteriors[r] += float(posteriors[i, s])
 
             confidence = ranked_posteriors[rank]
-            is_stable = self._check_stability(rank)
+            is_stable, transition_rate, instability_score = self._compute_stability_metrics(rank)
             states.append(RegimeState(
                 date=str(ts.date()),
                 regime_index=rank,
@@ -253,6 +255,8 @@ class HMMRegimeEngine:
                 is_stable=is_stable,
                 n_regimes=n,
                 raw_posteriors=ranked_posteriors,
+                transition_rate=transition_rate,
+                instability_score=instability_score,
             ))
         return states
 
@@ -271,12 +275,36 @@ class HMMRegimeEngine:
             self._recent_labels = self._recent_labels[-window:]
         return state
 
-    def _check_stability(self, current_rank: int) -> bool:
-        """Return True if the regime has been stable for min_stable_bars."""
+    def _compute_stability_metrics(self, current_rank: int) -> tuple[bool, float, float]:
+        """Compute stability state for the current regime rank.
+
+        Returns
+        -------
+        is_stable : True if the regime has been current_rank for the last min_stable_bars
+        transition_rate : fraction of consecutive bar-pairs in the window where regime changed
+        instability_score : same as transition_rate (0.0 = stable, 1.0 = every bar switches)
+        """
         window = self._cfg.min_stable_bars
         if len(self._recent_labels) < window:
-            return False
-        return all(r == current_rank for r in self._recent_labels[-window:])
+            return False, 1.0, 1.0
+
+        recent = self._recent_labels[-window:]
+        is_stable = all(r == current_rank for r in recent)
+
+        if len(recent) < 2:
+            transition_rate = 0.0
+        else:
+            n_transitions = sum(
+                1 for i in range(1, len(recent)) if recent[i] != recent[i - 1]
+            )
+            transition_rate = n_transitions / (len(recent) - 1)
+
+        return is_stable, transition_rate, transition_rate
+
+    def _check_stability(self, current_rank: int) -> bool:
+        """Return True if the regime has been stable for min_stable_bars."""
+        is_stable, _, _ = self._compute_stability_metrics(current_rank)
+        return is_stable
 
     # ------------------------------------------------------------------
     # Persistence
