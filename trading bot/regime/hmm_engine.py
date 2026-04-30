@@ -427,6 +427,32 @@ class HMMRegimeEngine:
             instability_score=instability_score,
         )
 
+    def rolling_refit(
+        self,
+        data: pd.DataFrame,
+        train_window_bars: int = 1000,
+        feature_cfg: FeatureConfig | None = None,
+    ) -> FitResult:
+        """Refit the HMM on the most recent train_window_bars of data.
+
+        Use for scheduled model refreshes (e.g., monthly). After refitting,
+        call initialize_incremental() again before the next update_single().
+
+        Parameters
+        ----------
+        data : full market history; the tail of length train_window_bars is used
+        train_window_bars : number of most-recent bars to use as the training window
+        feature_cfg : feature configuration; uses FeatureConfig defaults if None
+        """
+        train_data = (
+            data.iloc[-train_window_bars:] if len(data) > train_window_bars else data
+        )
+        result = self.fit(train_data, feature_cfg)
+        # Invalidate incremental state — model has changed, cached alpha is stale
+        self._last_log_alpha = None
+        self._data_tail = None
+        return result
+
     def _compute_stability_metrics(self, current_rank: int) -> tuple[bool, float, float]:
         """Compute stability state for the current regime rank.
 

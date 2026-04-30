@@ -304,3 +304,38 @@ def test_update_single_advances_recent_labels(fitted_engine):
     for i in range(3):
         engine.update_single(data.iloc[500 + i : 501 + i])
     assert len(engine._recent_labels) == count_before + 3
+
+
+def test_rolling_refit_refits_successfully(fitted_engine):
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    result = engine.rolling_refit(data, train_window_bars=250, feature_cfg=feature_cfg)
+    assert engine.is_fitted
+    assert result.n_regimes == 3
+
+
+def test_rolling_refit_invalidates_incremental_cache(fitted_engine):
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    engine.initialize_incremental(data.iloc[:500], feature_cfg)
+    assert engine._last_log_alpha is not None
+
+    engine.rolling_refit(data.iloc[:400], train_window_bars=200, feature_cfg=feature_cfg)
+    assert engine._last_log_alpha is None
+    assert engine._data_tail is None
+
+
+def test_rolling_refit_uses_tail_when_window_smaller_than_data(fitted_engine):
+    from features.feature_pipeline import FeatureConfig
+    engine, data, _ = fitted_engine
+    feature_cfg = FeatureConfig(vol_window=10, trend_window=30, min_history_bars=50)
+    result = engine.rolling_refit(data, train_window_bars=200, feature_cfg=feature_cfg)
+    assert engine.is_fitted
+    assert result.n_regimes == 3
+
+
+def test_rolling_refit_uses_all_data_when_window_larger(fitted_engine):
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    result = engine.rolling_refit(data.iloc[:300], train_window_bars=10_000, feature_cfg=feature_cfg)
+    assert engine.is_fitted
