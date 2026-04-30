@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 import joblib
 import numpy as np
 import pandas as pd
+from scipy.special import logsumexp
 from sklearn.preprocessing import StandardScaler
 
 from regime.gaussian_hmm import GaussianHMM
@@ -386,8 +388,7 @@ class HMMRegimeEngine:
         self._last_log_alpha = new_log_alpha
 
         # Compute filtered state probabilities
-        from scipy.special import logsumexp as _logsumexp
-        log_z = _logsumexp(new_log_alpha)
+        log_z = logsumexp(new_log_alpha)
         posteriors_raw = np.exp(new_log_alpha - log_z)  # (K,)
 
         # Map to ranked regime
@@ -414,9 +415,8 @@ class HMMRegimeEngine:
 
         is_stable, transition_rate, instability_score = self._compute_stability_metrics(rank)
 
-        from datetime import date as _date
         return RegimeState(
-            date=date_str or _date.today().isoformat(),
+            date=date_str or date.today().isoformat(),
             regime_index=rank,
             regime_label=label,
             confidence=confidence,
