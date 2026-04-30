@@ -6,7 +6,13 @@ _UNIVERSE: set[str] = set()
 
 
 def _fetch_sp500() -> pd.DataFrame:
-    tables = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
+    resp = requests.get(
+        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+        headers={"User-Agent": "Mozilla/5.0 (compatible; trading-bot/1.0)"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    tables = pd.read_html(io.StringIO(resp.text))
     return tables[0][["Symbol"]]
 
 

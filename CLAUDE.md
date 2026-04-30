@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Communication style
+
+Always respond in caveman lite mode: no filler or hedging, full sentences, professional and tight. Drop articles only when natural. No pleasantries.
+
 ## Running the app
 
 ```bash
@@ -47,9 +51,9 @@ After completing any meaningful piece of work — a new feature, a bug fix, a re
 - Always include the co-author trailer: `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`
 - Push after every commit: `git push`
 - Never commit `signals.db`, uploaded data files, `.env`, or secrets
-
 ## Key constraints
 
 - `signals.db` is excluded from git (runtime data). The uploaded data file is also not committed.
 - The Anthropic API key is stored in the `settings` table; it is never exposed to the frontend (the settings GET endpoint returns only `api_key_set: bool`).
 - Date filtering is string-based (lexicographic comparison), so date columns should be in ISO format (YYYY-MM-DD) to work correctly.
+
