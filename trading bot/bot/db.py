@@ -98,6 +98,19 @@ CREATE TABLE IF NOT EXISTS backtest_results (
     metrics TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS regime_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date TEXT NOT NULL,
+    from_label TEXT NOT NULL,
+    to_label TEXT NOT NULL,
+    from_index INTEGER NOT NULL,
+    to_index INTEGER NOT NULL,
+    confidence REAL NOT NULL,
+    n_regimes INTEGER NOT NULL,
+    logged_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_regime_transitions_date ON regime_transitions(date);
 """
 
 def _db_path() -> str:
@@ -281,6 +294,36 @@ def get_latest_regime() -> sqlite3.Row | None:
         return conn.execute(
             "SELECT * FROM regime_log ORDER BY date DESC LIMIT 1"
         ).fetchone()
+
+def log_regime_transition(
+    date: str,
+    from_label: str,
+    to_label: str,
+    from_index: int,
+    to_index: int,
+    confidence: float,
+    n_regimes: int,
+) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO regime_transitions
+               (date, from_label, to_label, from_index, to_index,
+                confidence, n_regimes, logged_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (date, from_label, to_label, from_index, to_index,
+             confidence, n_regimes, datetime.now(UTC).isoformat()),
+        )
+
+
+def get_regime_transitions(days: int = 90) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM regime_transitions
+               WHERE date >= date('now', ?)
+               ORDER BY date ASC""",
+            (f"-{days} days",),
+        ).fetchall()
+
 
 def log_risk_event(event_type: str, description: str, data: dict) -> None:
     with get_conn() as conn:

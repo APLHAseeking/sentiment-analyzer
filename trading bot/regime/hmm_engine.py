@@ -76,6 +76,8 @@ class HMMRegimeEngine:
         self._cfg = cfg
         self._result: FitResult | None = None
         self._recent_labels: list[int] = []   # sliding window for stability filter
+        self._prev_regime_index: int | None = None
+        self._prev_regime_label: str = ""
 
         # Incremental inference state (populated by initialize_incremental)
         self._last_log_alpha: np.ndarray | None = None
@@ -276,8 +278,16 @@ class HMMRegimeEngine:
         if not states:
             raise RuntimeError("No regime states computed — insufficient data")
         state = states[-1]
+
+        # Detect and log regime transition
+        if (self._prev_regime_index is not None
+                and self._prev_regime_index != state.regime_index):
+            self._log_transition(state)
+
+        self._prev_regime_index = state.regime_index
+        self._prev_regime_label = state.regime_label
+
         self._recent_labels.append(state.regime_index)
-        # Keep a sliding window of min_stable_bars * 3
         window = self._cfg.min_stable_bars * 3
         if len(self._recent_labels) > window:
             self._recent_labels = self._recent_labels[-window:]
@@ -415,7 +425,7 @@ class HMMRegimeEngine:
 
         is_stable, transition_rate, instability_score = self._compute_stability_metrics(rank)
 
-        return RegimeState(
+        result = RegimeState(
             date=date_str or date.today().isoformat(),
             regime_index=rank,
             regime_label=label,
@@ -426,6 +436,11 @@ class HMMRegimeEngine:
             transition_rate=transition_rate,
             instability_score=instability_score,
         )
+        if self._prev_regime_index is not None and self._prev_regime_index != rank:
+            self._log_transition(result)
+        self._prev_regime_index = rank
+        self._prev_regime_label = label
+        return result
 
     def rolling_refit(
         self,
@@ -483,6 +498,26 @@ class HMMRegimeEngine:
         """Return True if the regime has been stable for min_stable_bars."""
         is_stable, _, _ = self._compute_stability_metrics(current_rank)
         return is_stable
+
+    def _log_transition(self, new_state: RegimeState) -> None:
+        """Log a regime change to the database. Silently skips on any error."""
+        try:
+            import bot.db as _db  # lazy import — avoids hard cross-package dep at module load
+            _db.log_regime_transition(
+                date=new_state.date,
+                from_label=self._prev_regime_label,
+                to_label=new_state.regime_label,
+                from_index=self._prev_regime_index,
+                to_index=new_state.regime_index,
+                confidence=new_state.confidence,
+                n_regimes=new_state.n_regimes,
+            )
+            log.info(
+                "Regime transition: %s → %s (conf=%.2f)",
+                self._prev_regime_label, new_state.regime_label, new_state.confidence,
+            )
+        except Exception as exc:
+            log.debug("Could not log regime transition: %s", exc)
 
     # ------------------------------------------------------------------
     # Persistence

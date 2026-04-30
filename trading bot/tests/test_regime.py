@@ -339,3 +339,25 @@ def test_rolling_refit_uses_all_data_when_window_larger(fitted_engine):
     engine, data, feature_cfg = fitted_engine
     result = engine.rolling_refit(data.iloc[:300], train_window_bars=10_000, feature_cfg=feature_cfg)
     assert engine.is_fitted
+
+
+def test_current_regime_logs_transition(db, fitted_engine):
+    """current_regime() writes to regime_transitions when label changes."""
+    import importlib
+    import bot.db
+    importlib.reload(bot.db)
+    bot.db.init_db()
+
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+
+    # Force a known prior regime that differs from the real result
+    engine._prev_regime_index = 999
+    engine._prev_regime_label = "fake_prior"
+
+    _ = engine.current_regime(data.iloc[:500], feature_cfg)
+
+    rows = bot.db.get_regime_transitions(days=9999)
+    assert len(rows) >= 1
+    assert rows[-1]["from_label"] == "fake_prior"
+    assert rows[-1]["to_label"] in ["bear", "neutral", "bull"]

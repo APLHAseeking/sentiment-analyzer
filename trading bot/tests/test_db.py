@@ -167,3 +167,36 @@ def test_get_performance_by_source_groups_by_source(db):
     assert "congressional" in result
     assert pytest.approx(result["fundamental"][0]) == 100.0
     assert pytest.approx(result["congressional"][0]) == -100.0
+
+
+def test_log_regime_transition(db):
+    db.log_regime_transition(
+        date="2026-01-15",
+        from_label="bear",
+        to_label="bull",
+        from_index=0,
+        to_index=2,
+        confidence=0.75,
+        n_regimes=3,
+    )
+    rows = db.get_regime_transitions(days=365)
+    assert len(rows) == 1
+    assert rows[0]["from_label"] == "bear"
+    assert rows[0]["to_label"] == "bull"
+    assert float(rows[0]["confidence"]) == pytest.approx(0.75)
+    assert int(rows[0]["n_regimes"]) == 3
+
+
+def test_get_regime_transitions_empty(db):
+    rows = db.get_regime_transitions(days=90)
+    assert rows == []
+
+
+def test_get_regime_transitions_filters_by_days(db):
+    db.log_regime_transition("2020-01-01", "bear", "bull", 0, 2, 0.8, 3)
+    db.log_regime_transition("2026-01-01", "bull", "neutral", 2, 1, 0.7, 3)
+    all_rows = db.get_regime_transitions(days=9999)
+    recent_rows = db.get_regime_transitions(days=120)
+    assert len(all_rows) == 2
+    assert len(recent_rows) == 1
+    assert recent_rows[0]["from_label"] == "bull"
