@@ -56,14 +56,16 @@ def test_credentials_loads_from_env(monkeypatch):
     assert creds.anthropic_api_key == "test-key"
 
 
-def test_validate_rejects_invalid_max_invested_pct():
-    risk = RiskConfig(max_invested_pct=0.0)
+@pytest.mark.parametrize("pct", [1.0, 50.0, 80.0, 100.0])
+def test_validate_accepts_valid_max_invested_pct(pct):
+    risk = RiskConfig(max_invested_pct=pct)
+    s = Settings(risk=risk)
+    s.validate()  # should not raise
+
+
+@pytest.mark.parametrize("pct", [0.0, -1.0, 101.0, 200.0])
+def test_validate_rejects_invalid_max_invested_pct_boundaries(pct):
+    risk = RiskConfig(max_invested_pct=pct)
     s = Settings(risk=risk)
     with pytest.raises(ValueError, match="max_invested_pct"):
         s.validate()
-
-
-def test_validate_accepts_valid_max_invested_pct():
-    risk = RiskConfig(max_invested_pct=80.0)
-    s = Settings(risk=risk)
-    s.validate()  # should not raise
