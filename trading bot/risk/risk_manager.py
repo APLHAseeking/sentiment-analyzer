@@ -261,6 +261,7 @@ class RiskManager:
             "day_start_nav": self._day_start_nav,
             "week_start_nav": self._week_start_nav,
             "lock_file_exists": os.path.exists(self._risk.lock_file_path),
+            "max_invested_pct": self._risk.max_invested_pct,
         }
 
     @staticmethod

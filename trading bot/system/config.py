@@ -136,7 +136,7 @@ class RiskConfig:
     max_positions_per_day: int = 3
     max_position_pct: float = 8.0         # % of NAV per position
     max_sector_pct: float = 30.0          # sector concentration cap
-    max_adv_pct: float = 10.0             # max % of avg daily dollar volume
+    max_adv_pct: float = 5.0              # max % of avg daily dollar volume
 
     # Stop-loss / take-profit
     trailing_stop_pct: float = 15.0       # trailing from peak
@@ -144,12 +144,13 @@ class RiskConfig:
     hard_exit_pct: float = 40.0           # full exit at +40%
 
     # Portfolio-level circuit breakers
-    daily_loss_reduce_pct: float = 2.0    # cut position sizes 50% if daily loss exceeds this
+    daily_loss_reduce_pct: float = 3.0    # cut position sizes 50% if daily loss exceeds this
     daily_loss_halt_pct: float = 4.0      # stop new entries if daily loss exceeds this
     weekly_loss_halt_pct: float = 8.0     # stop new entries for rest of week
     max_drawdown_lockout_pct: float = 15.0  # lock file created; manual unlock required
 
     lock_file_path: str = "RISK_LOCKOUT"  # path to lock file
+    max_invested_pct: float = 80.0        # max % of NAV deployed in positions
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +223,8 @@ class Settings:
             raise ValueError("Backtest train/test windows must be positive")
         if self.allocation.min_confidence_to_trade < 0 or self.allocation.min_confidence_to_trade > 1:
             raise ValueError("min_confidence_to_trade must be in [0, 1]")
+        if self.risk.max_invested_pct <= 0 or self.risk.max_invested_pct > 100:
+            raise ValueError("max_invested_pct must be in (0, 100]")
 
 
 # Module-level singleton — import this everywhere

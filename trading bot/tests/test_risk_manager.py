@@ -172,3 +172,11 @@ def test_is_locked_out_property(tmp_path):
     with open(lock_path, "w") as f:
         f.write("locked\n")
     assert mgr.is_locked_out
+
+
+def test_status_dict_includes_max_invested_pct(tmp_path):
+    mgr = _make_manager(tmp_path)
+    mgr.start_of_day(100_000)
+    d = mgr.status_dict()
+    assert "max_invested_pct" in d
+    assert d["max_invested_pct"] == 80.0
