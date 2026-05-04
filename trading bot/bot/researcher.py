@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -47,6 +48,11 @@ class ResearchReport:
     num_analysts: int | None
     # News
     headlines: tuple[str, ...]
+    # Sentiment (populated by _score_sentiment; None if scoring failed)
+    sentiment_label: str | None = None
+    sentiment_strength: int | None = None
+    sentiment_themes: tuple[str, ...] = ()
+    sentiment_news_count: int = 0
 
 
 def _fmt(value: float | None, spec: str = ".2f", suffix: str = "") -> str:
@@ -69,7 +75,7 @@ def format_research_for_prompt(report: ResearchReport) -> str:
     si_s = f"{report.short_interest_pct:.1f}%" if report.short_interest_pct is not None else "n/a"
     headline_lines = "\n".join(f"- {h}" for h in report.headlines) or "- None"
 
-    return (
+    out = (
         "--- INDEPENDENT RESEARCH ---\n"
         f"Company: {report.company_name} | Sector: {report.sector} | "
         f"Market cap: ${_fmt(mcap, '.1f')}B\n"
@@ -89,9 +95,14 @@ def format_research_for_prompt(report: ResearchReport) -> str:
         f"Target ${_fmt(report.analyst_target, '.2f')} | "
         f"Coverage: {report.num_analysts or 'n/a'} analysts\n"
         f"Short interest: {si_s} of float | ADV: ${_fmt(adv, '.0f')}M/day\n"
-        f"Recent headlines:\n{headline_lines}\n"
-        "---"
     )
+    if report.sentiment_label is not None:
+        sentiment_str = f"{report.sentiment_label}/{report.sentiment_strength}"
+        if report.sentiment_themes:
+            sentiment_str += f" — themes: {', '.join(report.sentiment_themes)}"
+        out += f"Sentiment ({report.sentiment_news_count} headlines, AI-scored): {sentiment_str}\n"
+    out += f"Recent headlines:\n{headline_lines}\n---"
+    return out
 
 
 _RATING_MAP: dict[str, str] = {
@@ -99,6 +110,51 @@ _RATING_MAP: dict[str, str] = {
     "hold": "Hold", "neutral": "Hold",
     "sell": "Sell", "strong_sell": "Sell",
 }
+
+_sentiment_client: "Anthropic | None" = None
+
+
+def _get_sentiment_client() -> "Anthropic":
+    global _sentiment_client
+    if _sentiment_client is None:
+        from anthropic import Anthropic
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("Missing required env var: ANTHROPIC_API_KEY")
+        _sentiment_client = Anthropic(api_key=api_key)
+    return _sentiment_client
+
+
+_SENTIMENT_SYSTEM = (
+    "You are a financial news sentiment analyzer. "
+    "Respond with ONLY valid JSON matching exactly: "
+    '{"sentiment": "bullish"|"neutral"|"bearish", "strength": 1|2|3, '
+    '"key_themes": ["theme1", "theme2"]}'
+)
+
+
+def _score_sentiment(
+    news_block: str,
+) -> tuple[str | None, int | None, tuple[str, ...]]:
+    try:
+        client = _get_sentiment_client()
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=128,
+            system=_SENTIMENT_SYSTEM,
+            messages=[{"role": "user", "content": news_block}],
+        )
+        data = json.loads(resp.content[0].text)
+        label = data.get("sentiment")
+        strength = int(data.get("strength", 1))
+        themes = tuple(str(t) for t in data.get("key_themes", [])[:3])
+        if label not in ("bullish", "neutral", "bearish"):
+            return None, None, ()
+        if strength not in (1, 2, 3):
+            return None, None, ()
+        return label, strength, themes
+    except Exception:
+        return None, None, ()
 
 
 def _try_fincept(ticker: str) -> dict | None:
@@ -145,11 +201,30 @@ def gather_research(ticker: str) -> ResearchReport | None:
         short_float = info.get("shortPercentOfFloat")
         short_interest_pct = float(short_float) * 100 if short_float else None
 
-        news_items = t.news[:8]
+        news_items = t.news[:28]
+
+        # Build rich block (title + summary) for sentiment scoring
+        news_texts = []
+        for item in news_items:
+            title = item.get("content", {}).get("title", "")
+            summary = item.get("content", {}).get("summary", "")
+            if title:
+                entry = f"- {title}"
+                if summary:
+                    entry += f": {summary}"
+                news_texts.append(entry)
+        scored_count = len(news_texts)
+        news_block = "\n".join(news_texts)
+
+        # headlines field: titles only (first 8, for prompt display)
         headlines = tuple(
             item.get("content", {}).get("title", "")
-            for item in news_items
+            for item in news_items[:8]
             if item.get("content", {}).get("title")
+        )
+
+        sentiment_label, sentiment_strength, sentiment_themes = (
+            _score_sentiment(news_block) if news_block else (None, None, ())
         )
 
         def _f(val: object) -> float | None:
@@ -231,6 +306,10 @@ def gather_research(ticker: str) -> ResearchReport | None:
             analyst_rating=analyst_rating,
             num_analysts=info.get("numberOfAnalystOpinions"),
             headlines=headlines,
+            sentiment_label=sentiment_label,
+            sentiment_strength=sentiment_strength,
+            sentiment_themes=sentiment_themes,
+            sentiment_news_count=scored_count,
         )
 
     except Exception as exc:
