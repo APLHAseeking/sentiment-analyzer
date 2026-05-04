@@ -223,69 +223,89 @@ class RegimeAwareOrchestrator:
         except Exception as exc:
             log.warning("Risk manager update failed: %s", exc)
 
-        # --- Scrape and filter congressional signals ---------------------
+        # --- Invested-pct capacity check --------------------------------
+        _position_list = self._broker.get_positions()
+        if _position_list:
+            _nav = self._broker.get_cash() + sum(
+                p["qty"] * p["current_price"] for p in _position_list
+            )
+            _invested_pct = (
+                sum(p["qty"] * p["current_price"] for p in _position_list)
+                / _nav * 100 if _nav > 0 else 0.0
+            )
+        else:
+            _invested_pct = 0.0
+        _at_capacity = _invested_pct >= self._cfg.risk.max_invested_pct
+        if _at_capacity:
+            log.info(
+                "Portfolio at %.1f%% invested (cap %.1f%%) — skipping new entries",
+                _invested_pct, self._cfg.risk.max_invested_pct,
+            )
+
+        # --- Scrape (always, for DB persistence) ------------------------
         new_disclosures = run_scraper()
         qualified = filter_disclosures(new_disclosures)
         log.info("Disclosures: %d new, %d qualified", len(new_disclosures), len(qualified))
 
-        # --- Regime state as gate ---------------------------------------
-        if self._regime_state is None:
-            log.warning("No regime state — processing signals without regime filter")
+        if not _at_capacity:
+            # --- Regime state as gate -----------------------------------
+            if self._regime_state is None:
+                log.warning("No regime state — processing signals without regime filter")
 
-        sector_allocation: dict[str, float] = {}
-        try:
-            positions = self._broker.get_positions()
-            if positions:
-                nav = self._broker.get_cash() + sum(
-                    p["qty"] * p["current_price"] for p in positions
-                )
-                if nav > 0:
-                    for pos in positions:
-                        sector = get_sector_for_ticker(pos["ticker"])
-                        pv = pos["qty"] * pos["current_price"]
-                        sector_allocation[sector] = sector_allocation.get(sector, 0.0) + pv / nav * 100
-        except Exception as exc:
-            log.warning("Sector allocation computation failed: %s", exc)
-
-        congress_tickers: set[str] = {disc["ticker"] for disc in qualified}
-
-        for disc in qualified:
-            if not self._portfolio.can_open_new_position():
-                log.info("Position limit reached — stopping")
-                break
+            sector_allocation: dict[str, float] = {}
             try:
-                self._process_signal(disc, sector_allocation)
-            except Exception:
-                log.exception("Failed processing %s — skipping", disc.get("ticker", "?"))
+                positions = self._broker.get_positions()
+                if positions:
+                    nav = self._broker.get_cash() + sum(
+                        p["qty"] * p["current_price"] for p in positions
+                    )
+                    if nav > 0:
+                        for pos in positions:
+                            sector = get_sector_for_ticker(pos["ticker"])
+                            pv = pos["qty"] * pos["current_price"]
+                            sector_allocation[sector] = sector_allocation.get(sector, 0.0) + pv / nav * 100
+            except Exception as exc:
+                log.warning("Sector allocation computation failed: %s", exc)
 
-        # ── Phase 2: fundamental screener (regime-aware) ─────────────────────
-        try:
-            universe = list(get_universe())
-            candidates = run_factor_screen(universe, top_n=_SCREENER_TOP_N)
-            already_open = (
-                {p["ticker"] for p in self._broker.get_positions()}
-                | {pos["ticker"] for pos in get_open_positions()}
-            )
+            congress_tickers: set[str] = {disc["ticker"] for disc in qualified}
 
-            for candidate in candidates:
+            for disc in qualified:
                 if not self._portfolio.can_open_new_position():
-                    log.info("Position limit reached — stopping Phase 2")
+                    log.info("Position limit reached — stopping")
                     break
-                if candidate.ticker in already_open:
-                    continue
                 try:
-                    opened = self._process_fundamental_candidate(
-                        candidate, sector_allocation, congress_tickers
-                    )
-                    if opened:
-                        already_open.add(candidate.ticker)
+                    self._process_signal(disc, sector_allocation)
                 except Exception:
-                    log.exception(
-                        "Failed processing fundamental candidate %s — skipping",
-                        candidate.ticker,
-                    )
-        except Exception:
-            log.exception("Phase 2 fundamental screener failed — skipping")
+                    log.exception("Failed processing %s — skipping", disc.get("ticker", "?"))
+
+            # ── Phase 2: fundamental screener (regime-aware) ─────────────────────
+            try:
+                universe = list(get_universe())
+                candidates = run_factor_screen(universe, top_n=_SCREENER_TOP_N)
+                already_open = (
+                    {p["ticker"] for p in self._broker.get_positions()}
+                    | {pos["ticker"] for pos in get_open_positions()}
+                )
+
+                for candidate in candidates:
+                    if not self._portfolio.can_open_new_position():
+                        log.info("Position limit reached — stopping Phase 2")
+                        break
+                    if candidate.ticker in already_open:
+                        continue
+                    try:
+                        opened = self._process_fundamental_candidate(
+                            candidate, sector_allocation, congress_tickers
+                        )
+                        if opened:
+                            already_open.add(candidate.ticker)
+                    except Exception:
+                        log.exception(
+                            "Failed processing fundamental candidate %s — skipping",
+                            candidate.ticker,
+                        )
+            except Exception:
+                log.exception("Phase 2 fundamental screener failed — skipping")
 
     def _process_signal(self, disc: dict, sector_allocation: dict) -> None:
         ticker = disc["ticker"]
