@@ -137,3 +137,81 @@ def test_rating_unknown_key_returns_none(mocker):
     _make_mock_ticker(mocker, info_overrides={"recommendationKey": "underperform"})
     report = gather_research("AAPL")
     assert report.analyst_rating is None
+
+
+import json as _json
+
+
+def test_score_sentiment_returns_none_tuple_on_api_failure(mocker):
+    from bot.researcher import _score_sentiment
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = Exception("network error")
+    mocker.patch("bot.researcher._get_sentiment_client", return_value=mock_client)
+    assert _score_sentiment("Some headlines") == (None, None, ())
+
+
+def test_score_sentiment_parses_valid_response(mocker):
+    from bot.researcher import _score_sentiment
+    payload = _json.dumps({
+        "sentiment": "bullish", "strength": 2, "key_themes": ["earnings beat", "guidance raised"]
+    })
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text=payload)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_resp
+    mocker.patch("bot.researcher._get_sentiment_client", return_value=mock_client)
+    label, strength, themes = _score_sentiment("headlines block")
+    assert label == "bullish"
+    assert strength == 2
+    assert "earnings beat" in themes
+
+
+def test_gather_research_populates_sentiment_fields(mocker):
+    _make_mock_ticker(mocker)
+    payload = _json.dumps({
+        "sentiment": "bearish", "strength": 3, "key_themes": ["guidance cut"]
+    })
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text=payload)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_resp
+    mocker.patch("bot.researcher._get_sentiment_client", return_value=mock_client)
+    report = gather_research("AAPL")
+    assert report.sentiment_label == "bearish"
+    assert report.sentiment_strength == 3
+    assert "guidance cut" in report.sentiment_themes
+
+
+def test_gather_research_handles_sentiment_failure_gracefully(mocker):
+    _make_mock_ticker(mocker)
+    mocker.patch("bot.researcher._get_sentiment_client", side_effect=RuntimeError("no key"))
+    report = gather_research("AAPL")
+    assert report is not None
+    assert report.sentiment_label is None
+    assert report.sentiment_strength is None
+    assert report.sentiment_themes == ()
+
+
+def test_format_research_includes_sentiment_line_when_present(mocker):
+    _make_mock_ticker(mocker)
+    payload = _json.dumps({
+        "sentiment": "bullish", "strength": 2, "key_themes": ["revenue growth", "margin expansion"]
+    })
+    mock_resp = MagicMock()
+    mock_resp.content = [MagicMock(text=payload)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_resp
+    mocker.patch("bot.researcher._get_sentiment_client", return_value=mock_client)
+    report = gather_research("AAPL")
+    formatted = format_research_for_prompt(report)
+    assert "Sentiment" in formatted
+    assert "bullish/2" in formatted
+    assert "revenue growth" in formatted
+
+
+def test_format_research_omits_sentiment_line_when_none(mocker):
+    _make_mock_ticker(mocker)
+    mocker.patch("bot.researcher._get_sentiment_client", side_effect=RuntimeError("no key"))
+    report = gather_research("AAPL")
+    formatted = format_research_for_prompt(report)
+    assert "Sentiment" not in formatted
