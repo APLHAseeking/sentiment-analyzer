@@ -75,6 +75,20 @@ Respond with ONLY valid JSON: {"action": <"hold"|"exit"|"reduce">, "rationale": 
 - If research shows deteriorating fundamentals (margins falling, revenue declining): exit even if P&L positive
 - If research shows strong momentum + positive earnings growth: hold even near the +25% reduce level"""
 
+_BULL_SYSTEM = (
+    "You are a buy-side equity analyst building an investment case. "
+    "Given the signal context and research below, argue the strongest possible bull case. "
+    "Cite specific metrics — P/E, revenue growth, margin trends, competitive position. "
+    "Do not hedge or present risks. Be direct and evidence-based."
+)
+
+_BEAR_SYSTEM = (
+    "You are a short-seller reviewing an investment thesis. "
+    "The bull case for this stock is presented below. "
+    "Identify the most serious flaws, risks, and overlooked negatives. "
+    "Counter specific claims with evidence. Do not repeat the bull's points back — challenge them."
+)
+
 _VALID_ENTRY_VALUES = {"buy", "skip"}
 _VALID_ACTION_VALUES = {"hold", "exit", "reduce"}
 _VALID_SIGNAL_TYPES = {"congressional", "fundamental", "both"}
@@ -154,6 +168,66 @@ def parse_exit_response(text: str) -> ExitDecision:
     return ExitDecision(action=action, rationale=data["rationale"])
 
 
+def _build_entry_prompt(
+    disclosure: dict | None,
+    committees: list[str],
+    sector: str,
+    lag_days: int,
+    estimated_cost_pct: float,
+    research: "ResearchReport | None",
+    cluster_count: int,
+    signal_type: str,
+    factor_score: int | None,
+    ticker: str | None,
+    debate_context: str | None = None,
+) -> str:
+    from bot.researcher import format_research_for_prompt
+    _ticker = (disclosure["ticker"] if disclosure else ticker) or "UNKNOWN"
+    lines = [f"Ticker: {_ticker} | Sector: {sector}"]
+    if signal_type in ("congressional", "both") and disclosure:
+        lines += [
+            f"Politician: {disclosure['politician']}",
+            f"Transaction date: {disclosure['transaction_date']} | "
+            f"Disclosure date: {disclosure['disclosure_date']}",
+            f"Lag days: {lag_days}",
+            f"Amount range: {disclosure['amount_range']}",
+            f"Committees held: {', '.join(committees)}",
+            f"Cluster count (other members buying same stock last 30d): {cluster_count}",
+        ]
+    if signal_type in ("fundamental", "both") and factor_score is not None:
+        lines.append(f"Composite factor score: {factor_score}/99")
+    lines.append(f"Estimated round-trip cost: {estimated_cost_pct:.2f}% of position")
+    if research is not None:
+        lines.append("\n" + format_research_for_prompt(research))
+    if debate_context is not None:
+        lines.append(f"\n--- DEBATE ---\n{debate_context}")
+    lines.append("Score this signal.")
+    return "\n".join(lines)
+
+
+def _bull_argument(prompt: str) -> str:
+    client = _get_client()
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=512,
+        system=_BULL_SYSTEM,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return resp.content[0].text
+
+
+def _bear_argument(prompt: str, bull_text: str) -> str:
+    client = _get_client()
+    combined = f"{prompt}\n\nBull case:\n{bull_text}"
+    resp = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=512,
+        system=_BEAR_SYSTEM,
+        messages=[{"role": "user", "content": combined}],
+    )
+    return resp.content[0].text
+
+
 def score_entry(
     disclosure: dict | None,
     committees: list[str],
@@ -165,33 +239,21 @@ def score_entry(
     signal_type: str = "congressional",
     factor_score: int | None = None,
     ticker: str | None = None,
+    debate_context: str | None = None,
 ) -> EntryScore:
-    from bot.researcher import format_research_for_prompt
-    _ticker = (disclosure["ticker"] if disclosure else ticker) or "UNKNOWN"
-
-    lines = [f"Ticker: {_ticker} | Sector: {sector}"]
-
-    if signal_type in ("congressional", "both") and disclosure:
-        lines += [
-            f"Politician: {disclosure['politician']}",
-            f"Transaction date: {disclosure['transaction_date']} | "
-            f"Disclosure date: {disclosure['disclosure_date']}",
-            f"Lag days: {lag_days}",
-            f"Amount range: {disclosure['amount_range']}",
-            f"Committees held: {', '.join(committees)}",
-            f"Cluster count (other members buying same stock last 30d): {cluster_count}",
-        ]
-
-    if signal_type in ("fundamental", "both") and factor_score is not None:
-        lines.append(f"Composite factor score: {factor_score}/99")
-
-    lines.append(f"Estimated round-trip cost: {estimated_cost_pct:.2f}% of position")
-
-    if research is not None:
-        lines.append("\n" + format_research_for_prompt(research))
-
-    lines.append("Score this signal.")
-    prompt = "\n".join(lines)
+    prompt = _build_entry_prompt(
+        disclosure=disclosure,
+        committees=committees,
+        sector=sector,
+        lag_days=lag_days,
+        estimated_cost_pct=estimated_cost_pct,
+        research=research,
+        cluster_count=cluster_count,
+        signal_type=signal_type,
+        factor_score=factor_score,
+        ticker=ticker,
+        debate_context=debate_context,
+    )
 
     system_text = _build_entry_system(signal_type, has_disclosure=disclosure is not None)
     client = _get_client()
@@ -203,6 +265,70 @@ def score_entry(
         messages=[{"role": "user", "content": prompt}],
     )
     return parse_entry_response(resp.content[0].text)
+
+
+def score_entry_with_debate(
+    disclosure: dict | None,
+    committees: list[str],
+    sector: str,
+    lag_days: int,
+    estimated_cost_pct: float,
+    research: "ResearchReport | None" = None,
+    cluster_count: int = 1,
+    signal_type: str = "congressional",
+    factor_score: int | None = None,
+    ticker: str | None = None,
+) -> EntryScore:
+    """score_entry() with adversarial bull/bear deliberation for conviction >= 7.
+
+    For conviction < 7: identical to score_entry() (1 API call).
+    For conviction >= 7: runs bull argument, bear counter-argument, then
+    re-scores with the debate appended (4 API calls total).
+    """
+    initial = score_entry(
+        disclosure=disclosure,
+        committees=committees,
+        sector=sector,
+        lag_days=lag_days,
+        estimated_cost_pct=estimated_cost_pct,
+        research=research,
+        cluster_count=cluster_count,
+        signal_type=signal_type,
+        factor_score=factor_score,
+        ticker=ticker,
+    )
+    if initial.conviction < 7:
+        return initial
+
+    prompt = _build_entry_prompt(
+        disclosure=disclosure,
+        committees=committees,
+        sector=sector,
+        lag_days=lag_days,
+        estimated_cost_pct=estimated_cost_pct,
+        research=research,
+        cluster_count=cluster_count,
+        signal_type=signal_type,
+        factor_score=factor_score,
+        ticker=ticker,
+    )
+    bull = _bull_argument(prompt)
+    bear = _bear_argument(prompt, bull)
+    debate = f"Bull case:\n{bull}\n\nBear case:\n{bear}"
+
+    return score_entry(
+        disclosure=disclosure,
+        committees=committees,
+        sector=sector,
+        lag_days=lag_days,
+        estimated_cost_pct=estimated_cost_pct,
+        research=research,
+        cluster_count=cluster_count,
+        signal_type=signal_type,
+        factor_score=factor_score,
+        ticker=ticker,
+        debate_context=debate,
+    )
 
 
 def review_exit(ticker: str, entry_price: float, current_price: float,

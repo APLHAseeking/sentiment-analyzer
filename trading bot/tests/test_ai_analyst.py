@@ -310,3 +310,106 @@ def test_build_entry_system_both_no_disclosure_excludes_lag_rules():
 def test_build_entry_system_invalid_type_raises():
     with pytest.raises(ValueError, match="signal_type"):
         _build_entry_system("unknown")
+
+
+from bot.ai_analyst import score_entry_with_debate
+
+
+def _make_resp(text: str):
+    r = MagicMock()
+    r.content = [MagicMock(text=text)]
+    return r
+
+
+def _low_conviction_payload():
+    return json.dumps({
+        "conviction": 5, "position_pct": 1.5,
+        "rationale": "Weak signal", "entry": "skip", "risk_flags": [],
+    })
+
+
+def _high_conviction_payload():
+    return json.dumps({
+        "conviction": 8, "position_pct": 5.0,
+        "rationale": "Strong signal", "entry": "buy", "risk_flags": [],
+    })
+
+
+def _disc():
+    return {
+        "id": "d1", "politician": "Jane Doe", "ticker": "MSFT",
+        "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
+        "amount_range": "$50,001 - $100,000",
+    }
+
+
+def test_debate_makes_one_call_when_conviction_below_7(mocker):
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _make_resp(_low_conviction_payload())
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    result = score_entry_with_debate(
+        _disc(), committees=["House Energy"], sector="Technology",
+        lag_days=2, estimated_cost_pct=0.05,
+    )
+
+    assert mock_client.messages.create.call_count == 1
+    assert isinstance(result, EntryScore)
+    assert result.conviction == 5
+
+
+def test_debate_makes_four_calls_when_conviction_gte_7(mocker):
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [
+        _make_resp(_high_conviction_payload()),  # call 1: initial score
+        _make_resp("Strong revenue growth, market leadership..."),  # call 2: bull
+        _make_resp("High valuation, margin pressure risk..."),       # call 3: bear
+        _make_resp(_high_conviction_payload()),  # call 4: final score
+    ]
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    result = score_entry_with_debate(
+        _disc(), committees=["House Energy"], sector="Technology",
+        lag_days=2, estimated_cost_pct=0.05,
+    )
+
+    assert mock_client.messages.create.call_count == 4
+    assert isinstance(result, EntryScore)
+
+
+def test_debate_call4_prompt_includes_debate_block(mocker):
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [
+        _make_resp(_high_conviction_payload()),
+        _make_resp("Bull: Strong fundamentals"),
+        _make_resp("Bear: Elevated risk"),
+        _make_resp(_high_conviction_payload()),
+    ]
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    score_entry_with_debate(
+        _disc(), committees=["House Energy"], sector="Technology",
+        lag_days=2, estimated_cost_pct=0.05,
+    )
+
+    call4_content = mock_client.messages.create.call_args_list[3][1]["messages"][0]["content"]
+    assert "DEBATE" in call4_content
+    assert "Bull case" in call4_content
+    assert "Bear case" in call4_content
+
+
+def test_debate_returns_entry_score_type(mocker):
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [
+        _make_resp(_high_conviction_payload()),
+        _make_resp("Bull: margins expanding, market share gains"),
+        _make_resp("Bear: valuation stretched, macro headwinds"),
+        _make_resp(_high_conviction_payload()),
+    ]
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+    result = score_entry_with_debate(
+        _disc(), committees=["House Energy"], sector="Technology",
+        lag_days=2, estimated_cost_pct=0.05,
+    )
+    assert isinstance(result, EntryScore)
+    assert result.entry == "buy"
