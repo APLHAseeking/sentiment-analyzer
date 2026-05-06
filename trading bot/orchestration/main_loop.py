@@ -40,7 +40,7 @@ from bot.researcher import gather_research
 from bot.scraper import run_scraper
 from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days, get_cluster_count
 from bot.committee import get_committees_for_politician
-from bot.ai_analyst import score_entry, review_exit, EntryScore
+from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore
 from bot.db import get_open_positions, insert_signal, log_regime
 from bot.universe import refresh_universe, get_universe
 from bot.portfolio import Portfolio
@@ -317,7 +317,7 @@ class RegimeAwareOrchestrator:
         research = gather_research(ticker)
 
         # AI entry scoring (unchanged from existing bot)
-        score: EntryScore = score_entry(
+        score: EntryScore = score_entry_with_debate(
             disc, committees=committees, sector=sector,
             lag_days=lag, estimated_cost_pct=0.05,
             research=research, cluster_count=cluster_count,
@@ -390,7 +390,7 @@ class RegimeAwareOrchestrator:
         signal_type = "both" if ticker in congress_tickers else "fundamental"
         sector = get_sector_for_ticker(ticker)
 
-        score: EntryScore = score_entry(
+        score: EntryScore = score_entry_with_debate(
             disclosure=None,
             committees=[],
             sector=sector,
