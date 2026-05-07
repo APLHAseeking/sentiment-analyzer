@@ -1,23 +1,28 @@
 from datetime import date
 import bot.db as db
 
+# Kept for any external code that imports these constants directly.
 MAX_POSITIONS = 20
 MAX_POSITIONS_PER_DAY = 3
 MAX_POSITION_PCT = 8.0
 
 
 class Portfolio:
-    def __init__(self, broker):
+    def __init__(self, broker, risk_cfg=None):
         self.broker = broker
+        if risk_cfg is None:
+            from system.config import settings
+            risk_cfg = settings.risk
+        self._risk = risk_cfg
         self._opened_today = 0
 
     def get_cash(self) -> float:
         return self.broker.get_cash()
 
     def can_open_new_position(self) -> bool:
-        if len(self.broker.get_positions()) >= MAX_POSITIONS:
+        if len(self.broker.get_positions()) >= self._risk.max_positions:
             return False
-        if self._opened_today >= MAX_POSITIONS_PER_DAY:
+        if self._opened_today >= self._risk.max_positions_per_day:
             return False
         return True
 
@@ -27,7 +32,7 @@ class Portfolio:
     def open_position(self, ticker: str, position_pct: float, signal_id: int | None,
                       rationale: str, entry_price: float,
                       signal_source: str = "congressional") -> None:
-        position_pct = min(position_pct, MAX_POSITION_PCT)
+        position_pct = min(position_pct, self._risk.max_position_pct)
         shares = (self.get_cash() * position_pct / 100) / entry_price
         self.broker.place_order(ticker=ticker, side="buy", qty=shares)
         db.insert_position(
@@ -77,7 +82,8 @@ class Portfolio:
         )
         db.update_position_shares(ticker, shares - sell_qty)
 
-    def enforce_stop_losses(self, stop_loss_pct: float = 15.0) -> list[str]:
+    def enforce_stop_losses(self, stop_loss_pct: float | None = None) -> list[str]:
+        pct = stop_loss_pct if stop_loss_pct is not None else self._risk.trailing_stop_pct
         closed = []
         open_positions = {p["ticker"]: dict(p) for p in db.get_open_positions()}
 
@@ -90,7 +96,7 @@ class Portfolio:
             db.update_position_peak(ticker, current)
 
             drop_from_peak = (peak - current) / peak * 100
-            if drop_from_peak >= stop_loss_pct:
+            if drop_from_peak >= pct:
                 self.close_position(
                     ticker=ticker,
                     shares=pos["qty"],
@@ -104,7 +110,8 @@ class Portfolio:
                 closed.append(ticker)
         return closed
 
-    def enforce_take_profits(self, take_profit_pct: float = 25.0) -> list[str]:
+    def enforce_take_profits(self, take_profit_pct: float | None = None) -> list[str]:
+        pct = take_profit_pct if take_profit_pct is not None else self._risk.take_profit_pct
         reduced = []
         open_positions = {p["ticker"]: dict(p) for p in db.get_open_positions()}
 
@@ -116,7 +123,7 @@ class Portfolio:
             current = pos["current_price"]
             gain_pct = (current - entry) / entry * 100
 
-            if gain_pct >= take_profit_pct:
+            if gain_pct >= pct:
                 meta = open_positions.get(ticker, {})
                 self.reduce_position(
                     ticker=ticker,

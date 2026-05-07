@@ -126,7 +126,7 @@ class RegimeAwareOrchestrator:
         self._update_regime()
 
         self._broker = broker
-        self._portfolio = Portfolio(broker=broker)
+        self._portfolio = Portfolio(broker=broker, risk_cfg=self._cfg.risk)
 
         # Initialize risk manager NAV baseline
         equity = broker.get_equity() if hasattr(broker, "get_equity") else broker.get_cash()

@@ -230,3 +230,56 @@ def test_stop_loss_writes_closed_position_record(portfolio, mock_broker, db):
     assert rows[0]["ticker"] == "TSLA"
     assert rows[0]["exit_reason"] == "stop_loss"
     assert abs(rows[0]["realized_pnl"] - (-100.0)) < 0.01  # (80-100)*5 = -100
+
+
+from system.config import RiskConfig
+
+
+def test_portfolio_reads_max_positions_from_config(mock_broker):
+    risk_cfg = RiskConfig(max_positions=5)
+    p = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+    mock_broker.get_positions.return_value = [
+        {"ticker": f"T{i}", "qty": 1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+        for i in range(5)
+    ]
+    assert p.can_open_new_position() is False
+
+
+def test_portfolio_reads_stop_loss_from_config(mock_broker, db):
+    # 6% drop — triggers 5% custom threshold, would NOT trigger the default 15%
+    risk_cfg = RiskConfig(trailing_stop_pct=5.0)
+    p = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0,
+        "current_price": 94.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "cfg-sl-01", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("cfg-sl-01", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+    closed = p.enforce_stop_losses()   # no explicit pct — must read from injected config
+    assert "AAPL" in closed
+
+
+def test_portfolio_reads_take_profit_from_config(mock_broker, db):
+    # 6% gain — triggers 5% custom threshold, would NOT trigger the default 25%
+    risk_cfg = RiskConfig(take_profit_pct=5.0)
+    p = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": 5.0,
+        "current_price": 106.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "cfg-tp-01", "politician": "J", "ticker": "TSLA",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("cfg-tp-01", "TSLA", 7, 4.0, "Good", [])
+    db.insert_position("TSLA", 100.0, 5.0, 4.0, "2026-04-01", sid, "Test")
+    reduced = p.enforce_take_profits()  # no explicit pct — must read from injected config
+    assert "TSLA" in reduced
