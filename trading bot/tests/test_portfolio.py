@@ -1,8 +1,6 @@
 import pytest
 from bot.portfolio import Portfolio
 
-MAX_POSITIONS = 20
-
 @pytest.fixture
 def portfolio(db, mock_broker):
     return Portfolio(broker=mock_broker)
@@ -15,9 +13,10 @@ def test_can_open_when_under_limit(portfolio, mock_broker):
     assert portfolio.can_open_new_position() is True
 
 def test_cannot_open_at_max_positions(portfolio, mock_broker):
+    from system.config import settings
     mock_broker.get_positions.return_value = [
         {"ticker": f"T{i}", "qty": 1.0, "current_price": 100.0, "avg_entry_price": 100.0}
-        for i in range(MAX_POSITIONS)
+        for i in range(settings.risk.max_positions)
     ]
     assert portfolio.can_open_new_position() is False
 

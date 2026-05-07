@@ -1,4 +1,5 @@
 import pytest
+from datetime import date, timedelta
 
 
 def test_init_creates_tables(db):
@@ -193,8 +194,9 @@ def test_get_regime_transitions_empty(db):
 
 
 def test_get_regime_transitions_filters_by_days(db):
+    yesterday = (date.today() - timedelta(days=1)).isoformat()
     db.log_regime_transition("2020-01-01", "bear", "bull", 0, 2, 0.8, 3)
-    db.log_regime_transition("2026-01-01", "bull", "neutral", 2, 1, 0.7, 3)
+    db.log_regime_transition(yesterday, "bull", "neutral", 2, 1, 0.7, 3)
     all_rows = db.get_regime_transitions(days=9999)
     recent_rows = db.get_regime_transitions(days=120)
     assert len(all_rows) == 2
