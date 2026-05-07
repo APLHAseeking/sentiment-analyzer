@@ -91,6 +91,7 @@ class RegimeAwareOrchestrator:
         # Current regime state (updated daily)
         self._regime_state: RegimeState | None = None
         self._market_data = None   # loaded on startup
+        self._last_refit_date: date | None = None
 
     # ------------------------------------------------------------------
     # Startup
@@ -149,6 +150,37 @@ class RegimeAwareOrchestrator:
             emit_event(log, EventType.MODEL_FIT_FAILED, str(exc), alert=True)
             raise
 
+    def _maybe_rolling_refit(self) -> None:
+        """Refit the HMM on recent market data if the refit interval has elapsed.
+
+        Called at the top of each morning pipeline. A failed refit leaves the
+        existing model in place and emits an alert — it never crashes the loop.
+        """
+        interval = self._cfg.regime.refit_interval_days
+        if interval <= 0 or not self._engine.is_fitted:
+            return
+        today = date.today()
+        if self._last_refit_date is not None:
+            if (today - self._last_refit_date).days < interval:
+                return
+        prev_label = self._regime_state.regime_label if self._regime_state else "unknown"
+        try:
+            emit_event(log, EventType.MODEL_FIT,
+                       f"Rolling refit triggered (last={self._last_refit_date}, "
+                       f"interval={interval}d, prev_regime={prev_label})")
+            self._engine.rolling_refit(
+                self._market_data,
+                feature_cfg=self._feature_cfg,
+            )
+            self._last_refit_date = today
+            self._update_regime()
+            new_label = self._regime_state.regime_label if self._regime_state else "unknown"
+            emit_event(log, EventType.MODEL_FIT,
+                       f"Rolling refit complete: {prev_label} → {new_label}")
+        except Exception as exc:
+            emit_event(log, EventType.MODEL_FIT_FAILED,
+                       f"Rolling refit failed: {exc}", alert=True)
+
     # ------------------------------------------------------------------
     # Daily update
     # ------------------------------------------------------------------
@@ -205,6 +237,7 @@ class RegimeAwareOrchestrator:
             log.info("Market closed — skipping morning pipeline")
             return
 
+        self._maybe_rolling_refit()
         self._update_market_data()
         self._update_regime()
         self._update_dashboard()

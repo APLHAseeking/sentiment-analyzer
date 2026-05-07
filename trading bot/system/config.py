@@ -101,6 +101,7 @@ class RegimeConfig:
         7: ["crash", "deep-bear", "bear", "neutral", "bull", "euphoria", "melt-up"],
     })
     model_path: str = "regime_model.joblib"  # persisted model file
+    refit_interval_days: int = 30    # refit HMM every N days; 0 = disabled
 
 
 # ---------------------------------------------------------------------------
