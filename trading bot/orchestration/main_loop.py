@@ -173,6 +173,7 @@ class RegimeAwareOrchestrator:
                 feature_cfg=self._feature_cfg,
             )
             self._last_refit_date = today
+            self._engine.save(self._cfg.regime.model_path)
             self._update_regime()
             new_label = self._regime_state.regime_label if self._regime_state else "unknown"
             emit_event(log, EventType.MODEL_FIT,
