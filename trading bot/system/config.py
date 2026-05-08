@@ -188,6 +188,13 @@ class BacktestConfig:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class MonitoringConfig:
+    alert_webhook_url: str = field(
+        default_factory=lambda: _env("ALERT_WEBHOOK_URL", "")
+    )
+
+
+@dataclass(frozen=True)
 class DashboardConfig:
     data_store_path: str = "dashboard_state.json"
     refresh_interval_seconds: int = 300  # 5-minute dashboard refresh
@@ -214,6 +221,7 @@ class Settings:
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    monitoring: MonitoringConfig = field(default_factory=MonitoringConfig)
 
     def validate(self) -> None:
         """Raise ValueError for obviously wrong config combinations."""

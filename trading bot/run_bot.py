@@ -131,7 +131,19 @@ def main() -> None:
                         help="Use SimulatedBroker instead of Alpaca paper API")
     parser.add_argument("--backtest", action="store_true",
                         help="Run walk-forward backtest and exit")
+    parser.add_argument("--test-alerts", action="store_true",
+                        help="Fire a test alert to verify the configured sender, then exit")
     args = parser.parse_args()
+
+    if args.test_alerts:
+        from monitoring.alerts import fire_alert
+        fire_alert(
+            "startup",
+            "Test alert — trading bot alert pipeline is configured correctly",
+            {"test": True},
+        )
+        print("Test alert fired. Check your webhook or log output.")
+        return
 
     if args.backtest:
         run_backtest()

@@ -1,13 +1,17 @@
-"""Alert hooks — log-based and optional webhook stubs.
+"""Alert sender abstraction.
 
-No live external alerting platform is connected. All alerts write to the
-standard log and optionally to a local webhook URL if configured.
+WebhookAlertSender — POST JSON to a Slack- or Discord-compatible webhook URL.
+LogAlertSender     — fallback: emit a WARNING to the standard log.
+
+The active sender is built lazily on first use from settings.monitoring.alert_webhook_url
+(or the ALERT_WEBHOOK_URL environment variable). Set the env var or config field to enable
+real webhook delivery; leave it empty to keep log-only alerts.
 """
 from __future__ import annotations
 
 import json
 import logging
-import os
+from abc import ABC, abstractmethod
 from datetime import datetime, UTC
 from typing import Any
 
@@ -15,9 +19,6 @@ import requests
 
 log = logging.getLogger(__name__)
 
-_WEBHOOK_URL: str = os.environ.get("ALERT_WEBHOOK_URL", "")
-
-# Events that are always shown as warnings regardless of caller level
 _HIGH_PRIORITY = {
     "lockout_created",
     "circuit_breaker",
@@ -25,20 +26,59 @@ _HIGH_PRIORITY = {
     "drawdown_threshold",
 }
 
+# Mutable single-element list so tests can reset and patch it easily.
+_sender_cache: list[AlertSender | None] = [None]
 
-def fire_alert(event: str, message: str, data: dict[str, Any]) -> None:
-    """Write alert to log and optionally POST to a webhook."""
-    level = logging.WARNING if event in _HIGH_PRIORITY else logging.INFO
-    log.log(level, "[ALERT] %s | %s | %s", event, message, json.dumps(data))
 
-    if _WEBHOOK_URL:
+class AlertSender(ABC):
+    @abstractmethod
+    def send(self, event: str, message: str, data: dict[str, Any]) -> None: ...
+
+
+class WebhookAlertSender(AlertSender):
+    """POST a JSON payload compatible with Slack/Discord incoming webhooks."""
+
+    def __init__(self, url: str, timeout: int = 5) -> None:
+        self._url = url
+        self._timeout = timeout
+
+    def send(self, event: str, message: str, data: dict[str, Any]) -> None:
         payload = {
-            "ts": datetime.now(UTC).isoformat(),
+            "text": f"[{event.upper()}] {message}",
             "event": event,
-            "message": message,
+            "ts": datetime.now(UTC).isoformat(),
             "data": data,
         }
         try:
-            requests.post(_WEBHOOK_URL, json=payload, timeout=5)
+            requests.post(url=self._url, json=payload, timeout=self._timeout)
         except Exception as exc:
-            log.warning("Alert webhook failed: %s", exc)
+            log.warning("Alert webhook delivery failed (%s): %s", event, exc)
+
+
+class LogAlertSender(AlertSender):
+    """Fallback sender — writes to the standard log as WARNING."""
+
+    def send(self, event: str, message: str, data: dict[str, Any]) -> None:
+        log.warning("[ALERT] %s | %s | %s", event, message, json.dumps(data))
+
+
+def _build_sender() -> AlertSender:
+    try:
+        from system.config import settings
+        url = settings.monitoring.alert_webhook_url
+    except Exception:
+        url = ""
+    return WebhookAlertSender(url) if url else LogAlertSender()
+
+
+def _get_sender() -> AlertSender:
+    if _sender_cache[0] is None:
+        _sender_cache[0] = _build_sender()
+    return _sender_cache[0]
+
+
+def fire_alert(event: str, message: str, data: dict[str, Any]) -> None:
+    """Route an alert to the configured sender (webhook or log)."""
+    level = logging.WARNING if event in _HIGH_PRIORITY else logging.INFO
+    log.log(level, "[ALERT] %s | %s", event, message)
+    _get_sender().send(event, message, data)
