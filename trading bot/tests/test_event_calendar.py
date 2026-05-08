@@ -77,3 +77,31 @@ def test_process_signal_skips_on_upcoming_event(mocker):
     }
     o._process_signal(disc, {})
     score_spy.assert_not_called()
+
+
+def test_process_fundamental_candidate_skips_on_upcoming_event(mocker):
+    """_process_fundamental_candidate must return False without calling score_entry_with_debate."""
+    from orchestration.main_loop import RegimeAwareOrchestrator
+    from system.config import settings
+    from screener.factor_scorer import FactorCandidate
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event",
+                 return_value=(True, "earnings 2026-05-09"))
+    score_spy = mocker.patch("orchestration.main_loop.score_entry_with_debate")
+
+    o = RegimeAwareOrchestrator(settings)
+    o._regime_state = None
+
+    candidate = FactorCandidate(
+        ticker="MSFT",
+        composite_score=75,
+        value_score=25,
+        momentum_score=25,
+        quality_score=25,
+        research=None,
+    )
+    result = o._process_fundamental_candidate(candidate, {}, set())
+    assert result is False
+    score_spy.assert_not_called()
