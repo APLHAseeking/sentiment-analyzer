@@ -26,9 +26,6 @@ _HIGH_PRIORITY = {
     "drawdown_threshold",
 }
 
-# Mutable single-element list so tests can reset and patch it easily.
-_sender_cache: list[AlertSender | None] = [None]
-
 
 class AlertSender(ABC):
     @abstractmethod
@@ -60,6 +57,10 @@ class LogAlertSender(AlertSender):
 
     def send(self, event: str, message: str, data: dict[str, Any]) -> None:
         log.warning("[ALERT] %s | %s | %s", event, message, json.dumps(data))
+
+
+# Mutable single-element list so tests can reset and patch it easily.
+_sender_cache: list[AlertSender | None] = [None]
 
 
 def _build_sender() -> AlertSender:
