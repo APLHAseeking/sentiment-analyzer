@@ -46,6 +46,7 @@ from bot.universe import refresh_universe, get_universe
 from bot.portfolio import Portfolio
 
 # New regime-aware modules
+from utils.event_calendar import has_upcoming_event
 from system.config import Settings, settings as _default_settings
 from market_data.market_feed import get_regime_data
 from features.feature_pipeline import FeatureConfig
@@ -348,6 +349,14 @@ class RegimeAwareOrchestrator:
         lag = compute_lag_days(disc["transaction_date"], disc["disclosure_date"])
         since = (date.today() - timedelta(days=30)).isoformat()
         cluster_count = get_cluster_count(ticker, since)
+        # Skip before expensive research call if an event is imminent
+        has_event, event_reason = has_upcoming_event(
+            ticker, window_days=self._cfg.universe.event_exclusion_window_days
+        )
+        if has_event:
+            log.info("Skipping %s: upcoming event — %s", ticker, event_reason)
+            return
+
         research = gather_research(ticker)
 
         # AI entry scoring (unchanged from existing bot)
@@ -423,6 +432,14 @@ class RegimeAwareOrchestrator:
         ticker = candidate.ticker
         signal_type = "both" if ticker in congress_tickers else "fundamental"
         sector = get_sector_for_ticker(ticker)
+
+        has_event, event_reason = has_upcoming_event(
+            ticker, window_days=self._cfg.universe.event_exclusion_window_days
+        )
+        if has_event:
+            log.info("Skipping %s (%s): upcoming event — %s",
+                     ticker, signal_type, event_reason)
+            return False
 
         score: EntryScore = score_entry_with_debate(
             disclosure=None,

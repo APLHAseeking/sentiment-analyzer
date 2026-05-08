@@ -50,6 +50,7 @@ class UniverseConfig:
     refresh_day_of_week: str = "mon"  # weekly universe refresh
     max_lag_days: int = 45            # discard disclosures older than this
     min_trade_usd: int = 15_000       # minimum meaningful trade size
+    event_exclusion_window_days: int = 2   # block new entries within N calendar days of earnings/FOMC
 
 
 @dataclass(frozen=True)
