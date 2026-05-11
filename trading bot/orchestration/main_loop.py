@@ -362,10 +362,10 @@ class RegimeAwareOrchestrator:
             except Exception:
                 log.exception("Phase 2 fundamental screener failed — skipping")
 
-            # ── Phase 3: inverse ETF hedge pass ─────────────────────────
-            if is_hedge_now:
-                self._run_hedge_pass()
-            # ─────────────────────────────────────────────────────────────
+        # ── Phase 3: inverse ETF hedge pass ─────────────────────────
+        if is_hedge_now:
+            self._run_hedge_pass()
+        # ─────────────────────────────────────────────────────────────
 
     def _process_signal(self, disc: dict, sector_allocation: dict) -> None:
         ticker = disc["ticker"]
@@ -659,6 +659,8 @@ class RegimeAwareOrchestrator:
             return
         log.info("Exit review started")
         for pos in get_open_positions():
+            if pos.get("signal_source") == "hedge":
+                continue
             try:
                 info = yf.Ticker(pos["ticker"]).info
                 current_price = info.get("regularMarketPrice", pos["entry_price"])
