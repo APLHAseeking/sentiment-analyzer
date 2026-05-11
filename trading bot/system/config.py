@@ -154,6 +154,17 @@ class HedgeConfig:
 
 
 # ---------------------------------------------------------------------------
+# Correlation-aware sizing
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CorrelationConfig:
+    threshold: float = 0.7        # ρ at or below this → no reduction
+    window_days: int = 60         # daily return lookback period
+    min_overlap_days: int = 20    # skip pair if fewer shared trading days
+
+
+# ---------------------------------------------------------------------------
 # Risk management
 # ---------------------------------------------------------------------------
 
@@ -245,6 +256,7 @@ class Settings:
     regime: RegimeConfig = field(default_factory=RegimeConfig)
     allocation: AllocationConfig = field(default_factory=AllocationConfig)
     hedge: HedgeConfig = field(default_factory=HedgeConfig)
+    correlation: CorrelationConfig = field(default_factory=CorrelationConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
