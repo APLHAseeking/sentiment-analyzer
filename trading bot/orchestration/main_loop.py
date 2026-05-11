@@ -57,6 +57,7 @@ from screener.factor_scorer import run_factor_screen, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
 from dashboard.data_store import DashboardStore
 from hedge.hedge_engine import HedgeEngine
+from risk.correlation import CorrelationFilter
 
 log = logging.getLogger(__name__)
 _AMS = ZoneInfo("Europe/Amsterdam")
@@ -97,6 +98,7 @@ class RegimeAwareOrchestrator:
 
         # Hedge engine
         self._hedge_engine = HedgeEngine(self._cfg)
+        self._corr_filter = CorrelationFilter(self._cfg)
 
     # ------------------------------------------------------------------
     # Startup
@@ -307,6 +309,14 @@ class RegimeAwareOrchestrator:
             if self._regime_state is None:
                 log.warning("No regime state — processing signals without regime filter")
 
+            # --- Correlation filter: pre-load holdings returns ----------
+            _long_tickers = [
+                pos["ticker"] for pos in get_open_positions()
+                if pos.get("signal_source") != "hedge"
+            ]
+            self._corr_filter.load_holdings_returns(_long_tickers)
+            # ------------------------------------------------------------
+
             sector_allocation: dict[str, float] = {}
             try:
                 positions = self._broker.get_positions()
@@ -371,6 +381,8 @@ class RegimeAwareOrchestrator:
             self._run_hedge_pass()
         # ─────────────────────────────────────────────────────────────
 
+        self._corr_filter.clear()
+
     def _process_signal(self, disc: dict, sector_allocation: dict) -> None:
         ticker = disc["ticker"]
         committees = get_committees_for_politician(disc["politician"])
@@ -409,6 +421,14 @@ class RegimeAwareOrchestrator:
                 return
         else:
             final_pct = base_pct
+
+        # Correlation filter
+        corr_mult = self._corr_filter.size_multiplier(ticker)
+        final_pct *= corr_mult
+        if final_pct < 0.1:
+            emit_event(log, EventType.SIGNAL_REJECTED,
+                       f"{ticker} reduced to zero by correlation filter (mult={corr_mult:.2f})")
+            return
 
         # Risk manager veto
         entry_price_info = yf.Ticker(ticker).info
@@ -498,6 +518,17 @@ class RegimeAwareOrchestrator:
                 return False
         else:
             final_pct = base_pct
+
+        # Correlation filter
+        corr_mult = self._corr_filter.size_multiplier(ticker)
+        final_pct *= corr_mult
+        if final_pct < 0.1:
+            emit_event(
+                log, EventType.SIGNAL_REJECTED,
+                f"{ticker} ({signal_type}) reduced to zero by correlation filter "
+                f"(mult={corr_mult:.2f})",
+            )
+            return False
 
         entry_price = yf.Ticker(ticker).info.get("regularMarketPrice", 0)
         if not entry_price:
