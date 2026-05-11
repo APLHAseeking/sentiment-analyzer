@@ -670,10 +670,14 @@ class RegimeAwareOrchestrator:
             return
 
         tickers = [pos["ticker"] for pos in positions]
-        research_map = gather_research_batch(
-            tickers,
-            max_workers=self._cfg.universe.research_concurrency,
-        )
+        try:
+            research_map = gather_research_batch(
+                tickers,
+                max_workers=self._cfg.universe.research_concurrency,
+            )
+        except Exception:
+            log.exception("gather_research_batch failed in exit review; using empty map")
+            research_map = {}
 
         for pos in positions:
             try:
