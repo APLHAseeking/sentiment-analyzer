@@ -56,6 +56,7 @@ from risk.risk_manager import RiskManager
 from screener.factor_scorer import run_factor_screen, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
 from dashboard.data_store import DashboardStore
+from hedge.hedge_engine import HedgeEngine
 
 log = logging.getLogger(__name__)
 _AMS = ZoneInfo("Europe/Amsterdam")
@@ -93,6 +94,9 @@ class RegimeAwareOrchestrator:
         self._regime_state: RegimeState | None = None
         self._market_data = None   # loaded on startup
         self._last_refit_date: date | None = None
+
+        # Hedge engine
+        self._hedge_engine = HedgeEngine(self._cfg)
 
     # ------------------------------------------------------------------
     # Startup
@@ -244,10 +248,26 @@ class RegimeAwareOrchestrator:
         self._update_regime()
         self._update_dashboard()
 
+        # ── Hedge regime gate ────────────────────────────────────────────
+        is_hedge_now = (
+            self._regime_state is not None
+            and self._hedge_engine.is_hedge_regime(self._regime_state)
+        )
+        if not is_hedge_now:
+            self._run_hedge_exits()
+        # ─────────────────────────────────────────────────────────────────
+
         log.info("Morning pipeline started")
         self._portfolio.reset_daily_counter()
-        self._portfolio.enforce_stop_losses()
-        self._portfolio.enforce_take_profits()
+        # Long positions: existing thresholds, skip hedge positions
+        self._portfolio.enforce_stop_losses(source_exclude="hedge")
+        self._portfolio.enforce_take_profits(source_exclude="hedge")
+        # Hedge positions: tighter stop-loss (10%), no take-profit
+        if self._cfg.risk.enable_inverse_hedging:
+            self._portfolio.enforce_stop_losses(
+                stop_loss_pct=self._cfg.hedge.stop_loss_pct,
+                source_include="hedge",
+            )
 
         # Update risk manager with current NAV
         try:
@@ -341,6 +361,11 @@ class RegimeAwareOrchestrator:
                         )
             except Exception:
                 log.exception("Phase 2 fundamental screener failed — skipping")
+
+            # ── Phase 3: inverse ETF hedge pass ─────────────────────────
+            if is_hedge_now:
+                self._run_hedge_pass()
+            # ─────────────────────────────────────────────────────────────
 
     def _process_signal(self, disc: dict, sector_allocation: dict) -> None:
         ticker = disc["ticker"]
@@ -513,6 +538,117 @@ class RegimeAwareOrchestrator:
             },
         )
         return True
+
+    # ------------------------------------------------------------------
+    # Hedge entry / exit
+    # ------------------------------------------------------------------
+
+    def _run_hedge_pass(self) -> None:
+        """Open inverse ETF positions for the current hedge regime."""
+        try:
+            positions = self._broker.get_positions()
+            cash = self._broker.get_cash()
+            nav = cash + sum(p["qty"] * p["current_price"] for p in positions) if positions else cash
+
+            # Sector allocation from long positions only (exclude hedges)
+            open_positions_meta = get_open_positions()
+            sector_allocation: dict[str, float] = {}
+            if positions and nav > 0:
+                for pos in positions:
+                    meta = next(
+                        (m for m in open_positions_meta if m["ticker"] == pos["ticker"]), {}
+                    )
+                    if meta.get("signal_source") == "hedge":
+                        continue
+                    sector = get_sector_for_ticker(pos["ticker"])
+                    pv = pos["qty"] * pos["current_price"]
+                    sector_allocation[sector] = sector_allocation.get(sector, 0.0) + pv / nav * 100
+
+            orders = self._hedge_engine.compute_hedge_plan(
+                self._regime_state,
+                open_positions_meta,
+                sector_allocation,
+                nav,
+            )
+            if not orders:
+                log.info("Hedge pass: no eligible ETFs for regime %s",
+                         self._regime_state.regime_label if self._regime_state else "?")
+                return
+
+            for order in orders:
+                try:
+                    entry_price = yf.Ticker(order.ticker).info.get("regularMarketPrice", 0)
+                    if not entry_price:
+                        log.warning("No price for hedge ETF %s — skipping", order.ticker)
+                        continue
+                    self._portfolio.open_position(
+                        ticker=order.ticker,
+                        position_pct=order.position_pct,
+                        signal_id=None,
+                        rationale=order.rationale,
+                        entry_price=entry_price,
+                        signal_source="hedge",
+                    )
+                    emit_event(
+                        log, EventType.HEDGE_ENTRY,
+                        f"Opened hedge {order.ticker} pct={order.position_pct:.1f}%",
+                        data={
+                            "ticker": order.ticker,
+                            "position_pct": order.position_pct,
+                            "regime_label": self._regime_state.regime_label if self._regime_state else "?",
+                            "regime_confidence": self._regime_state.confidence if self._regime_state else 0.0,
+                            "rationale": order.rationale,
+                        },
+                        alert=True,
+                    )
+                except Exception:
+                    log.exception("Failed to open hedge position %s", order.ticker)
+        except Exception as exc:
+            log.warning("Hedge pass failed: %s", exc)
+
+    def _run_hedge_exits(self) -> None:
+        """Close all open hedge positions (called when regime leaves bear/crash)."""
+        try:
+            open_positions_meta = get_open_positions()
+            tickers = self._hedge_engine.get_exits_needed(open_positions_meta)
+            if not tickers:
+                return
+            current_label = self._regime_state.regime_label if self._regime_state else "unknown"
+            for ticker in tickers:
+                try:
+                    pos_meta = next(
+                        (p for p in open_positions_meta if p["ticker"] == ticker), None
+                    )
+                    if pos_meta is None:
+                        continue
+                    exit_price = yf.Ticker(ticker).info.get("regularMarketPrice", 0)
+                    if not exit_price:
+                        log.warning("No price for hedge exit %s — skipping", ticker)
+                        continue
+                    self._portfolio.close_position(
+                        ticker=ticker,
+                        shares=pos_meta["shares"],
+                        exit_price=exit_price,
+                        exit_reason="regime_transition",
+                        signal_id=None,
+                        entry_price=pos_meta["entry_price"],
+                        entry_date=pos_meta["entry_date"],
+                        signal_source="hedge",
+                    )
+                    emit_event(
+                        log, EventType.HEDGE_EXIT,
+                        f"Closed hedge {ticker}: regime → {current_label}",
+                        data={
+                            "ticker": ticker,
+                            "exit_reason": "regime_transition",
+                            "exit_regime": current_label,
+                        },
+                        alert=True,
+                    )
+                except Exception:
+                    log.exception("Failed to close hedge position %s", ticker)
+        except Exception as exc:
+            log.warning("Hedge exit pass failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Exit review
