@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 import yfinance as yf
 
-from bot.researcher import gather_research, ResearchReport
+from bot.researcher import gather_research, gather_research_batch, ResearchReport
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +137,11 @@ def _compute_composite(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def run_factor_screen(tickers: list[str], top_n: int = 12) -> list[FactorCandidate]:
+def run_factor_screen(
+    tickers: list[str],
+    top_n: int = 12,
+    research_workers: int = 5,
+) -> list[FactorCandidate]:
     if not tickers:
         return []
 
@@ -157,16 +161,18 @@ def run_factor_screen(tickers: list[str], top_n: int = 12) -> list[FactorCandida
 
     top = scored.nlargest(top_n, "composite_score")
 
+    top_tickers = [str(t) for t in top.index]
+    research_map = gather_research_batch(top_tickers, max_workers=research_workers)
+
     candidates: list[FactorCandidate] = []
     for ticker_idx, row in top.iterrows():
         t = str(ticker_idx)
-        research = gather_research(t)
         candidates.append(FactorCandidate(
             ticker=t,
             composite_score=int(row["composite_score"]),
             value_score=int(row["value_score"]),
             momentum_score=int(row["momentum_score"]),
             quality_score=int(row["quality_score"]),
-            research=research,
+            research=research_map.get(t),
         ))
     return candidates

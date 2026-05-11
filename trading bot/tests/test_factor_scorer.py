@@ -105,3 +105,22 @@ def test_run_factor_screen_all_none_returns_empty(mocker):
     )
     result = run_factor_screen(["AAPL", "MSFT"], top_n=5)
     assert result == []
+
+
+def test_run_factor_screen_uses_gather_research_batch(mocker):
+    mocker.patch(
+        "screener.factor_scorer._fetch_info",
+        side_effect=lambda t: (t, _make_info()),
+    )
+    mocker.patch(
+        "screener.factor_scorer._fetch_momentum_batch",
+        return_value={"AAPL": (5.0, 10.0), "MSFT": (3.0, 8.0)},
+    )
+    batch_spy = mocker.patch(
+        "screener.factor_scorer.gather_research_batch",
+        return_value={"AAPL": None, "MSFT": None},
+    )
+    run_factor_screen(["AAPL", "MSFT"], top_n=2)
+    batch_spy.assert_called_once()
+    tickers_arg = batch_spy.call_args[0][0]
+    assert set(tickers_arg) == {"AAPL", "MSFT"}
