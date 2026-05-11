@@ -36,7 +36,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 
 # Existing bot modules (unchanged)
 from bot.analytics import log_weekly_report
-from bot.researcher import gather_research
+from bot.researcher import gather_research, gather_research_batch
 from bot.scraper import run_scraper
 from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days, get_cluster_count
 from bot.committee import get_committees_for_politician
@@ -336,7 +336,11 @@ class RegimeAwareOrchestrator:
             # ── Phase 2: fundamental screener (regime-aware) ─────────────────────
             try:
                 universe = list(get_universe())
-                candidates = run_factor_screen(universe, top_n=_SCREENER_TOP_N)
+                candidates = run_factor_screen(
+                    universe,
+                    top_n=_SCREENER_TOP_N,
+                    research_workers=self._cfg.universe.research_concurrency,
+                )
                 already_open = (
                     {p["ticker"] for p in self._broker.get_positions()}
                     | {pos["ticker"] for pos in get_open_positions()}
@@ -658,14 +662,25 @@ class RegimeAwareOrchestrator:
         if not _NYSE.is_session(date.today().isoformat()):
             return
         log.info("Exit review started")
-        for pos in get_open_positions():
-            if pos.get("signal_source") == "hedge":
-                continue
+        positions = [
+            pos for pos in get_open_positions()
+            if pos.get("signal_source") != "hedge"
+        ]
+        if not positions:
+            return
+
+        tickers = [pos["ticker"] for pos in positions]
+        research_map = gather_research_batch(
+            tickers,
+            max_workers=self._cfg.universe.research_concurrency,
+        )
+
+        for pos in positions:
             try:
                 info = yf.Ticker(pos["ticker"]).info
                 current_price = info.get("regularMarketPrice", pos["entry_price"])
                 days_held = (date.today() - date.fromisoformat(pos["entry_date"])).days
-                research = gather_research(pos["ticker"])
+                research = research_map.get(pos["ticker"])
                 decision = review_exit(pos["ticker"], pos["entry_price"],
                                        current_price, days_held, research=research)
                 if decision.action == "exit":

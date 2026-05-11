@@ -151,3 +151,33 @@ def test_hedge_exits_not_called_when_regime_is_bear(mocker, orch_fitted):
     mocker.patch.object(orch_fitted, "_run_hedge_pass")
     orch_fitted.run_morning_pipeline()
     exits_spy.assert_not_called()
+
+
+def test_run_exit_review_pre_fetches_research_in_batch(mocker, orch):
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[
+        {
+            "ticker": "AAPL", "entry_price": 100.0, "entry_date": "2026-04-01",
+            "shares": 10.0, "signal_id": 1, "signal_source": "congressional",
+        },
+        {
+            "ticker": "MSFT", "entry_price": 200.0, "entry_date": "2026-04-01",
+            "shares": 5.0, "signal_id": 2, "signal_source": "congressional",
+        },
+    ])
+    batch_spy = mocker.patch(
+        "orchestration.main_loop.gather_research_batch",
+        return_value={"AAPL": None, "MSFT": None},
+    )
+    mocker.patch(
+        "orchestration.main_loop.yf.Ticker",
+        return_value=MagicMock(info={"regularMarketPrice": 110.0}),
+    )
+    mocker.patch(
+        "orchestration.main_loop.review_exit",
+        return_value=MagicMock(action="hold", rationale="hold"),
+    )
+    orch.run_exit_review()
+    batch_spy.assert_called_once()
+    tickers_fetched = set(batch_spy.call_args[0][0])
+    assert tickers_fetched == {"AAPL", "MSFT"}
