@@ -333,3 +333,26 @@ def test_portfolio_reads_take_profit_from_config(mock_broker, db):
     db.insert_position("TSLA", 100.0, 5.0, 4.0, "2026-04-01", sid, "Test")
     reduced = p.enforce_take_profits()  # no explicit pct — must read from injected config
     assert "TSLA" in reduced
+
+
+def test_enforce_take_profits_source_exclude_skips_matching(mock_broker, db):
+    from system.config import RiskConfig
+    p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(take_profit_pct=5.0))
+    # Both positions gain 6% — triggers 5% threshold
+    mock_broker.get_positions.return_value = [
+        {"ticker": "SH",   "qty": 10.0, "current_price": 106.0, "avg_entry_price": 100.0},
+        {"ticker": "AAPL", "qty": 5.0,  "current_price": 106.0, "avg_entry_price": 100.0},
+    ]
+    db.insert_disclosures([{
+        "id": "sf-tp-01", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("sf-tp-01", "AAPL", 7, 4.0, "Good", [])
+    db.insert_position("SH",   100.0, 10.0, 5.0, "2026-04-01", None, "Hedge", "hedge")
+    db.insert_position("AAPL", 100.0, 5.0,  4.0, "2026-04-01", sid,  "Test",  "congressional")
+    # source_exclude="hedge" → SH skipped, AAPL reduced
+    reduced = p.enforce_take_profits(source_exclude="hedge")
+    assert "SH" not in reduced
+    assert "AAPL" in reduced

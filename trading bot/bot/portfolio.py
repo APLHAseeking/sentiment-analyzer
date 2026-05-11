@@ -98,15 +98,15 @@ class Portfolio:
             ticker = pos["ticker"]
             current = pos["current_price"]
             meta = open_positions.get(ticker, {})
+            peak = meta.get("peak_price") or pos["avg_entry_price"]
+            db.update_position_peak(ticker, current)
+
             source = meta.get("signal_source", "congressional")
 
             if source_include is not None and source != source_include:
                 continue
             if source_exclude is not None and source == source_exclude:
                 continue
-
-            peak = meta.get("peak_price") or pos["avg_entry_price"]
-            db.update_position_peak(ticker, current)
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:
                 self.close_position(
