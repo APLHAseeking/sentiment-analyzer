@@ -335,6 +335,7 @@ def gather_research_batch(
     for t in tickers:
         try:
             result[t] = futures[t].result()
-        except Exception:
+        except Exception as exc:
+            log.warning("gather_research_batch: failed for %s: %s", t, exc)
             result[t] = None
     return result
