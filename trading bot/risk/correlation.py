@@ -33,14 +33,14 @@ class CorrelationFilter:
         if not tickers:
             return
         try:
-            raw = yf.download(tickers, period="3mo", auto_adjust=True, progress=False)
+            raw = yf.download(tickers, period=f"{self._cfg.window_days}d", auto_adjust=True, progress=False)
             if raw.empty:
                 return
-            if isinstance(raw.columns, pd.MultiIndex):
-                close = raw["Close"]
-            else:
-                close = raw[["Close"]].rename(columns={"Close": tickers[0]})
-            returns = close.pct_change().dropna()
+            close_data = raw["Close"]
+            if not isinstance(close_data, pd.DataFrame):
+                # Single ticker returned as Series — wrap in DataFrame
+                close_data = close_data.to_frame(name=tickers[0])
+            returns = close_data.pct_change().dropna()
             for ticker in tickers:
                 if ticker in returns.columns:
                     series = returns[ticker].dropna()
@@ -62,15 +62,15 @@ class CorrelationFilter:
         if candidate_ticker not in self._candidate_cache:
             try:
                 raw = yf.download(
-                    [candidate_ticker], period="3mo", auto_adjust=True, progress=False
+                    [candidate_ticker], period=f"{self._cfg.window_days}d", auto_adjust=True, progress=False
                 )
                 if raw.empty:
                     return 1.0
-                if isinstance(raw.columns, pd.MultiIndex):
-                    close = raw["Close"][candidate_ticker]
-                else:
-                    close = raw["Close"]
-                self._candidate_cache[candidate_ticker] = close.pct_change().dropna()
+                close_data = raw["Close"]
+                if isinstance(close_data, pd.DataFrame):
+                    close_data = close_data[candidate_ticker]
+                # close_data is now a Series
+                self._candidate_cache[candidate_ticker] = close_data.pct_change().dropna()
             except Exception as exc:
                 log.warning(
                     "size_multiplier: could not fetch returns for %s: %s",
