@@ -69,3 +69,33 @@ def test_validate_rejects_invalid_max_invested_pct_boundaries(pct):
     s = Settings(risk=risk)
     with pytest.raises(ValueError, match="max_invested_pct"):
         s.validate()
+
+
+def test_hedge_config_defaults():
+    from system.config import HedgeConfig
+    cfg = HedgeConfig()
+    assert "SH" in cfg.inverse_etf_universe
+    assert "PSQ" in cfg.inverse_etf_universe
+    assert cfg.max_single_position_pct == 15.0
+    assert cfg.conflict_threshold_pct == 10.0
+    assert cfg.stop_loss_pct == 10.0
+    assert cfg.max_inverse_pct_by_regime["bear"] == 30.0
+    assert cfg.max_inverse_pct_by_regime["crash"] == 50.0
+
+
+def test_enable_inverse_hedging_default_true():
+    from system.config import RiskConfig
+    assert RiskConfig().enable_inverse_hedging is True
+
+
+def test_settings_has_hedge_field():
+    from system.config import settings
+    assert hasattr(settings, "hedge")
+    assert settings.hedge.stop_loss_pct == 10.0
+
+
+def test_hedge_event_types_exist():
+    from monitoring.logger import EventType
+    assert EventType.HEDGE_ENTRY.value == "hedge_entry"
+    assert EventType.HEDGE_EXIT.value == "hedge_exit"
+    assert EventType.HEDGE_STOP_LOSS.value == "hedge_stop_loss"

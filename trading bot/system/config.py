@@ -128,6 +128,31 @@ class AllocationConfig:
 
 
 # ---------------------------------------------------------------------------
+# Inverse ETF hedging
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class HedgeConfig:
+    # ETF ticker → sectors it conflicts with (empty list = no sector filter)
+    inverse_etf_universe: dict[str, list[str]] = field(default_factory=lambda: {
+        "SH":  [],                                         # broad S&P 500
+        "PSQ": ["Technology", "Communication Services"],   # Nasdaq
+        "RWM": [],                                         # Russell 2000
+        "SBB": [],                                         # short small-cap
+        "EFZ": [],                                         # short MSCI EAFE
+    })
+    # Max total inverse allocation (% of NAV) by regime label
+    max_inverse_pct_by_regime: dict[str, float] = field(default_factory=lambda: {
+        "bear":      30.0,
+        "crash":     50.0,
+        "deep-bear": 50.0,
+    })
+    max_single_position_pct: float = 15.0   # per-ETF cap (% of NAV)
+    conflict_threshold_pct: float = 10.0    # block ETF if portfolio > this % in its sectors
+    stop_loss_pct: float = 10.0             # tighter than long 15%
+
+
+# ---------------------------------------------------------------------------
 # Risk management
 # ---------------------------------------------------------------------------
 
@@ -153,6 +178,7 @@ class RiskConfig:
 
     lock_file_path: str = "RISK_LOCKOUT"  # path to lock file
     max_invested_pct: float = 80.0        # max % of NAV deployed in positions
+    enable_inverse_hedging: bool = True   # set False to disable all inverse ETF hedging
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +243,7 @@ class Settings:
     features: FeatureConfig = field(default_factory=FeatureConfig)
     regime: RegimeConfig = field(default_factory=RegimeConfig)
     allocation: AllocationConfig = field(default_factory=AllocationConfig)
+    hedge: HedgeConfig = field(default_factory=HedgeConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)

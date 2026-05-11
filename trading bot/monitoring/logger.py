@@ -34,6 +34,9 @@ class EventType(str, Enum):
     WEEKLY_REPORT = "weekly_report"
     STARTUP = "startup"
     SHUTDOWN = "shutdown"
+    HEDGE_ENTRY = "hedge_entry"
+    HEDGE_EXIT = "hedge_exit"
+    HEDGE_STOP_LOSS = "hedge_stop_loss"
 
 
 class StructuredFormatter(logging.Formatter):
