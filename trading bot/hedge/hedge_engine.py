@@ -46,6 +46,7 @@ class HedgeEngine:
         sector exposure are excluded. Equal-weights eligible ETFs up to
         the regime's allocation cap and the per-ETF size cap.
         """
+        _ = nav  # reserved for future minimum-dollar position guard
         if not self._risk_cfg.enable_inverse_hedging:
             return []
         if not self.is_hedge_regime(regime_state):
