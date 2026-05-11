@@ -82,7 +82,14 @@ class Portfolio:
         )
         db.update_position_shares(ticker, shares - sell_qty)
 
-    def enforce_stop_losses(self, stop_loss_pct: float | None = None) -> list[str]:
+    def enforce_stop_losses(
+        self,
+        stop_loss_pct: float | None = None,
+        source_include: str | None = None,
+        source_exclude: str | None = None,
+    ) -> list[str]:
+        if source_include is not None and source_exclude is not None:
+            raise ValueError("source_include and source_exclude are mutually exclusive")
         pct = stop_loss_pct if stop_loss_pct is not None else self._risk.trailing_stop_pct
         closed = []
         open_positions = {p["ticker"]: dict(p) for p in db.get_open_positions()}
@@ -91,10 +98,15 @@ class Portfolio:
             ticker = pos["ticker"]
             current = pos["current_price"]
             meta = open_positions.get(ticker, {})
+            source = meta.get("signal_source", "congressional")
+
+            if source_include is not None and source != source_include:
+                continue
+            if source_exclude is not None and source == source_exclude:
+                continue
+
             peak = meta.get("peak_price") or pos["avg_entry_price"]
-
             db.update_position_peak(ticker, current)
-
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:
                 self.close_position(
@@ -110,7 +122,11 @@ class Portfolio:
                 closed.append(ticker)
         return closed
 
-    def enforce_take_profits(self, take_profit_pct: float | None = None) -> list[str]:
+    def enforce_take_profits(
+        self,
+        take_profit_pct: float | None = None,
+        source_exclude: str | None = None,
+    ) -> list[str]:
         pct = take_profit_pct if take_profit_pct is not None else self._risk.take_profit_pct
         reduced = []
         open_positions = {p["ticker"]: dict(p) for p in db.get_open_positions()}
@@ -119,12 +135,16 @@ class Portfolio:
             ticker = pos["ticker"]
             if ticker in reduced:
                 continue
+            meta = open_positions.get(ticker, {})
+            source = meta.get("signal_source", "congressional")
+
+            if source_exclude is not None and source == source_exclude:
+                continue
+
             entry = pos["avg_entry_price"]
             current = pos["current_price"]
             gain_pct = (current - entry) / entry * 100
-
             if gain_pct >= pct:
-                meta = open_positions.get(ticker, {})
                 self.reduce_position(
                     ticker=ticker,
                     shares=pos["qty"],

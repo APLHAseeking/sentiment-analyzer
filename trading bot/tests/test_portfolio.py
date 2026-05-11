@@ -234,6 +234,57 @@ def test_stop_loss_writes_closed_position_record(portfolio, mock_broker, db):
 from system.config import RiskConfig
 
 
+def test_enforce_stop_losses_source_include_processes_only_matching(mock_broker, db):
+    from system.config import RiskConfig
+    p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=5.0))
+    # Both positions drop 6% — triggers 5% custom threshold
+    mock_broker.get_positions.return_value = [
+        {"ticker": "SH",   "qty": 10.0, "current_price": 94.0, "avg_entry_price": 100.0},
+        {"ticker": "AAPL", "qty": 5.0,  "current_price": 94.0, "avg_entry_price": 100.0},
+    ]
+    db.insert_disclosures([{
+        "id": "sf-aapl-01", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("sf-aapl-01", "AAPL", 7, 4.0, "Good", [])
+    db.insert_position("SH",   100.0, 10.0, 5.0, "2026-04-01", None, "Hedge", "hedge")
+    db.insert_position("AAPL", 100.0, 5.0,  4.0, "2026-04-01", sid,  "Test",  "congressional")
+    # source_include="hedge" → only SH processed
+    closed = p.enforce_stop_losses(source_include="hedge")
+    assert "SH" in closed
+    assert "AAPL" not in closed
+
+
+def test_enforce_stop_losses_source_exclude_skips_matching(mock_broker, db):
+    from system.config import RiskConfig
+    p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=5.0))
+    mock_broker.get_positions.return_value = [
+        {"ticker": "SH",   "qty": 10.0, "current_price": 94.0, "avg_entry_price": 100.0},
+        {"ticker": "AAPL", "qty": 5.0,  "current_price": 94.0, "avg_entry_price": 100.0},
+    ]
+    db.insert_disclosures([{
+        "id": "sf-aapl-02", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("sf-aapl-02", "AAPL", 7, 4.0, "Good", [])
+    db.insert_position("SH",   100.0, 10.0, 5.0, "2026-04-01", None, "Hedge", "hedge")
+    db.insert_position("AAPL", 100.0, 5.0,  4.0, "2026-04-01", sid,  "Test",  "congressional")
+    # source_exclude="hedge" → SH skipped, AAPL processed
+    closed = p.enforce_stop_losses(source_exclude="hedge")
+    assert "SH" not in closed
+    assert "AAPL" in closed
+
+
+def test_enforce_stop_losses_raises_when_both_filters_set(mock_broker):
+    p = Portfolio(broker=mock_broker)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        p.enforce_stop_losses(source_include="hedge", source_exclude="congressional")
+
+
 def test_portfolio_reads_max_positions_from_config(mock_broker):
     risk_cfg = RiskConfig(max_positions=5)
     p = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
