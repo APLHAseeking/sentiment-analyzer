@@ -88,7 +88,10 @@ def test_run_factor_screen_returns_top_n(mocker):
         "screener.factor_scorer._fetch_momentum_batch",
         return_value={t: (float(i), float(i * 2)) for i, t in enumerate(tickers)},
     )
-    mocker.patch("screener.factor_scorer.gather_research", return_value=None)
+    mocker.patch(
+        "screener.factor_scorer.gather_research_batch",
+        return_value={t: None for t in tickers},
+    )
     result = run_factor_screen(tickers, top_n=3)
     assert len(result) <= 3
     assert all(isinstance(c, FactorCandidate) for c in result)

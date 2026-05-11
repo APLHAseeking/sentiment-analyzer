@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pandas as pd
 import yfinance as yf
 
-from bot.researcher import gather_research, gather_research_batch, ResearchReport
+from bot.researcher import gather_research_batch, ResearchReport
 
 log = logging.getLogger(__name__)
 
