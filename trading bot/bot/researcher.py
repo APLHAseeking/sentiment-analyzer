@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -315,3 +316,25 @@ def gather_research(ticker: str) -> ResearchReport | None:
     except Exception as exc:
         log.warning("gather_research(%s) failed — skipping research: %s", ticker, exc)
         return None
+
+
+def gather_research_batch(
+    tickers: list[str],
+    max_workers: int = 5,
+) -> dict[str, "ResearchReport | None"]:
+    """Fetch ResearchReport for multiple tickers concurrently.
+
+    Returns a dict keyed by ticker in the same order as the input list.
+    Tickers that fail (or where gather_research returns None) map to None.
+    """
+    if not tickers:
+        return {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {t: pool.submit(gather_research, t) for t in tickers}
+    result: dict[str, "ResearchReport | None"] = {}
+    for t in tickers:
+        try:
+            result[t] = futures[t].result()
+        except Exception:
+            result[t] = None
+    return result

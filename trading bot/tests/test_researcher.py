@@ -241,3 +241,34 @@ def test_score_sentiment_returns_none_on_invalid_strength(mocker):
     mock_client.messages.create.return_value = mock_resp
     mocker.patch("bot.researcher._get_sentiment_client", return_value=mock_client)
     assert _score_sentiment("headlines") == (None, None, ())
+
+
+def test_gather_research_batch_returns_dict_keyed_by_ticker(mocker):
+    from bot.researcher import gather_research_batch
+    mocker.patch("bot.researcher.gather_research", return_value=None)
+    result = gather_research_batch(["AAPL", "MSFT"])
+    assert set(result.keys()) == {"AAPL", "MSFT"}
+
+
+def test_gather_research_batch_preserves_input_order(mocker):
+    from bot.researcher import gather_research_batch
+    mocker.patch("bot.researcher.gather_research", return_value=None)
+    result = gather_research_batch(["AAPL", "MSFT", "GOOG"])
+    assert list(result.keys()) == ["AAPL", "MSFT", "GOOG"]
+
+
+def test_gather_research_batch_empty_input_returns_empty_dict():
+    from bot.researcher import gather_research_batch
+    assert gather_research_batch([]) == {}
+
+
+def test_gather_research_batch_handles_unexpected_exception(mocker):
+    from bot.researcher import gather_research_batch
+    def _raise(ticker):
+        if ticker == "FAIL":
+            raise RuntimeError("unexpected")
+        return None
+    mocker.patch("bot.researcher.gather_research", side_effect=_raise)
+    result = gather_research_batch(["AAPL", "FAIL"])
+    assert result["FAIL"] is None
+    assert "AAPL" in result
