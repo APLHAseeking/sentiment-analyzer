@@ -37,6 +37,7 @@ class SimState:
     positions: dict[str, dict] = field(default_factory=dict)
     trades: list[SimTrade] = field(default_factory=list)
     equity_curve: list[tuple[str, float]] = field(default_factory=list)
+    total_volume_traded: float = 0.0
 
 
 def _apply_slippage(price: float, side: str, slippage_bps: float) -> float:
@@ -50,8 +51,8 @@ def _apply_commission(value: float, commission_pct: float) -> float:
 
 
 def simulate_portfolio(
-    signals: list[dict],        # list of {date, ticker, conviction, position_pct, regime_label}
-    price_data: dict[str, pd.Series],  # ticker → daily close price series
+    signals: list[dict],
+    price_data: dict[str, pd.Series],
     initial_cash: float = 100_000.0,
     slippage_bps: float = 10.0,
     commission_pct: float = 0.05,
@@ -59,6 +60,7 @@ def simulate_portfolio(
     max_position_pct: float = 8.0,
     trailing_stop_pct: float = 15.0,
     take_profit_pct: float = 25.0,
+    fill_delay_bars: int = 0,
 ) -> SimState:
     """Simulate the portfolio day-by-day through the provided signal list.
 
@@ -69,18 +71,26 @@ def simulate_portfolio(
     price_data : maps ticker → pd.Series of daily close prices (DatetimeIndex).
     """
     state = SimState(cash=initial_cash)
-    signal_by_date: dict[str, list[dict]] = {}
-    for sig in signals:
-        signal_by_date.setdefault(sig["date"], []).append(sig)
 
     # Determine date range from price_data
     all_dates = sorted({str(d.date()) for series in price_data.values()
                         for d in series.index})
 
+    # Build pending execution queue (handles fill_delay_bars)
+    date_to_idx: dict[str, int] = {d: i for i, d in enumerate(all_dates)}
+    pending: dict[str, list[dict]] = {}
+    for sig in signals:
+        sig_date = sig["date"]
+        idx = date_to_idx.get(sig_date)
+        if idx is None:
+            continue
+        exec_idx = min(idx + fill_delay_bars, len(all_dates) - 1)
+        pending.setdefault(all_dates[exec_idx], []).append(sig)
+
     peak_prices: dict[str, float] = {}
 
     for day_str in all_dates:
-        day_signals = signal_by_date.get(day_str, [])
+        day_signals = pending.get(day_str, [])
 
         # --- Update prices and check stops/profits -----------------------
         closed_today = []
@@ -137,6 +147,7 @@ def simulate_portfolio(
 
             shares = cost_basis / fill_price
             state.cash -= total_cost
+            state.total_volume_traded += shares * fill_price
             state.positions[ticker] = {
                 "ticker": ticker,
                 "entry_date": day_str,
@@ -188,6 +199,7 @@ def _close_position(
     pos = state.positions.pop(ticker)
     fill_price = _apply_slippage(current_price, "sell", slippage_bps)
     gross = pos["shares"] * fill_price
+    state.total_volume_traded += gross
     commission = _apply_commission(gross, commission_pct)
     proceeds = gross - commission
     state.cash += proceeds

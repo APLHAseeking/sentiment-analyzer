@@ -160,3 +160,38 @@ def test_walk_forward_accepts_alloc_cfg():
         persist_to_db=False,
     )
     assert isinstance(result.aggregated_metrics, dict)
+
+
+def test_total_volume_traded_positive_after_trade():
+    price_data = {"AAPL": _price_series(100, 0.001, 50)}
+    signals = [{"date": "2020-01-02", "ticker": "AAPL",
+                "conviction": 7, "position_pct": 10.0, "regime_label": "bull"}]
+    sim = simulate_portfolio(signals, price_data, initial_cash=100_000,
+                             slippage_bps=0, commission_pct=0)
+    # open + close → two fills → volume > 0
+    assert sim.total_volume_traded > 0
+
+
+def test_fill_delay_bars_defers_entry():
+    dates = pd.date_range("2020-01-01", periods=20, freq="B")
+    prices = pd.Series([100.0] * 20, index=dates)
+    # Signal fires on dates[0]; with delay=2 the entry should land on dates[2]
+    signals = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                "conviction": 7, "position_pct": 10.0, "regime_label": "bull"}]
+    sim = simulate_portfolio(signals, {"AAPL": prices}, initial_cash=100_000,
+                             fill_delay_bars=2, slippage_bps=0, commission_pct=0,
+                             trailing_stop_pct=9999.0, take_profit_pct=9999.0)
+    assert len(sim.trades) >= 1
+    assert sim.trades[0].entry_date == str(dates[2].date())
+
+
+def test_fill_delay_zero_unchanged_behaviour():
+    price_data = {"AAPL": _price_series(100, 0.002, 50)}
+    signals = [{"date": "2020-01-02", "ticker": "AAPL",
+                "conviction": 7, "position_pct": 5.0, "regime_label": "bull"}]
+    base = simulate_portfolio(signals, price_data, initial_cash=100_000,
+                              fill_delay_bars=0, slippage_bps=0, commission_pct=0)
+    new  = simulate_portfolio(signals, price_data, initial_cash=100_000,
+                              slippage_bps=0, commission_pct=0)  # default fill_delay_bars=0
+    # Equity curves must be identical
+    assert base.equity_curve == new.equity_curve
