@@ -94,3 +94,58 @@ def test_compute_all_edge_case_empty_equity():
     result = compute_all(eq)
     assert result["total_return_pct"] == 0.0
     assert result["sharpe"] == 0.0
+
+
+from backtesting.metrics import turnover, avg_holding_period
+from backtesting.simulation import SimTrade
+
+
+def _make_trade(entry="2020-01-02", exit_="2020-01-22",
+                pnl_pct=5.0, regime="bull", conviction=7):
+    return SimTrade(
+        ticker="AAPL",
+        entry_date=entry,
+        exit_date=exit_,
+        entry_price=100.0,
+        exit_price=100.0 * (1 + pnl_pct / 100),
+        shares=10.0,
+        pnl=pnl_pct * 10,
+        pnl_pct=pnl_pct,
+        regime_at_entry=regime,
+        conviction=conviction,
+        exit_reason="take_profit",
+    )
+
+
+def test_turnover_zero_when_no_volume():
+    eq = _equity([100_000.0] * 10)
+    assert turnover(0.0, eq) == pytest.approx(0.0)
+
+
+def test_turnover_ratio():
+    # avg NAV = 100_000; traded 50_000 → turnover = 0.5
+    eq = _equity([100_000.0] * 10)
+    assert turnover(50_000.0, eq) == pytest.approx(0.5, rel=1e-3)
+
+
+def test_avg_holding_period_empty():
+    assert avg_holding_period([]) == pytest.approx(0.0)
+
+
+def test_avg_holding_period_single_trade():
+    # entry 2020-01-02, exit 2020-01-12 → 10 calendar days
+    t = _make_trade(entry="2020-01-02", exit_="2020-01-12")
+    assert avg_holding_period([t]) == pytest.approx(10.0)
+
+
+def test_compute_all_includes_turnover_when_volume_provided():
+    eq = _equity([100_000.0, 101_000.0, 102_000.0])
+    result = compute_all(eq, total_volume_traded=50_000.0)
+    assert "turnover" in result
+    assert result["turnover"] is not None
+
+
+def test_compute_all_turnover_none_when_not_provided():
+    eq = _equity([100_000.0, 101_000.0])
+    result = compute_all(eq)
+    assert result.get("turnover") is None

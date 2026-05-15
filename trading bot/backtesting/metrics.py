@@ -99,10 +99,41 @@ def avg_trade_return(trade_returns: pd.Series) -> float:
     return float(trade_returns.mean())
 
 
-def compute_all(equity: pd.Series, trade_returns: pd.Series | None = None) -> dict:
+def turnover(total_volume_traded: float, equity: pd.Series) -> float:
+    """Total traded value divided by average NAV."""
+    if equity.empty:
+        return 0.0
+    avg_nav = float(equity.mean())
+    if avg_nav == 0:
+        return 0.0
+    return total_volume_traded / avg_nav
+
+
+def avg_holding_period(trades: list) -> float:
+    """Mean calendar days between entry_date and exit_date across all trades."""
+    from datetime import date as _date
+    if not trades:
+        return 0.0
+    days = []
+    for t in trades:
+        try:
+            entry = _date.fromisoformat(t.entry_date)
+            exit_ = _date.fromisoformat(t.exit_date)
+            days.append((exit_ - entry).days)
+        except (ValueError, AttributeError):
+            pass
+    return float(sum(days) / len(days)) if days else 0.0
+
+
+def compute_all(
+    equity: pd.Series,
+    trade_returns: pd.Series | None = None,
+    trades: list | None = None,
+    total_volume_traded: float | None = None,
+) -> dict:
     """Compute the full metrics suite."""
     tr = trade_returns if trade_returns is not None else pd.Series(dtype=float)
-    return {
+    result = {
         "total_return_pct": round(total_return(equity) * 100, 2),
         "annualized_return_pct": round(annualized_return(equity) * 100, 2),
         "annualized_vol_pct": round(annualized_volatility(equity) * 100, 2),
@@ -114,4 +145,12 @@ def compute_all(equity: pd.Series, trade_returns: pd.Series | None = None) -> di
         "profit_factor": round(profit_factor(tr), 3),
         "avg_trade_return_pct": round(avg_trade_return(tr) * 100, 3),
         "n_trades": len(tr),
+        "avg_holding_period_days": (
+            round(avg_holding_period(trades), 1) if trades is not None else None
+        ),
+        "turnover": (
+            round(turnover(total_volume_traded, equity), 4)
+            if total_volume_traded is not None else None
+        ),
     }
+    return result
