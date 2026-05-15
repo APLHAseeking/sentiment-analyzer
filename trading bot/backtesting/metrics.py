@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+from datetime import date
 
 
 def total_return(equity: pd.Series) -> float:
@@ -111,16 +112,15 @@ def turnover(total_volume_traded: float, equity: pd.Series) -> float:
 
 def avg_holding_period(trades: list) -> float:
     """Mean calendar days between entry_date and exit_date across all trades."""
-    from datetime import date as _date
     if not trades:
         return 0.0
     days = []
     for t in trades:
         try:
-            entry = _date.fromisoformat(t.entry_date)
-            exit_ = _date.fromisoformat(t.exit_date)
+            entry = date.fromisoformat(t.entry_date)
+            exit_ = date.fromisoformat(t.exit_date)
             days.append((exit_ - entry).days)
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             pass
     return float(sum(days) / len(days)) if days else 0.0
 

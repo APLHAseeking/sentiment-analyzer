@@ -6,12 +6,31 @@ import pytest
 from backtesting.metrics import (
     total_return, annualized_return, sharpe_ratio, sortino_ratio,
     max_drawdown, win_rate, profit_factor, compute_all,
+    turnover, avg_holding_period,
 )
+from backtesting.simulation import SimTrade
 
 
 def _equity(values):
     dates = pd.date_range("2020-01-01", periods=len(values), freq="B")
     return pd.Series(values, index=dates)
+
+
+def _make_trade(entry="2020-01-02", exit_="2020-01-22",
+                pnl_pct=5.0, regime="bull", conviction=7):
+    return SimTrade(
+        ticker="AAPL",
+        entry_date=entry,
+        exit_date=exit_,
+        entry_price=100.0,
+        exit_price=100.0 * (1 + pnl_pct / 100),
+        shares=10.0,
+        pnl=pnl_pct * 10,
+        pnl_pct=pnl_pct,
+        regime_at_entry=regime,
+        conviction=conviction,
+        exit_reason="take_profit",
+    )
 
 
 def test_total_return_zero_on_flat():
@@ -94,27 +113,6 @@ def test_compute_all_edge_case_empty_equity():
     result = compute_all(eq)
     assert result["total_return_pct"] == 0.0
     assert result["sharpe"] == 0.0
-
-
-from backtesting.metrics import turnover, avg_holding_period
-from backtesting.simulation import SimTrade
-
-
-def _make_trade(entry="2020-01-02", exit_="2020-01-22",
-                pnl_pct=5.0, regime="bull", conviction=7):
-    return SimTrade(
-        ticker="AAPL",
-        entry_date=entry,
-        exit_date=exit_,
-        entry_price=100.0,
-        exit_price=100.0 * (1 + pnl_pct / 100),
-        shares=10.0,
-        pnl=pnl_pct * 10,
-        pnl_pct=pnl_pct,
-        regime_at_entry=regime,
-        conviction=conviction,
-        exit_reason="take_profit",
-    )
 
 
 def test_turnover_zero_when_no_volume():
