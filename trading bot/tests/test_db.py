@@ -202,3 +202,38 @@ def test_get_regime_transitions_filters_by_days(db):
     assert len(all_rows) == 2
     assert len(recent_rows) == 1
     assert recent_rows[0]["from_label"] == "bull"
+
+
+def test_insert_fundamental_signal_and_retrieve(db):
+    sig_id = db.insert_fundamental_signal(
+        ticker="NVDA",
+        signal_date="2026-03-15",
+        composite_score=8,
+        position_pct=4.5,
+        rationale="Strong momentum and value",
+        signal_source="fundamental",
+    )
+    assert isinstance(sig_id, int) and sig_id > 0
+
+    rows = db.get_fundamental_signals()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["ticker"] == "NVDA"
+    assert row["date"] == "2026-03-15"
+    assert row["composite_score"] == 8
+    assert pytest.approx(row["position_pct"]) == 4.5
+    assert row["conviction"] == 5  # synthetic constant from query
+
+
+def test_get_fundamental_signals_filters_by_date(db):
+    db.insert_fundamental_signal("AAPL", "2026-01-10", 7, 3.0, "Value play")
+    db.insert_fundamental_signal("MSFT", "2026-03-20", 9, 5.0, "Growth momentum")
+
+    # Both returned when since_date is early enough
+    all_rows = db.get_fundamental_signals(since_date="2026-01-01")
+    assert len(all_rows) == 2
+
+    # Only the newer one returned when filtering by since_date
+    recent_rows = db.get_fundamental_signals(since_date="2026-02-01")
+    assert len(recent_rows) == 1
+    assert recent_rows[0]["ticker"] == "MSFT"

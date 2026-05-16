@@ -69,7 +69,9 @@ def run_walk_forward(
     Parameters
     ----------
     market_data  : daily regime features data (SPY/VIX).
-    signal_data  : historical congressional signals (or synthetic test signals).
+    signal_data  : historical signals — congressional AND fundamental screener signals
+                   merged and sorted by date. Each dict must have at minimum:
+                   {date, ticker, conviction, position_pct}.
     price_data   : individual stock price series for simulation.
     regime_cfg   : regime model configuration.
     backtest_cfg : train/test window parameters.

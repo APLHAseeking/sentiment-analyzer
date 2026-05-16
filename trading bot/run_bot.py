@@ -81,7 +81,21 @@ def run_backtest() -> None:
     except Exception as exc:
         log.warning("Could not load signals from DB: %s — using empty signal list", exc)
 
-    log.info("Loaded %d historical signals", len(signals))
+    log.info("Loaded %d congressional signals", len(signals))
+
+    # Load fundamental screener signals
+    try:
+        from bot.db import get_fundamental_signals
+        fund_rows = get_fundamental_signals()
+        fundamental_signals = [dict(r) for r in fund_rows]
+        log.info("Loaded %d fundamental signals", len(fundamental_signals))
+        signals = signals + fundamental_signals
+        # Re-sort by date after merging
+        signals.sort(key=lambda s: s.get("date", ""))
+    except Exception as exc:
+        log.warning("Could not load fundamental signals: %s", exc)
+
+    log.info("Loaded %d total signals for backtest", len(signals))
 
     # Price data for simulation: only tickers we have signals for
     tickers = list({s["ticker"] for s in signals})

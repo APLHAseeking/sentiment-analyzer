@@ -111,6 +111,19 @@ CREATE TABLE IF NOT EXISTS regime_transitions (
     logged_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_regime_transitions_date ON regime_transitions(date);
+
+CREATE TABLE IF NOT EXISTS fundamental_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker TEXT NOT NULL,
+    signal_date TEXT NOT NULL,
+    composite_score INTEGER NOT NULL,
+    position_pct REAL NOT NULL,
+    rationale TEXT NOT NULL,
+    signal_source TEXT NOT NULL DEFAULT 'fundamental',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fundamental_signals_date ON fundamental_signals(signal_date);
+CREATE INDEX IF NOT EXISTS idx_fundamental_signals_ticker ON fundamental_signals(ticker);
 """
 
 def _db_path() -> str:
@@ -353,4 +366,34 @@ def get_recent_disclosures_for_ticker(ticker: str, since_date: str) -> list[sqli
                WHERE ticker = ? AND transaction_date >= ?
                ORDER BY transaction_date DESC""",
             (ticker.upper(), since_date),
+        ).fetchall()
+
+
+def insert_fundamental_signal(
+    ticker: str,
+    signal_date: str,
+    composite_score: int,
+    position_pct: float,
+    rationale: str,
+    signal_source: str = "fundamental",
+) -> int:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO fundamental_signals
+               (ticker, signal_date, composite_score, position_pct, rationale, signal_source, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (ticker, signal_date, composite_score, position_pct, rationale,
+             signal_source, datetime.now(UTC).isoformat()),
+        )
+        return cur.lastrowid
+
+
+def get_fundamental_signals(since_date: str = "2000-01-01") -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT ticker, signal_date as date, composite_score, position_pct, 5 as conviction
+               FROM fundamental_signals
+               WHERE signal_date >= ?
+               ORDER BY signal_date ASC""",
+            (since_date,),
         ).fetchall()
