@@ -1,3 +1,4 @@
+import functools
 import re
 from datetime import date
 import yfinance as yf
@@ -16,8 +17,13 @@ def compute_lag_days(transaction_date: str, disclosure_date: str) -> int:
     return (d - t).days
 
 
+@functools.lru_cache(maxsize=2000)
 def get_sector_for_ticker(ticker: str) -> str:
     return yf.Ticker(ticker).info.get("sector", "Unknown")
+
+
+def clear_sector_cache() -> None:
+    get_sector_for_ticker.cache_clear()
 
 
 def parse_amount_min_usd(amount_range: str) -> int:

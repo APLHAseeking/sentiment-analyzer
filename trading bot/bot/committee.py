@@ -1,6 +1,12 @@
+import logging
+import os
+import shelve
+
 import requests
-from functools import lru_cache
+
 from bot.config import PROPUBLICA_API_KEY
+
+log = logging.getLogger(__name__)
 
 COMMITTEE_SECTOR_MAP: dict[str, list[str]] = {
     "Senate Banking": ["Financial Services", "Real Estate"],
@@ -11,10 +17,10 @@ COMMITTEE_SECTOR_MAP: dict[str, list[str]] = {
     "House Armed Services": ["Industrials"],
     "Senate Agriculture": ["Consumer Defensive", "Basic Materials"],
     "House Agriculture": ["Consumer Defensive", "Basic Materials"],
-    "Senate Finance": ["All"],
+    "Senate Finance": ["Financial Services", "Healthcare", "Consumer Defensive", "Consumer Cyclical"],
     "Senate HELP": ["Healthcare"],
     "Senate Environment": ["Utilities", "Energy", "Basic Materials"],
-    "House Ways and Means": ["All"],
+    "House Ways and Means": ["Financial Services", "Healthcare", "Consumer Defensive", "Consumer Cyclical"],
     "House Science": ["Technology"],
     "Senate Commerce Science": ["Technology", "Communication Services"],
     "Senate Intelligence": ["Technology", "Communication Services", "Industrials"],
@@ -30,6 +36,10 @@ COMMITTEE_SECTOR_MAP: dict[str, list[str]] = {
 _PROPUBLICA_BASE = "https://api.propublica.org/congress/v1"
 _HEADERS = {"X-API-Key": PROPUBLICA_API_KEY}
 
+_COMMITTEE_CACHE_PATH = "propublica_committee_cache"  # shelve adds .db extension
+_in_memory_cache: dict[str, tuple[str, ...]] = {}
+
+
 def _search_propublica_member(name: str) -> dict:
     try:
         resp = requests.get(
@@ -43,15 +53,14 @@ def _search_propublica_member(name: str) -> dict:
     except requests.exceptions.RequestException as exc:
         raise RuntimeError(f"ProPublica lookup failed for {name!r}") from exc
 
-@lru_cache(maxsize=512)
-def get_committees_for_politician(name: str) -> tuple[str, ...]:
+
+def _fetch_committees(name: str) -> tuple[str, ...]:
     data = _search_propublica_member(name)
     results = data.get("results", [])
     if not results:
         return ()
     if len(results) > 1:
-        import logging
-        logging.getLogger(__name__).warning(
+        log.warning(
             "ProPublica returned %d members for %r — using first match only",
             len(results), name,
         )
@@ -61,11 +70,50 @@ def get_committees_for_politician(name: str) -> tuple[str, ...]:
             committees.append(c.get("name", ""))
     return tuple(committees)
 
+
+def get_committees_for_politician(name: str) -> tuple[str, ...]:
+    # 1. In-memory fast path
+    if name in _in_memory_cache:
+        return _in_memory_cache[name]
+
+    # 2. Disk cache
+    try:
+        with shelve.open(_COMMITTEE_CACHE_PATH) as cache:
+            if name in cache:
+                result = cache[name]
+                _in_memory_cache[name] = result
+                return result
+    except Exception as exc:
+        log.debug("Disk cache read failed for %r: %s", name, exc)
+
+    # 3. Live lookup
+    result = _fetch_committees(name)
+    _in_memory_cache[name] = result
+    try:
+        with shelve.open(_COMMITTEE_CACHE_PATH) as cache:
+            cache[name] = result
+    except Exception as exc:
+        log.debug("Disk cache write failed for %r: %s", name, exc)
+    return result
+
+
+def clear_committee_cache() -> None:
+    _in_memory_cache.clear()
+    try:
+        for ext in ("", ".db", ".dir", ".bak", ".dat"):
+            path = _COMMITTEE_CACHE_PATH + ext
+            if os.path.exists(path):
+                os.remove(path)
+    except Exception:
+        pass
+
+
 def _committee_covers_sector(committee_name: str, sector: str) -> bool:
     for key, sectors in COMMITTEE_SECTOR_MAP.items():
         if key.lower() in committee_name.lower():
             return "All" in sectors or sector in sectors
     return False
+
 
 def sector_has_committee_overlap(sector: str, committees: tuple[str, ...] | list[str]) -> bool:
     return any(_committee_covers_sector(c, sector) for c in committees)

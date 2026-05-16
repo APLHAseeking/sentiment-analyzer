@@ -1,7 +1,8 @@
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 from bot.signal_engine import (
     compute_lag_days, is_qualified_signal, filter_disclosures,
     parse_amount_min_usd, is_large_enough_trade, get_cluster_count,
+    get_sector_for_ticker, clear_sector_cache,
 )
 
 def _disc(**kwargs):
@@ -111,6 +112,22 @@ def test_get_cluster_count_excludes_sales(mocker):
     ])
     count = get_cluster_count("AAPL", since_date="2026-03-26")
     assert count == 1
+
+# --- Sector cache test ---
+
+def test_get_sector_is_cached():
+    """get_sector_for_ticker should call yf.Ticker only once for repeated lookups."""
+    clear_sector_cache()
+    mock_ticker = MagicMock()
+    mock_ticker.info = {"sector": "Technology"}
+    with patch("bot.signal_engine.yf.Ticker", return_value=mock_ticker) as mock_yf:
+        result1 = get_sector_for_ticker("AAPL")
+        result2 = get_sector_for_ticker("AAPL")
+    assert result1 == "Technology"
+    assert result2 == "Technology"
+    mock_yf.assert_called_once_with("AAPL")
+    clear_sector_cache()  # cleanup
+
 
 def test_get_cluster_count_deduplicates_same_politician(mocker):
     mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
