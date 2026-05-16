@@ -1,5 +1,12 @@
+from __future__ import annotations
+
+import logging
 from datetime import date
+
 import bot.db as db
+from execution.broker_interface import OrderStatus
+
+log = logging.getLogger(__name__)
 
 # Kept for any external code that imports these constants directly.
 MAX_POSITIONS = 20
@@ -31,10 +38,14 @@ class Portfolio:
 
     def open_position(self, ticker: str, position_pct: float, signal_id: int | None,
                       rationale: str, entry_price: float,
-                      signal_source: str = "congressional") -> None:
+                      signal_source: str = "congressional") -> bool:
+        """Returns True if position was successfully opened."""
         position_pct = min(position_pct, self._risk.max_position_pct)
         shares = (self.get_cash() * position_pct / 100) / entry_price
-        self.broker.place_order(ticker=ticker, side="buy", qty=shares)
+        order = self.broker.place_order(ticker=ticker, side="buy", qty=shares)
+        if order.status == OrderStatus.REJECTED:
+            log.warning("Order rejected for %s: %s", ticker, order.reject_reason)
+            return False
         db.insert_position(
             ticker=ticker,
             entry_price=entry_price,
@@ -46,11 +57,17 @@ class Portfolio:
             signal_source=signal_source,
         )
         self._opened_today += 1
+        return True
 
     def close_position(self, ticker: str, shares: float, exit_price: float,
                        exit_reason: str, signal_id: int | None, entry_price: float,
                        entry_date: str, signal_source: str = "congressional") -> None:
-        self.broker.place_order(ticker=ticker, side="sell", qty=shares)
+        order = self.broker.place_order(ticker=ticker, side="sell", qty=shares)
+        if order.status == OrderStatus.REJECTED:
+            log.warning(
+                "Sell order rejected for %s: %s — cleaning up SQLite anyway (state uncertain)",
+                ticker, order.reject_reason,
+            )
         db.log_closed_position(
             ticker=ticker,
             entry_price=entry_price,
@@ -68,7 +85,12 @@ class Portfolio:
                         signal_id: int | None, entry_price: float, entry_date: str,
                         signal_source: str = "congressional") -> None:
         sell_qty = shares / 2
-        self.broker.place_order(ticker=ticker, side="sell", qty=sell_qty)
+        order = self.broker.place_order(ticker=ticker, side="sell", qty=sell_qty)
+        if order.status == OrderStatus.REJECTED:
+            log.warning(
+                "Reduce sell order rejected for %s: %s — updating SQLite anyway (state uncertain)",
+                ticker, order.reject_reason,
+            )
         db.log_closed_position(
             ticker=ticker,
             entry_price=entry_price,
@@ -81,6 +103,33 @@ class Portfolio:
             signal_source=signal_source,
         )
         db.update_position_shares(ticker, shares - sell_qty)
+
+    def reconcile_with_broker(self) -> dict:
+        """Compare broker positions vs SQLite. Log and resolve discrepancies.
+
+        Returns dict with keys: ghost_positions (in SQLite not broker),
+        untracked_positions (in broker not SQLite).
+        """
+        broker_positions = {p["ticker"] for p in self.broker.get_positions()}
+        db_positions = {p["ticker"] for p in db.get_open_positions()}
+
+        ghost = db_positions - broker_positions
+        untracked = broker_positions - db_positions
+
+        for ticker in ghost:
+            log.warning(
+                "RECONCILIATION: %s in SQLite but not at broker — removing ghost position",
+                ticker,
+            )
+            db.delete_position(ticker)
+
+        for ticker in untracked:
+            log.warning(
+                "RECONCILIATION: %s at broker but not in SQLite — manual trade or bug",
+                ticker,
+            )
+
+        return {"ghost_positions": list(ghost), "untracked_positions": list(untracked)}
 
     def enforce_stop_losses(
         self,

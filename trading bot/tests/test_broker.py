@@ -48,7 +48,7 @@ def test_place_order_buy_returns_order():
     order = broker.place_order(ticker="AAPL", side="buy", qty=10.0)
     mock_api.submit_order.assert_called_once()
     assert order.ticker == "AAPL"
-    assert order.status == OrderStatus.PENDING
+    assert order.status == OrderStatus.SUBMITTED
 
 
 def test_place_order_sell():
@@ -56,7 +56,7 @@ def test_place_order_sell():
     broker = AlpacaBroker(api_client=mock_api)
     order = broker.place_order(ticker="AAPL", side="sell", qty=5.0)
     assert order.ticker == "AAPL"
-    assert order.status == OrderStatus.PENDING
+    assert order.status == OrderStatus.SUBMITTED
     submitted_req = mock_api.submit_order.call_args[0][0]
     from alpaca.trading.enums import OrderSide as AlpacaSide
     assert submitted_req.side == AlpacaSide.SELL

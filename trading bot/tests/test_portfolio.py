@@ -335,6 +335,46 @@ def test_portfolio_reads_take_profit_from_config(mock_broker, db):
     assert "TSLA" in reduced
 
 
+def test_open_position_rejected_order_does_not_insert_to_db(mock_broker, db):
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    rejected_order = Order(
+        ticker="AAPL", side=OrderSide.BUY, qty=10.0, order_type=OrderType.MARKET,
+    )
+    rejected_order.status = OrderStatus.REJECTED
+    rejected_order.reject_reason = "insufficient buying power"
+    mock_broker.place_order.return_value = rejected_order
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.open_position("AAPL", 5.0, None, "test", 100.0)
+
+    assert result is False
+    open_positions = db.get_open_positions()
+    assert not any(p["ticker"] == "AAPL" for p in open_positions)
+
+
+def test_reconcile_removes_ghost_positions(mock_broker, db):
+    # Insert a position in SQLite that doesn't exist at the broker
+    db.insert_disclosures([{
+        "id": "rec-001", "politician": "J", "ticker": "GHOST",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    db.insert_position("GHOST", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    # Broker reports no positions (ghost not there)
+    mock_broker.get_positions.return_value = []
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.reconcile_with_broker()
+
+    assert "GHOST" in result["ghost_positions"]
+    assert result["untracked_positions"] == []
+    # Ghost position must be removed from SQLite
+    open_positions = db.get_open_positions()
+    assert not any(p["ticker"] == "GHOST" for p in open_positions)
+
+
 def test_enforce_take_profits_source_exclude_skips_matching(mock_broker, db):
     from system.config import RiskConfig
     p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(take_profit_pct=5.0))

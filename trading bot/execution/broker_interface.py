@@ -19,6 +19,7 @@ class OrderSide(str, Enum):
 
 class OrderStatus(str, Enum):
     PENDING = "pending"
+    SUBMITTED = "submitted"
     FILLED = "filled"
     CANCELLED = "cancelled"
     REJECTED = "rejected"

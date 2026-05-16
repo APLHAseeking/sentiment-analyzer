@@ -33,7 +33,14 @@ def db(tmp_path, monkeypatch):
 
 @pytest.fixture
 def mock_broker(mocker):
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
     broker = mocker.MagicMock()
     broker.get_cash.return_value = 100_000.0
     broker.get_positions.return_value = []
+    # Return a submitted (accepted) order by default so open_position writes to DB.
+    _default_order = Order(
+        ticker="MOCK", side=OrderSide.BUY, qty=1.0, order_type=OrderType.MARKET,
+    )
+    _default_order.status = OrderStatus.SUBMITTED
+    broker.place_order.return_value = _default_order
     return broker

@@ -4,6 +4,7 @@ Pass `api_client` in tests to inject a mock and avoid network calls.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from alpaca.trading.client import TradingClient
@@ -13,6 +14,8 @@ from alpaca.trading.enums import OrderSide as AlpacaSide, TimeInForce
 from execution.broker_interface import (
     BrokerInterface, Order, OrderSide, OrderStatus, OrderType,
 )
+
+log = logging.getLogger(__name__)
 
 
 class AlpacaBroker(BrokerInterface):
@@ -89,10 +92,11 @@ class AlpacaBroker(BrokerInterface):
         )
         try:
             self._api.submit_order(req)
-            order.status = OrderStatus.PENDING
+            order.status = OrderStatus.SUBMITTED  # Alpaca accepted it
         except Exception as exc:
             order.status = OrderStatus.REJECTED
             order.reject_reason = str(exc)
+            log.warning("Order rejected for %s %s %.4f: %s", side, ticker, qty, exc)
         return order
 
     def cancel_order(self, order_id: str) -> bool:
