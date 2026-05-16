@@ -136,6 +136,12 @@ class HMMRegimeEngine:
     def _fit_single(
         self, n: int, X: np.ndarray, index: pd.DatetimeIndex, scaler: StandardScaler
     ) -> FitResult:
+        if self._cfg.covariance_type != "diag":
+            log.warning(
+                "covariance_type=%r is not implemented; using 'diag'. "
+                "Only diagonal covariance is supported.",
+                self._cfg.covariance_type,
+            )
         model = GaussianHMM(
             n_components=n,
             covariance_type=self._cfg.covariance_type,
@@ -161,7 +167,8 @@ class HMMRegimeEngine:
         train_regimes_ranked = np.array([state_to_rank[s] for s in train_regimes])
 
         log_lik = model.score(X)
-        n_params = n ** 2 + n * X.shape[1] + n * X.shape[1]  # approximate
+        D = X.shape[1]
+        n_params = n * (n - 1) + (n - 1) + 2 * n * D  # transmat + startprob + means + variances
         bic = -2 * log_lik + n_params * np.log(len(X))
         aic = -2 * log_lik + 2 * n_params
 
@@ -221,8 +228,9 @@ class HMMRegimeEngine:
         """Classify regimes for the given data using the fitted model.
 
         IMPORTANT: data must end at or before the current bar. We use
-        model.predict_proba() on the full sequence up to each bar,
-        which is causal (forward-only) for the HMM — no future leakage.
+        model.predict_proba_filtered() which produces forward-only filtered
+        posteriors (causal). Each row t depends only on observations 1..t,
+        so there is no look-ahead bias.
         """
         if self._result is None:
             raise RuntimeError("Call fit() before classify()")
@@ -234,8 +242,8 @@ class HMMRegimeEngine:
             data, self._result.scaler, feature_cfg
         )
 
-        # Posterior probabilities — causal because HMM uses past sequence only
-        posteriors = self._result.model.predict_proba(X)  # shape (T, n_regimes)
+        # Filtered (causal) posteriors — forward-only, no look-ahead bias
+        posteriors = self._result.model.predict_proba_filtered(X)  # shape (T, n_regimes)
         viterbi = self._result.model.predict(X)
 
         n = self._result.n_regimes

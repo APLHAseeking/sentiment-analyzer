@@ -127,7 +127,14 @@ class GaussianHMM:
         return self._viterbi(log_emis)
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        """Smoothed posterior P(state | all observations). Shape (T, K)."""
+        """Smoothed posterior P(state | ALL observations). Shape (T, K).
+
+        WARNING: This uses the forward-backward (Baum-Welch) smoothing algorithm.
+        The backward pass incorporates future observations, so posteriors at time t
+        depend on obs_{t+1}, ..., obs_T. This introduces look-ahead bias and must
+        NOT be used for backtesting or live inference. Use predict_proba_filtered()
+        for causal (real-time) inference.
+        """
         log_emis = self._log_emission(X)
         log_alpha = self._forward(log_emis)
         log_beta = self._backward(log_emis)
@@ -135,6 +142,18 @@ class GaussianHMM:
         # Normalise each row
         log_gamma -= logsumexp(log_gamma, axis=1, keepdims=True)
         return np.exp(log_gamma)
+
+    def predict_proba_filtered(self, X: np.ndarray) -> np.ndarray:
+        """Filtered (causal) posterior P(state_t | obs_1..t). No look-ahead.
+
+        Uses only the forward algorithm — each row t reflects only past observations.
+        Use this for live inference and backtesting. predict_proba() is smoothed
+        (uses future observations) and must not be used causally.
+        """
+        log_emis = self._log_emission(X)
+        log_alpha = self._forward(log_emis)
+        log_alpha -= logsumexp(log_alpha, axis=1, keepdims=True)
+        return np.exp(log_alpha)
 
     # ------------------------------------------------------------------
     # Internal algorithms

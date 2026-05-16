@@ -361,3 +361,119 @@ def test_current_regime_logs_transition(db, fitted_engine):
     assert len(rows) >= 1
     assert rows[-1]["from_label"] == "fake_prior"
     assert rows[-1]["to_label"] in ["bear", "neutral", "bull"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for Bug 1 fix: predict_proba_filtered() is causal (no look-ahead)
+# ---------------------------------------------------------------------------
+
+def test_predict_proba_filtered_shape(fitted_engine):
+    """predict_proba_filtered returns (T, K) matching predict_proba shape."""
+    engine, _, _ = fitted_engine
+    model = engine._result.model
+    K = model.n_components
+    D = model.means_.shape[1]
+    rng = np.random.default_rng(0)
+    X = rng.standard_normal((50, D))
+    out = model.predict_proba_filtered(X)
+    assert out.shape == (50, K)
+
+
+def test_predict_proba_filtered_rows_sum_to_one(fitted_engine):
+    """Each row of predict_proba_filtered sums to 1.0 (valid distribution)."""
+    engine, _, _ = fitted_engine
+    model = engine._result.model
+    D = model.means_.shape[1]
+    rng = np.random.default_rng(1)
+    X = rng.standard_normal((40, D))
+    out = model.predict_proba_filtered(X)
+    row_sums = out.sum(axis=1)
+    np.testing.assert_allclose(row_sums, 1.0, atol=1e-6)
+
+
+def test_predict_proba_filtered_is_causal(fitted_engine):
+    """Filtered posterior at time t must not change when future observations are appended.
+
+    If classify() used the smoothed backward pass, posteriors at earlier time steps
+    would shift when we add more data. The forward-only filter is invariant to future
+    observations, so the first T posteriors of X[:T+k] must equal those of X[:T].
+    """
+    engine, _, _ = fitted_engine
+    model = engine._result.model
+    D = model.means_.shape[1]
+    rng = np.random.default_rng(7)
+    X_short = rng.standard_normal((30, D))
+    X_long = np.vstack([X_short, rng.standard_normal((20, D))])
+
+    proba_short = model.predict_proba_filtered(X_short)
+    proba_long = model.predict_proba_filtered(X_long)
+
+    # First 30 rows must be identical — forward pass is path-independent of future data
+    np.testing.assert_allclose(proba_short, proba_long[:30], atol=1e-9)
+
+
+def test_predict_proba_smoothed_differs_from_filtered(fitted_engine):
+    """Smoothed and filtered posteriors differ, confirming they use different algorithms."""
+    engine, _, _ = fitted_engine
+    model = engine._result.model
+    D = model.means_.shape[1]
+    rng = np.random.default_rng(99)
+    X = rng.standard_normal((60, D))
+    smoothed = model.predict_proba(X)
+    filtered = model.predict_proba_filtered(X)
+    # They will not be identical because the backward pass redistributes probability mass
+    assert not np.allclose(smoothed, filtered, atol=1e-4), (
+        "Smoothed and filtered posteriors must differ — they use different algorithms"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests for Bug 2 fix: BIC parameter count
+# ---------------------------------------------------------------------------
+
+def test_bic_is_smaller_than_wrong_formula(fitted_engine):
+    """Corrected BIC must be strictly smaller than the old overcounting formula.
+
+    The old formula used n^2 free parameters for the transition matrix; the correct
+    count is n*(n-1) (one constraint per row: rows sum to 1). For n>=2 the correct
+    count is always smaller, which means the corrected BIC penalty is smaller.
+    This test reconstructs both values and checks the corrected one is used.
+    """
+    from features.feature_pipeline import build_feature_matrix_with_scaler, FeatureConfig
+
+    engine, data, feature_cfg = fitted_engine
+    result = engine._result
+    model = result.model
+    n = result.n_regimes
+    D = model.means_.shape[1]
+
+    X, _ = build_feature_matrix_with_scaler(data.iloc[:500], result.scaler, feature_cfg)
+    T = len(X)
+    log_lik = model.score(X)
+
+    correct_n_params = n * (n - 1) + (n - 1) + 2 * n * D
+    wrong_n_params = n ** 2 + 2 * n * D  # old formula
+    correct_bic = -2 * log_lik + correct_n_params * np.log(T)
+    wrong_bic = -2 * log_lik + wrong_n_params * np.log(T)
+
+    # Correct formula has fewer params → smaller BIC penalty → smaller BIC
+    assert correct_bic < wrong_bic
+
+    # The BIC stored in the FitResult must match the corrected formula
+    assert result.bic == pytest.approx(correct_bic, rel=1e-6), (
+        f"Stored BIC {result.bic:.2f} does not match corrected formula {correct_bic:.2f}. "
+        f"Did _fit_single still use the old n^2 formula?"
+    )
+
+
+def test_bic_param_count_values():
+    """Unit-test the corrected parameter count arithmetic directly."""
+    # For n=3 states, D=4 features:
+    #   transmat: 3*(3-1)=6, startprob: 2, means: 12, variances: 12 → total 32
+    #   old formula: 3^2 + 2*3*4 = 9+24 = 33
+    n, D = 3, 4
+    correct = n * (n - 1) + (n - 1) + 2 * n * D
+    wrong = n ** 2 + 2 * n * D
+    assert correct == 32
+    assert wrong == 33
+    assert correct != wrong
