@@ -32,6 +32,12 @@ from backtesting.simulation import (
 )
 from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
+from backtesting.analysis import (
+    regime_performance, confidence_bucket_performance, exposure_by_regime,
+)
+from backtesting.benchmarks import buy_and_hold, trend_following, random_allocation
+from backtesting.metrics import total_return as _total_return
+from backtesting.stress_test import DEFAULT_STRESS_SCENARIOS, apply_stress_scenario
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +52,11 @@ class WalkForwardWindow:
     metrics: dict = field(default_factory=dict)
     regime_states: list[RegimeState] = field(default_factory=list)
     run_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    benchmarks: dict = field(default_factory=dict)
+    regime_breakdown: dict = field(default_factory=dict)
+    confidence_breakdown: dict = field(default_factory=dict)
+    regime_exposure: dict = field(default_factory=dict)
+    stress_results: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -55,14 +66,15 @@ class WalkForwardResult:
 
 
 def run_walk_forward(
-    market_data: pd.DataFrame,       # full history of market bars (for regime fitting)
-    signal_data: list[dict],          # list of {date, ticker, conviction, position_pct}
-    price_data: dict[str, pd.Series], # ticker → daily close prices (for simulation)
-    regime_cfg: Any,                  # system.config.RegimeConfig
-    backtest_cfg: Any,                # system.config.BacktestConfig
+    market_data: pd.DataFrame,
+    signal_data: list[dict],
+    price_data: dict[str, pd.Series],
+    regime_cfg: Any,
+    backtest_cfg: Any,
     feature_cfg: FeatureConfig | None = None,
     alloc_cfg: Any = None,
     persist_to_db: bool = True,
+    stress_scenarios: list | None = None,
 ) -> WalkForwardResult:
     """Run walk-forward validation over the full dataset.
 
@@ -175,8 +187,71 @@ def run_walk_forward(
 
         eq = equity_series(sim)
         tr = trade_returns(sim)
-        metrics = compute_all(eq, tr)
+        metrics = compute_all(
+            eq, tr,
+            trades=sim.trades,
+            total_volume_traded=sim.total_volume_traded,
+        )
         metrics["n_regimes"] = engine.n_regimes
+
+        # --- Benchmarks ---
+        benchmarks: dict = {}
+        try:
+            spy_close = market_data["close"].loc[
+                (market_data.index >= pd.Timestamp(test_start)) &
+                (market_data.index <= pd.Timestamp(test_end))
+            ]
+            if not spy_close.empty:
+                bah_eq = buy_and_hold(spy_close)
+                tf_eq  = trend_following(spy_close)
+                rand_eq = random_allocation(
+                    spy_close,
+                    n_signals=max(len(enriched_signals), 1),
+                )
+                benchmarks = {
+                    "buy_and_hold":    round(_total_return(bah_eq) * 100, 2),
+                    "trend_following": round(_total_return(tf_eq)  * 100, 2),
+                    "random":          round(_total_return(rand_eq) * 100, 2),
+                }
+        except Exception as exc:
+            log.warning("Benchmark computation failed for window %d: %s", i + 1, exc)
+
+        # --- Analysis ---
+        regime_breakdown     = regime_performance(sim.trades)
+        confidence_breakdown = confidence_bucket_performance(sim.trades)
+        regime_exposure      = exposure_by_regime(test_states)
+
+        # --- Stress tests ---
+        scenarios = (
+            stress_scenarios
+            if stress_scenarios is not None
+            else DEFAULT_STRESS_SCENARIOS
+        )
+        stress_results: dict = {}
+        for scenario in scenarios:
+            try:
+                s_prices, s_slip, s_delay = apply_stress_scenario(
+                    test_price_data, backtest_cfg.slippage_bps, scenario
+                )
+                s_sim = simulate_portfolio(
+                    signals=enriched_signals,
+                    price_data=s_prices,
+                    initial_cash=100_000.0,
+                    slippage_bps=s_slip,
+                    commission_pct=backtest_cfg.commission_pct,
+                    fill_delay_bars=s_delay,
+                )
+                s_eq = equity_series(s_sim)
+                s_tr = trade_returns(s_sim)
+                stress_results[scenario.name] = compute_all(
+                    s_eq, s_tr,
+                    trades=s_sim.trades,
+                    total_volume_traded=s_sim.total_volume_traded,
+                )
+            except Exception as exc:
+                log.warning("Stress scenario '%s' failed (window %d): %s",
+                            scenario.name, i + 1, exc)
+                stress_results[scenario.name] = {}
 
         window_result = WalkForwardWindow(
             train_start=str(train_start.date()),
@@ -186,6 +261,11 @@ def run_walk_forward(
             n_regimes=engine.n_regimes,
             metrics=metrics,
             regime_states=test_states,
+            benchmarks=benchmarks,
+            regime_breakdown=regime_breakdown,
+            confidence_breakdown=confidence_breakdown,
+            regime_exposure=regime_exposure,
+            stress_results=stress_results,
         )
         all_results.append(window_result)
         log.info("Window %d complete: Sharpe=%.2f, MaxDD=%.1f%%, n_trades=%d",
@@ -259,12 +339,51 @@ def _aggregate(windows: list[WalkForwardWindow]) -> dict:
         return {}
     metrics_list = [w.metrics for w in windows]
     keys = ["sharpe", "sortino", "max_drawdown_pct", "total_return_pct", "win_rate"]
-    result = {}
+    result: dict = {}
     for k in keys:
         vals = [m.get(k, 0.0) for m in metrics_list if k in m]
         if vals:
-            result[f"avg_{k}"] = round(float(sum(vals) / len(vals)), 3)
-            result[f"min_{k}"] = round(min(vals), 3)
-            result[f"max_{k}"] = round(max(vals), 3)
+            result[f"avg_{k}"]  = round(float(sum(vals) / len(vals)), 3)
+            result[f"min_{k}"]  = round(min(vals), 3)
+            result[f"max_{k}"]  = round(max(vals), 3)
     result["n_windows"] = len(windows)
+
+    # Benchmark excess return vs strategy total_return per window
+    strat_returns = [m.get("total_return_pct", 0.0) for m in metrics_list]
+    for bench in ("buy_and_hold", "trend_following", "random"):
+        bench_vals = [w.benchmarks.get(bench, 0.0) for w in windows]
+        if bench_vals:
+            excess = [s - b for s, b in zip(strat_returns, bench_vals)]
+            result[f"avg_excess_return_vs_{bench}_pct"] = round(
+                sum(excess) / len(excess), 3
+            )
+
+    # Stress scenario aggregation
+    scenario_names: set[str] = set()
+    for w in windows:
+        scenario_names.update(w.stress_results.keys())
+    for sname in sorted(scenario_names):
+        sharpes = [w.stress_results[sname].get("sharpe", 0.0)
+                   for w in windows if sname in w.stress_results]
+        mdds = [w.stress_results[sname].get("max_drawdown_pct", 0.0)
+                for w in windows if sname in w.stress_results]
+        if sharpes:
+            result[f"stress_{sname}_avg_sharpe"] = round(
+                sum(sharpes) / len(sharpes), 3
+            )
+        if mdds:
+            result[f"stress_{sname}_avg_max_dd_pct"] = round(
+                sum(mdds) / len(mdds), 3
+            )
+
+    # Regime exposure averaging across windows
+    regime_labels: set[str] = set()
+    for w in windows:
+        regime_labels.update(w.regime_exposure.keys())
+    for label in sorted(regime_labels):
+        exposures = [w.regime_exposure.get(label, 0.0) for w in windows]
+        result[f"avg_exposure_{label}"] = round(
+            sum(exposures) / len(exposures), 4
+        )
+
     return result

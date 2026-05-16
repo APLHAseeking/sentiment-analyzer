@@ -233,3 +233,81 @@ def test_price_lookup_handles_datetime_index():
     # Nonexistent date returns None
     val3 = _get_price(series, "2099-01-01")
     assert val3 is None
+
+
+def _make_wf_result(stress_scenarios=None):
+    """Run a minimal walk-forward and return the result."""
+    import numpy as np
+    import pandas as pd
+    from dataclasses import dataclass, field
+    from backtesting.walk_forward import run_walk_forward
+    from features.feature_pipeline import FeatureConfig
+
+    @dataclass
+    class _RCfg:
+        candidate_counts: tuple = (3,)
+        selection_criterion: str = "bic"
+        n_iter: int = 10
+        random_state: int = 42
+        covariance_type: str = "diag"
+        min_stable_bars: int = 2
+        instability_penalty: float = 0.5
+        label_maps: dict = field(default_factory=lambda: {3: ["bear", "neutral", "bull"]})
+        model_path: str = "test_wf_stress.joblib"
+
+    @dataclass
+    class _BCfg:
+        train_years: int = 1
+        test_months: int = 3
+        step_months: int = 3
+        slippage_bps: float = 0.0
+        commission_pct: float = 0.0
+        benchmark_ticker: str = "SPY"
+        min_train_bars: int = 100
+
+    rng = np.random.default_rng(7)
+    n = 700
+    dates = pd.date_range("2020-01-01", periods=n, freq="B")
+    close = 100 * np.cumprod(1 + rng.normal(0.0003, 0.01, n))
+    market_data = pd.DataFrame({
+        "close": close,
+        "volume": rng.integers(1_000_000, 10_000_000, n).astype(float),
+        "vix": np.clip(15 + rng.normal(0, 3, n), 10, 50),
+    }, index=dates)
+
+    return run_walk_forward(
+        market_data=market_data,
+        signal_data=[],
+        price_data={},
+        regime_cfg=_RCfg(),
+        backtest_cfg=_BCfg(),
+        feature_cfg=FeatureConfig(vol_window=20, trend_window=50,
+                                   min_history_bars=100, use_vix=False),
+        persist_to_db=False,
+        stress_scenarios=stress_scenarios,
+    )
+
+
+def test_walk_forward_window_has_benchmarks():
+    result = _make_wf_result(stress_scenarios=[])
+    assert result.windows, "Expected at least one window"
+    w = result.windows[0]
+    assert hasattr(w, "benchmarks")
+    assert isinstance(w.benchmarks, dict)
+    assert "buy_and_hold" in w.benchmarks
+
+
+def test_walk_forward_window_has_regime_exposure():
+    result = _make_wf_result(stress_scenarios=[])
+    w = result.windows[0]
+    assert hasattr(w, "regime_exposure")
+    assert isinstance(w.regime_exposure, dict)
+    if w.regime_exposure:
+        assert abs(sum(w.regime_exposure.values()) - 1.0) < 0.01
+
+
+def test_walk_forward_empty_stress_list_produces_no_stress_results():
+    result = _make_wf_result(stress_scenarios=[])
+    w = result.windows[0]
+    assert hasattr(w, "stress_results")
+    assert w.stress_results == {}
