@@ -52,7 +52,7 @@ from market_data.market_feed import get_regime_data
 from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
-from risk.risk_manager import RiskManager
+from risk.risk_manager import RiskManager, RiskState
 from screener.factor_scorer import run_factor_screen, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
 from dashboard.data_store import DashboardStore
@@ -130,6 +130,10 @@ class RegimeAwareOrchestrator:
         else:
             self._fit_model()
 
+        # Initialize incremental inference state (O(K²) per bar going forward)
+        self._engine.initialize_incremental(self._market_data, self._feature_cfg)
+        log.info("Incremental inference initialized")
+
         # Update to today's regime
         self._update_regime()
 
@@ -181,6 +185,7 @@ class RegimeAwareOrchestrator:
             )
             self._last_refit_date = today
             self._engine.save(self._cfg.regime.model_path)
+            self._engine.initialize_incremental(self._market_data, self._feature_cfg)
             self._update_regime()
             new_label = self._regime_state.regime_label if self._regime_state else "unknown"
             emit_event(log, EventType.MODEL_FIT,
@@ -208,13 +213,23 @@ class RegimeAwareOrchestrator:
             log.warning("Failed to update market data: %s", exc)
 
     def _update_regime(self) -> None:
-        """Classify today's regime using the fitted model."""
+        """Classify today's regime using the fitted model (causal, incremental)."""
         if self._market_data is None or not self._engine.is_fitted:
             return
         try:
-            self._regime_state = self._engine.current_regime(
-                self._market_data, self._feature_cfg
-            )
+            # Build single-bar DataFrame for today
+            latest_bar = self._market_data.iloc[[-1]]  # last row
+
+            if self._engine._last_log_alpha is not None:
+                # Fast path: O(K²) incremental update
+                regime_state = self._engine.update_single(
+                    latest_bar, date_str=str(self._market_data.index[-1].date())
+                )
+            else:
+                # Fallback: full classify (first run or after refit before initialize_incremental)
+                regime_state = self._engine.current_regime(self._market_data, self._feature_cfg)
+
+            self._regime_state = regime_state
             today = date.today().isoformat()
             log_regime(
                 date=today,
@@ -234,7 +249,11 @@ class RegimeAwareOrchestrator:
                          self._regime_state.confidence,
                          self._regime_state.is_stable)
         except Exception as exc:
-            log.warning("Regime update failed: %s", exc)
+            log.warning("Regime update failed: %s — falling back to full classify", exc)
+            try:
+                self._regime_state = self._engine.current_regime(self._market_data, self._feature_cfg)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Morning pipeline (regime-aware)
@@ -560,6 +579,18 @@ class RegimeAwareOrchestrator:
             entry_price=entry_price,
             signal_source=signal_type,
         )
+        try:
+            from bot.db import insert_fundamental_signal
+            insert_fundamental_signal(
+                ticker=ticker,
+                signal_date=date.today().isoformat(),
+                composite_score=candidate.composite_score,
+                position_pct=final_pct,
+                rationale=score.rationale,
+                signal_source=signal_type,
+            )
+        except Exception as exc:
+            log.debug("Could not persist fundamental signal for %s: %s", ticker, exc)
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(
             log, EventType.ORDER_PLACED,
@@ -736,6 +767,57 @@ class RegimeAwareOrchestrator:
                 log.exception("Exit review failed for %s", pos.get("ticker", "?"))
 
     # ------------------------------------------------------------------
+    # Intraday stop-loss check (US market hours)
+    # ------------------------------------------------------------------
+
+    def run_intraday_check(self) -> None:
+        """Midday stop-loss and circuit breaker check (called during US market hours)."""
+        if not _NYSE.is_session(date.today().isoformat()):
+            return
+        log.info("Intraday check started")
+        try:
+            # Re-fetch equity (prices have moved since open)
+            equity = self._broker.get_equity() if hasattr(self._broker, "get_equity") \
+                else self._broker.get_cash()
+            self._risk.check_circuit_breakers(equity)
+
+            # Check if forced deleveraging is needed
+            if self._risk.state == RiskState.DELEVERAGE:
+                log.warning("Intraday: DELEVERAGE state — closing all positions")
+                self._close_all_positions(reason="intraday_deleverage")
+
+            # Run stop-losses on live prices (long positions)
+            self._portfolio.enforce_stop_losses(source_exclude="hedge")
+            # Hedge positions tighter stop
+            if self._cfg.risk.enable_inverse_hedging:
+                self._portfolio.enforce_stop_losses(
+                    stop_loss_pct=self._cfg.hedge.stop_loss_pct,
+                    source_include="hedge",
+                )
+            log.info("Intraday check complete. Risk state: %s", self._risk.state.value)
+        except Exception as exc:
+            log.warning("Intraday check failed: %s", exc)
+
+    def _close_all_positions(self, reason: str = "forced") -> None:
+        """Close all open positions immediately. Used by deleverage circuit breaker."""
+        open_pos = get_open_positions()
+        for pos in open_pos:
+            try:
+                import yfinance as yf
+                price = yf.Ticker(pos["ticker"]).info.get("regularMarketPrice", 0)
+                if not price:
+                    continue
+                self._portfolio.close_position(
+                    pos["ticker"], pos["shares"], exit_price=price,
+                    exit_reason=reason, signal_id=pos.get("signal_id"),
+                    entry_price=pos["entry_price"], entry_date=pos["entry_date"],
+                    signal_source=pos.get("signal_source", "congressional"),
+                )
+                log.info("Force-closed %s: %s", pos["ticker"], reason)
+            except Exception:
+                log.exception("Failed to force-close %s", pos.get("ticker", "?"))
+
+    # ------------------------------------------------------------------
     # EOD
     # ------------------------------------------------------------------
 
@@ -788,5 +870,8 @@ class RegimeAwareOrchestrator:
         scheduler.add_job(self.run_exit_review, "cron", hour=15, minute=0)
         scheduler.add_job(self.run_eod, "cron", hour=22, minute=30)
         scheduler.add_job(log_weekly_report, "cron", day_of_week="fri", hour=22, minute=45)
+        # Intraday checks during US market hours (17:00 = 11:00 EST, 20:00 = 14:00 EST)
+        scheduler.add_job(self.run_intraday_check, "cron", hour=17, minute=0)
+        scheduler.add_job(self.run_intraday_check, "cron", hour=20, minute=0)
         log.info("Regime-aware scheduler started (Amsterdam timezone)")
         scheduler.start()

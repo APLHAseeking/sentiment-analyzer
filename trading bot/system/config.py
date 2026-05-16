@@ -185,6 +185,7 @@ class RiskConfig:
     # Portfolio-level circuit breakers
     daily_loss_reduce_pct: float = 3.0    # cut position sizes 50% if daily loss exceeds this
     daily_loss_halt_pct: float = 4.0      # stop new entries if daily loss exceeds this
+    daily_loss_deleverage_pct: float = 6.0  # close all positions if daily loss exceeds this
     weekly_loss_halt_pct: float = 8.0     # stop new entries for rest of week
     max_drawdown_lockout_pct: float = 15.0  # lock file created; manual unlock required
 
@@ -267,8 +268,10 @@ class Settings:
         """Raise ValueError for obviously wrong config combinations."""
         if self.risk.daily_loss_reduce_pct >= self.risk.daily_loss_halt_pct:
             raise ValueError("daily_loss_reduce_pct must be < daily_loss_halt_pct")
-        if self.risk.daily_loss_halt_pct >= self.risk.max_drawdown_lockout_pct:
-            raise ValueError("daily_loss_halt_pct must be < max_drawdown_lockout_pct")
+        if self.risk.daily_loss_halt_pct >= self.risk.daily_loss_deleverage_pct:
+            raise ValueError("daily_loss_halt_pct must be < daily_loss_deleverage_pct")
+        if self.risk.daily_loss_deleverage_pct >= self.risk.max_drawdown_lockout_pct:
+            raise ValueError("daily_loss_deleverage_pct must be < max_drawdown_lockout_pct")
         if self.backtest.train_years <= 0 or self.backtest.test_months <= 0:
             raise ValueError("Backtest train/test windows must be positive")
         if self.allocation.min_confidence_to_trade < 0 or self.allocation.min_confidence_to_trade > 1:

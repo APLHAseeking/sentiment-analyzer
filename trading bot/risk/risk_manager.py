@@ -31,6 +31,7 @@ class RiskState(str, Enum):
     NORMAL = "normal"
     SIZES_REDUCED = "sizes_reduced"     # daily loss reduce threshold hit
     ENTRIES_HALTED = "entries_halted"   # daily loss halt threshold hit
+    DELEVERAGE = "deleverage"           # force-close all positions
     WEEKLY_HALT = "weekly_halt"         # weekly loss halt threshold hit
     LOCKED_OUT = "locked_out"           # max drawdown lockout — lock file exists
 
@@ -78,7 +79,7 @@ class RiskManager:
             self._day_start_nav = current_nav
             self._current_day = today
             # Only halted states due to daily circuit breakers are reset daily
-            if self._state in (RiskState.SIZES_REDUCED, RiskState.ENTRIES_HALTED):
+            if self._state in (RiskState.SIZES_REDUCED, RiskState.ENTRIES_HALTED, RiskState.DELEVERAGE):
                 log.info("Risk state reset to NORMAL at start of new trading day")
                 self._state = RiskState.NORMAL
 
@@ -128,8 +129,22 @@ class RiskManager:
                                alert=True)
                 return
 
+            if daily_loss >= self._risk.daily_loss_deleverage_pct:
+                if self._state not in (RiskState.DELEVERAGE, RiskState.WEEKLY_HALT, RiskState.LOCKED_OUT):
+                    log.warning(
+                        "Daily loss %.2f%% ≥ deleverage threshold %.2f%% — forcing position close",
+                        daily_loss, self._risk.daily_loss_deleverage_pct,
+                    )
+                    self._state = RiskState.DELEVERAGE
+                    db.log_risk_event("deleverage", f"Daily loss {daily_loss:.2f}%",
+                                      {"nav": current_nav, "loss_pct": daily_loss})
+                    emit_event(log, EventType.CIRCUIT_BREAKER,
+                               f"Daily loss {daily_loss:.2f}% — DELEVERAGE: closing all positions",
+                               alert=True)
+                return
+
             if daily_loss >= self._risk.daily_loss_halt_pct:
-                if self._state not in (RiskState.ENTRIES_HALTED, RiskState.WEEKLY_HALT):
+                if self._state not in (RiskState.ENTRIES_HALTED, RiskState.WEEKLY_HALT, RiskState.DELEVERAGE):
                     log.warning(
                         "Daily loss %.2f%% ≥ halt threshold %.2f%% — stopping new entries",
                         daily_loss, self._risk.daily_loss_halt_pct,
@@ -192,7 +207,7 @@ class RiskManager:
             self._state = RiskState.LOCKED_OUT
             return RiskVeto(allowed=False, reason="Risk lockout active — delete lock file to resume")
 
-        if self._state in (RiskState.ENTRIES_HALTED, RiskState.WEEKLY_HALT, RiskState.LOCKED_OUT):
+        if self._state in (RiskState.ENTRIES_HALTED, RiskState.WEEKLY_HALT, RiskState.LOCKED_OUT, RiskState.DELEVERAGE):
             return RiskVeto(allowed=False, reason=f"Entries blocked by circuit breaker: {self._state}")
 
         if self._state == RiskState.SIZES_REDUCED:
