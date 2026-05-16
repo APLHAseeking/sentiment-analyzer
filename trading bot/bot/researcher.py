@@ -178,7 +178,11 @@ def _try_fincept(ticker: str) -> dict | None:
         return None
 
 
-def gather_research(ticker: str) -> ResearchReport | None:
+def gather_research(
+    ticker: str,
+    momentum_1m_override: float | None = None,
+    momentum_3m_override: float | None = None,
+) -> ResearchReport | None:
     try:
         t = yf.Ticker(ticker)
         info = t.info
@@ -191,6 +195,12 @@ def gather_research(ticker: str) -> ResearchReport | None:
             price_3m = hist["Close"].iloc[0]
             momentum_1m = (current / price_1m - 1) * 100
             momentum_3m = (current / price_3m - 1) * 100
+
+        # Use precomputed momentum from factor screener if available (avoids double download)
+        if momentum_1m_override is not None:
+            momentum_1m = momentum_1m_override
+        if momentum_3m_override is not None:
+            momentum_3m = momentum_3m_override
 
         raw_rating = (info.get("recommendationKey") or "").lower()
         analyst_rating = _RATING_MAP.get(raw_rating)

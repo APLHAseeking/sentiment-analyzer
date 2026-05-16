@@ -50,6 +50,62 @@ def _apply_commission(value: float, commission_pct: float) -> float:
     return value * commission_pct / 100
 
 
+def _get_price(series: pd.Series, day_str: str) -> float | None:
+    """Safe price lookup that handles DatetimeIndex vs string date mismatch."""
+    day_ts = pd.Timestamp(day_str)
+    try:
+        val = series.get(day_ts)
+        if val is None:
+            # try string directly as fallback
+            val = series.get(day_str)
+        return float(val) if val is not None and not pd.isna(val) else None
+    except Exception:
+        return None
+
+
+def _reduce_position(
+    state: SimState,
+    ticker: str,
+    current_price: float,
+    exit_date: str,
+    exit_reason: str,
+    slippage_bps: float,
+    commission_pct: float,
+    peak_prices: dict,
+) -> None:
+    """Sell 50% of position, keeping the other half open."""
+    if ticker not in state.positions:
+        return
+    pos = state.positions[ticker]
+    sell_shares = pos["shares"] / 2
+    fill_price = _apply_slippage(current_price, "sell", slippage_bps)
+    gross = sell_shares * fill_price
+    state.total_volume_traded += gross
+    commission = _apply_commission(gross, commission_pct)
+    proceeds = gross - commission
+    state.cash += proceeds
+
+    entry_value = sell_shares * pos["entry_price"]
+    pnl = proceeds - entry_value
+    pnl_pct = pnl / entry_value * 100 if entry_value > 0 else 0.0
+
+    state.trades.append(SimTrade(
+        ticker=ticker,
+        entry_date=pos["entry_date"],
+        exit_date=exit_date,
+        entry_price=pos["entry_price"],
+        exit_price=fill_price,
+        shares=sell_shares,
+        pnl=pnl,
+        pnl_pct=pnl_pct,
+        regime_at_entry=pos.get("regime_at_entry", "unknown"),
+        conviction=pos.get("conviction", 0),
+        exit_reason=exit_reason,
+    ))
+    # Update remaining shares in position
+    state.positions[ticker] = {**pos, "shares": pos["shares"] - sell_shares}
+
+
 def simulate_portfolio(
     signals: list[dict],
     price_data: dict[str, pd.Series],
@@ -98,9 +154,8 @@ def simulate_portfolio(
             series = price_data.get(ticker)
             if series is None:
                 continue
-            try:
-                current_price = float(series.loc[day_str])
-            except (KeyError, TypeError):
+            current_price = _get_price(series, day_str)
+            if current_price is None:
                 continue
 
             # Read old peak BEFORE updating — so today's new price doesn't hide a drop
@@ -115,12 +170,13 @@ def simulate_portfolio(
                 closed_today.append(ticker)
                 continue
 
-            # Take profit
+            # Take profit — sell 50% once to match live system behaviour
             gain = (current_price - pos["entry_price"]) / pos["entry_price"] * 100
-            if gain >= take_profit_pct:
-                _close_position(state, ticker, current_price, day_str,
-                                "take_profit", slippage_bps, commission_pct, peak_prices)
-                closed_today.append(ticker)
+            if gain >= take_profit_pct and not pos.get("take_profit_taken"):
+                _reduce_position(state, ticker, current_price, day_str,
+                                 "take_profit", slippage_bps, commission_pct, peak_prices)
+                if ticker in state.positions:
+                    state.positions[ticker]["take_profit_taken"] = True
 
         # --- Open new positions ------------------------------------------
         for sig in day_signals:
@@ -132,9 +188,8 @@ def simulate_portfolio(
             series = price_data.get(ticker)
             if series is None:
                 continue
-            try:
-                price = float(series.loc[day_str])
-            except (KeyError, TypeError):
+            price = _get_price(series, day_str)
+            if price is None:
                 continue
 
             position_pct = min(float(sig.get("position_pct", 5.0)), max_position_pct)
@@ -165,9 +220,10 @@ def simulate_portfolio(
             series = price_data.get(ticker)
             if series is None:
                 continue
-            try:
-                pos_value += pos["shares"] * float(series.loc[day_str])
-            except (KeyError, TypeError):
+            snap_price = _get_price(series, day_str)
+            if snap_price is not None:
+                pos_value += pos["shares"] * snap_price
+            else:
                 pos_value += pos["shares"] * pos["entry_price"]
 
         state.equity_curve.append((day_str, state.cash + pos_value))

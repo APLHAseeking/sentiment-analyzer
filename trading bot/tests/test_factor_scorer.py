@@ -79,18 +79,16 @@ def test_run_factor_screen_returns_top_n(mocker):
     tickers = [f"T{i}" for i in range(10)]
     mock_info = _make_info()
     mocker.patch(
-        "screener.factor_scorer._fetch_info",
-        side_effect=lambda t: (t, mock_info),
+        "screener.factor_scorer._fetch_all_infos",
+        return_value={t: mock_info for t in tickers},
     )
-    prices = {t: [float(100 + i) for i in range(63)] for t in tickers}
-    mock_close = pd.DataFrame(prices, index=pd.date_range("2026-01-01", periods=63))
     mocker.patch(
         "screener.factor_scorer._fetch_momentum_batch",
         return_value={t: (float(i), float(i * 2)) for i, t in enumerate(tickers)},
     )
     mocker.patch(
-        "screener.factor_scorer.gather_research_batch",
-        return_value={t: None for t in tickers},
+        "screener.factor_scorer._gather_research_with_momentum",
+        side_effect=lambda t, m1, m3: (t, None),
     )
     result = run_factor_screen(tickers, top_n=3)
     assert len(result) <= 3
@@ -99,8 +97,8 @@ def test_run_factor_screen_returns_top_n(mocker):
 
 def test_run_factor_screen_all_none_returns_empty(mocker):
     mocker.patch(
-        "screener.factor_scorer._fetch_info",
-        side_effect=lambda t: (t, None),
+        "screener.factor_scorer._fetch_all_infos",
+        return_value={"AAPL": None, "MSFT": None},
     )
     mocker.patch(
         "screener.factor_scorer._fetch_momentum_batch",
@@ -110,20 +108,22 @@ def test_run_factor_screen_all_none_returns_empty(mocker):
     assert result == []
 
 
-def test_run_factor_screen_uses_gather_research_batch(mocker):
+def test_run_factor_screen_calls_research_for_top_tickers(mocker):
+    """run_factor_screen calls _gather_research_with_momentum for each top ticker."""
+    tickers = ["AAPL", "MSFT"]
     mocker.patch(
-        "screener.factor_scorer._fetch_info",
-        side_effect=lambda t: (t, _make_info()),
+        "screener.factor_scorer._fetch_all_infos",
+        return_value={t: _make_info() for t in tickers},
     )
     mocker.patch(
         "screener.factor_scorer._fetch_momentum_batch",
         return_value={"AAPL": (5.0, 10.0), "MSFT": (3.0, 8.0)},
     )
-    batch_spy = mocker.patch(
-        "screener.factor_scorer.gather_research_batch",
-        return_value={"AAPL": None, "MSFT": None},
+    research_spy = mocker.patch(
+        "screener.factor_scorer._gather_research_with_momentum",
+        side_effect=lambda t, m1, m3: (t, None),
     )
-    run_factor_screen(["AAPL", "MSFT"], top_n=2)
-    batch_spy.assert_called_once()
-    tickers_arg = batch_spy.call_args[0][0]
-    assert set(tickers_arg) == {"AAPL", "MSFT"}
+    run_factor_screen(tickers, top_n=2)
+    assert research_spy.call_count == len(tickers)
+    called_tickers = {call.args[0] for call in research_spy.call_args_list}
+    assert called_tickers == set(tickers)

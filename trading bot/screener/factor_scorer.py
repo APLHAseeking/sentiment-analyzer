@@ -2,16 +2,20 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import time
 from dataclasses import dataclass
 
 import pandas as pd
 import yfinance as yf
 
-from bot.researcher import gather_research_batch, ResearchReport
+from bot.researcher import gather_research, gather_research_batch, ResearchReport
 
 log = logging.getLogger(__name__)
 
 _MIN_VALID_METRICS = 4
+_CHUNK_SIZE = 50    # tickers per chunk
+_CHUNK_DELAY = 1.0  # seconds between chunks
+_MAX_RETRIES = 2
 
 
 def _to_float(v: object) -> float | None:
@@ -31,11 +35,34 @@ class FactorCandidate:
     research: ResearchReport | None
 
 
-def _fetch_info(ticker: str) -> tuple[str, dict | None]:
-    try:
-        return ticker, yf.Ticker(ticker).info
-    except Exception:
-        return ticker, None
+def _fetch_info_with_retry(ticker: str) -> tuple[str, dict | None]:
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            return ticker, yf.Ticker(ticker).info
+        except Exception as exc:
+            if attempt < _MAX_RETRIES:
+                time.sleep(1.0 * (attempt + 1))
+            else:
+                return ticker, None
+    return ticker, None
+
+
+# Keep _fetch_info as an alias so existing tests that mock it still work.
+_fetch_info = _fetch_info_with_retry
+
+
+def _fetch_all_infos(tickers: list[str]) -> dict[str, dict | None]:
+    """Fetch yfinance info in chunks to avoid rate limits."""
+    results: dict[str, dict | None] = {}
+    for i in range(0, len(tickers), _CHUNK_SIZE):
+        chunk = tickers[i:i + _CHUNK_SIZE]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            chunk_results = list(pool.map(_fetch_info_with_retry, chunk))
+        for ticker, info in chunk_results:
+            results[ticker] = info
+        if i + _CHUNK_SIZE < len(tickers):
+            time.sleep(_CHUNK_DELAY)
+    return results
 
 
 def _fetch_momentum_batch(
@@ -137,6 +164,16 @@ def _compute_composite(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _gather_research_with_momentum(
+    ticker: str,
+    mom1m: float | None,
+    mom3m: float | None,
+) -> tuple[str, ResearchReport | None]:
+    """Call gather_research and override momentum if precomputed values are available."""
+    report = gather_research(ticker, momentum_1m_override=mom1m, momentum_3m_override=mom3m)
+    return ticker, report
+
+
 def run_factor_screen(
     tickers: list[str],
     top_n: int = 12,
@@ -145,9 +182,8 @@ def run_factor_screen(
     if not tickers:
         return []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=30) as pool:
-        results = list(pool.map(_fetch_info, tickers))
-    infos = dict(results)
+    # Bug 2 fix: chunked fetching with retry instead of 30-worker bulk fetch
+    infos = _fetch_all_infos(tickers)
 
     momentum = _fetch_momentum_batch(tickers)
 
@@ -161,8 +197,25 @@ def run_factor_screen(
 
     top = scored.nlargest(top_n, "composite_score")
 
-    top_tickers = [str(t) for t in top.index]
-    research_map = gather_research_batch(top_tickers, max_workers=research_workers)
+    # Bug 3 fix: pass precomputed momentum to researcher to avoid double download
+    research_map: dict[str, ResearchReport | None] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=research_workers) as pool:
+        futures = {
+            str(ticker_idx): pool.submit(
+                _gather_research_with_momentum,
+                str(ticker_idx),
+                momentum.get(str(ticker_idx), (None, None))[0],
+                momentum.get(str(ticker_idx), (None, None))[1],
+            )
+            for ticker_idx in top.index
+        }
+    for t, fut in futures.items():
+        try:
+            _, report = fut.result()
+            research_map[t] = report
+        except Exception as exc:
+            log.warning("research failed for %s: %s", t, exc)
+            research_map[t] = None
 
     candidates: list[FactorCandidate] = []
     for ticker_idx, row in top.iterrows():

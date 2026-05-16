@@ -2,7 +2,7 @@
 import pandas as pd
 import pytest
 
-from backtesting.simulation import simulate_portfolio, equity_series, trade_returns
+from backtesting.simulation import simulate_portfolio, equity_series, trade_returns, _get_price
 
 
 def _price_series(start: float, daily_ret: float, n: int, ticker: str = "AAPL"):
@@ -195,3 +195,41 @@ def test_fill_delay_zero_unchanged_behaviour():
                               slippage_bps=0, commission_pct=0)  # default fill_delay_bars=0
     # Equity curves must be identical
     assert base.equity_curve == new.equity_curve
+
+
+def test_take_profit_reduces_not_exits():
+    """Take-profit at +25% should sell 50% of shares, leaving the other half open."""
+    dates = pd.date_range("2020-01-01", periods=40, freq="B")
+    # Entry at 100; on day 10 price jumps to 130 (30% gain > 25% take-profit threshold)
+    prices = [100.0] * 10 + [130.0] * 30
+    price_data = {"AAPL": pd.Series(prices, index=dates)}
+    signals = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                "conviction": 7, "position_pct": 10.0, "regime_label": "bull"}]
+    # Trailing stop very high so it never fires; take-profit at 25%
+    sim = simulate_portfolio(
+        signals, price_data, initial_cash=100_000,
+        slippage_bps=0, commission_pct=0,
+        trailing_stop_pct=9999.0, take_profit_pct=25.0,
+    )
+    # Exactly one take_profit trade should have been recorded
+    tp_trades = [t for t in sim.trades if t.exit_reason == "take_profit"]
+    assert len(tp_trades) == 1, f"Expected 1 take_profit trade, got {len(tp_trades)}"
+    # The remaining half-position should still be open (closed at end_of_backtest)
+    eob_trades = [t for t in sim.trades if t.exit_reason == "end_of_backtest"]
+    assert len(eob_trades) == 1, "Remaining half should close at end_of_backtest"
+    # Shares sold in take_profit equals shares in eob (both ~50% of original)
+    assert abs(tp_trades[0].shares - eob_trades[0].shares) < 1e-9
+
+
+def test_price_lookup_handles_datetime_index():
+    """_get_price must resolve a string date against a DatetimeIndex."""
+    dates = pd.date_range("2020-01-01", periods=5, freq="B")
+    series = pd.Series([10.0, 11.0, 12.0, 13.0, 14.0], index=dates)
+    # Look up by plain string — should NOT raise and should return correct value
+    val = _get_price(series, "2020-01-01")
+    assert val == pytest.approx(10.0)
+    val2 = _get_price(series, "2020-01-03")
+    assert val2 == pytest.approx(12.0)
+    # Nonexistent date returns None
+    val3 = _get_price(series, "2099-01-01")
+    assert val3 is None
