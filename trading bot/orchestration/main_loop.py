@@ -140,6 +140,13 @@ class RegimeAwareOrchestrator:
         self._broker = broker
         self._portfolio = Portfolio(broker=broker, risk_cfg=self._cfg.risk)
 
+        # Reconcile broker positions vs SQLite — remove any ghost positions from prior crash
+        reconcile = self._portfolio.reconcile_with_broker()
+        if reconcile["ghost_positions"]:
+            emit_event(log, EventType.STARTUP,
+                       f"Reconciled {len(reconcile['ghost_positions'])} ghost position(s): "
+                       f"{reconcile['ghost_positions']}", alert=True)
+
         # Initialize risk manager NAV baseline
         equity = broker.get_equity() if hasattr(broker, "get_equity") else broker.get_cash()
         self._risk.start_of_day(equity)
@@ -369,6 +376,7 @@ class RegimeAwareOrchestrator:
                     universe,
                     top_n=_SCREENER_TOP_N,
                     research_workers=self._cfg.universe.research_concurrency,
+                    regime_label=self._regime_state.regime_label if self._regime_state else None,
                 )
                 already_open = (
                     {p["ticker"] for p in self._broker.get_positions()}
@@ -422,7 +430,7 @@ class RegimeAwareOrchestrator:
         # AI entry scoring (unchanged from existing bot)
         score: EntryScore = score_entry_with_debate(
             disc, committees=committees, sector=sector,
-            lag_days=lag, estimated_cost_pct=0.05,
+            lag_days=lag, estimated_cost_pct=1.5,
             research=research, cluster_count=cluster_count,
         )
         if score.entry != "buy":
@@ -514,7 +522,7 @@ class RegimeAwareOrchestrator:
             committees=[],
             sector=sector,
             lag_days=0,
-            estimated_cost_pct=0.05,
+            estimated_cost_pct=1.5,
             research=candidate.research,
             signal_type=signal_type,
             factor_score=candidate.composite_score,
@@ -864,13 +872,35 @@ class RegimeAwareOrchestrator:
     # ------------------------------------------------------------------
 
     def start(self) -> None:
+        from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
+        from monitoring.alerts import fire_alert
+
         scheduler = BlockingScheduler(timezone=_AMS)
+
+        def _on_job_error(event) -> None:
+            msg = f"Scheduler job '{event.job_id}' raised an exception: {event.exception}"
+            log.error(msg)
+            try:
+                fire_alert("job_error", msg, {"job_id": event.job_id,
+                                               "exception": str(event.exception)})
+            except Exception:
+                pass
+
+        def _on_job_missed(event) -> None:
+            log.warning("Scheduler job missed: %s (scheduled=%s)", event.job_id,
+                        event.scheduled_run_time)
+
+        scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
+        scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
+
         scheduler.add_job(refresh_universe, "cron", day_of_week="mon", hour=7, minute=0)
         scheduler.add_job(self.run_morning_pipeline, "cron", hour=14, minute=0)
         scheduler.add_job(self.run_exit_review, "cron", hour=15, minute=0)
+        # 15:45 = 15 mins after US open (15:30 Amsterdam = 09:30 EST)
+        scheduler.add_job(self.run_intraday_check, "cron", hour=15, minute=45)
         scheduler.add_job(self.run_eod, "cron", hour=22, minute=30)
         scheduler.add_job(log_weekly_report, "cron", day_of_week="fri", hour=22, minute=45)
-        # Intraday checks during US market hours (17:00 = 11:00 EST, 20:00 = 14:00 EST)
+        # Midday / afternoon US market checks (17:00 = 11:00 EST, 20:00 = 14:00 EST)
         scheduler.add_job(self.run_intraday_check, "cron", hour=17, minute=0)
         scheduler.add_job(self.run_intraday_check, "cron", hour=20, minute=0)
         log.info("Regime-aware scheduler started (Amsterdam timezone)")

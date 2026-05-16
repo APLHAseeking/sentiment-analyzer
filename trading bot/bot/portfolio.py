@@ -62,10 +62,10 @@ class Portfolio:
     def close_position(self, ticker: str, shares: float, exit_price: float,
                        exit_reason: str, signal_id: int | None, entry_price: float,
                        entry_date: str, signal_source: str = "congressional") -> None:
-        order = self.broker.place_order(ticker=ticker, side="sell", qty=shares)
+        order = self._place_sell_with_retry(ticker, shares)
         if order.status == OrderStatus.REJECTED:
-            log.warning(
-                "Sell order rejected for %s: %s — cleaning up SQLite anyway (state uncertain)",
+            log.error(
+                "Sell order failed for %s after retries: %s — manual close may be required",
                 ticker, order.reject_reason,
             )
         db.log_closed_position(
@@ -81,14 +81,28 @@ class Portfolio:
         )
         db.delete_position(ticker)
 
+    def _place_sell_with_retry(self, ticker: str, qty: float, max_retries: int = 3):
+        import time
+        order = None
+        for attempt in range(max_retries):
+            order = self.broker.place_order(ticker=ticker, side="sell", qty=qty)
+            if order.status != OrderStatus.REJECTED:
+                return order
+            if attempt < max_retries - 1:
+                delay = 1.0 * (attempt + 1)
+                log.warning("Sell rejected for %s (attempt %d/%d): %s — retrying in %.0fs",
+                            ticker, attempt + 1, max_retries, order.reject_reason, delay)
+                time.sleep(delay)
+        return order
+
     def reduce_position(self, ticker: str, shares: float, exit_price: float,
                         signal_id: int | None, entry_price: float, entry_date: str,
                         signal_source: str = "congressional") -> None:
         sell_qty = shares / 2
-        order = self.broker.place_order(ticker=ticker, side="sell", qty=sell_qty)
+        order = self._place_sell_with_retry(ticker, sell_qty)
         if order.status == OrderStatus.REJECTED:
-            log.warning(
-                "Reduce sell order rejected for %s: %s — updating SQLite anyway (state uncertain)",
+            log.error(
+                "Reduce sell failed for %s after retries: %s — manual close may be required",
                 ticker, order.reject_reason,
             )
         db.log_closed_position(

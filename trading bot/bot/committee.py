@@ -1,12 +1,15 @@
 import logging
 import os
 import shelve
+import time
 
 import requests
 
 from bot.config import PROPUBLICA_API_KEY
 
 log = logging.getLogger(__name__)
+
+_CACHE_TTL_SECONDS = 30 * 24 * 3600  # 30 days — committee memberships change slowly
 
 COMMITTEE_SECTOR_MAP: dict[str, list[str]] = {
     "Senate Banking": ["Financial Services", "Real Estate"],
@@ -72,17 +75,28 @@ def _fetch_committees(name: str) -> tuple[str, ...]:
 
 
 def get_committees_for_politician(name: str) -> tuple[str, ...]:
-    # 1. In-memory fast path
+    now = time.time()
+
+    # 1. In-memory fast path (no TTL — cleared on restart)
     if name in _in_memory_cache:
         return _in_memory_cache[name]
 
-    # 2. Disk cache
+    # 2. Disk cache with TTL
     try:
         with shelve.open(_COMMITTEE_CACHE_PATH) as cache:
             if name in cache:
-                result = cache[name]
-                _in_memory_cache[name] = result
-                return result
+                entry = cache[name]
+                # Support both legacy format (bare tuple) and new format (ts, tuple)
+                if isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[0], float):
+                    ts, result = entry
+                    if now - ts < _CACHE_TTL_SECONDS:
+                        _in_memory_cache[name] = result
+                        return result
+                    log.debug("Cache expired for %r (age=%.0fd)", name, (now - ts) / 86400)
+                else:
+                    # Legacy entry — treat as valid, refresh on next TTL cycle
+                    _in_memory_cache[name] = entry
+                    return entry
     except Exception as exc:
         log.debug("Disk cache read failed for %r: %s", name, exc)
 
@@ -91,7 +105,7 @@ def get_committees_for_politician(name: str) -> tuple[str, ...]:
     _in_memory_cache[name] = result
     try:
         with shelve.open(_COMMITTEE_CACHE_PATH) as cache:
-            cache[name] = result
+            cache[name] = (now, result)  # store with timestamp
     except Exception as exc:
         log.debug("Disk cache write failed for %r: %s", name, exc)
     return result

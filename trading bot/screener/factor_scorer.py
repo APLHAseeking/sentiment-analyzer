@@ -137,7 +137,22 @@ def _build_factor_df(
     return pd.DataFrame(rows).set_index("ticker")
 
 
-def _compute_composite(df: pd.DataFrame) -> pd.DataFrame:
+# Regime-specific factor weights (value, momentum, quality must sum to 1.0).
+# In bear/crash: favour value + quality (defensive, mean-reversion).
+# In bull/euphoria: favour momentum (trend-following works in rising markets).
+_REGIME_WEIGHTS: dict[str, tuple[float, float, float]] = {
+    "crash":     (0.45, 0.10, 0.45),
+    "deep-bear": (0.45, 0.10, 0.45),
+    "bear":      (0.40, 0.15, 0.45),
+    "neutral":   (0.33, 0.33, 0.34),
+    "bull":      (0.20, 0.50, 0.30),
+    "euphoria":  (0.25, 0.45, 0.30),
+    "melt-up":   (0.25, 0.50, 0.25),
+}
+_DEFAULT_WEIGHTS: tuple[float, float, float] = (0.33, 0.33, 0.34)
+
+
+def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.DataFrame:
     if df.empty:
         return df
 
@@ -158,9 +173,14 @@ def _compute_composite(df: pd.DataFrame) -> pd.DataFrame:
     df["quality_score"] = (
         ranked[["roe", "margin", "de_inv"]].mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
+
+    wv, wm, wq = _REGIME_WEIGHTS.get(regime_label or "", _DEFAULT_WEIGHTS)
+    # Each component is 0-33; multiply by 3*weight so equal-weight still gives 0-99
     df["composite_score"] = (
-        df["value_score"] + df["momentum_score"] + df["quality_score"]
-    ).clip(0, 99)
+        df["value_score"] * 3 * wv
+        + df["momentum_score"] * 3 * wm
+        + df["quality_score"] * 3 * wq
+    ).round().clip(0, 99).astype(int)
     return df
 
 
@@ -178,6 +198,7 @@ def run_factor_screen(
     tickers: list[str],
     top_n: int = 12,
     research_workers: int = 5,
+    regime_label: str | None = None,
 ) -> list[FactorCandidate]:
     if not tickers:
         return []
@@ -191,7 +212,7 @@ def run_factor_screen(
     if df.empty:
         return []
 
-    scored = _compute_composite(df)
+    scored = _compute_composite(df, regime_label=regime_label)
     if scored.empty:
         return []
 
