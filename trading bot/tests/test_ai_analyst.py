@@ -312,7 +312,7 @@ def test_build_entry_system_invalid_type_raises():
         _build_entry_system("unknown")
 
 
-from bot.ai_analyst import score_entry_with_debate
+from bot.ai_analyst import score_entry_with_debate, _bull_argument, _bear_argument, _call_with_retry
 
 
 def _make_resp(text: str):
@@ -413,3 +413,77 @@ def test_debate_returns_entry_score_type(mocker):
     )
     assert isinstance(result, EntryScore)
     assert result.entry == "buy"
+
+
+# ── New tests for retry logic and model selection ────────────────────────────
+
+def test_score_entry_retries_on_rate_limit(mocker):
+    """RateLimitError on first two calls; third call succeeds."""
+    import anthropic as _anthropic
+    from unittest.mock import patch
+
+    good_payload = json.dumps({
+        "conviction": 7, "position_pct": 4.0,
+        "rationale": "Retry worked", "entry": "buy", "risk_flags": [],
+    })
+    good_resp = _make_resp(good_payload)
+
+    # Build a minimal fake RateLimitError without needing real HTTP response objects
+    rate_err = _anthropic.RateLimitError("rate limited", response=MagicMock(), body={})
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [rate_err, rate_err, good_resp]
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+    mocker.patch("bot.ai_analyst.time.sleep")  # skip real sleeps
+
+    disc = {"id": "r1", "politician": "Jane Doe", "ticker": "XOM",
+            "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
+            "amount_range": "$50,001 - $100,000"}
+    result = score_entry(disc, committees=["House Energy"],
+                         sector="Energy", lag_days=2, estimated_cost_pct=0.05)
+
+    assert isinstance(result, EntryScore)
+    assert result.conviction == 7
+    assert mock_client.messages.create.call_count == 3
+
+
+def test_score_entry_retries_on_parse_error(mocker):
+    """Bad JSON on first two calls; valid JSON on third call."""
+    good_payload = json.dumps({
+        "conviction": 6, "position_pct": 1.5,
+        "rationale": "Parse retry worked", "entry": "skip", "risk_flags": [],
+    })
+    bad_resp = _make_resp("```json\nnot valid json\n```")
+    good_resp = _make_resp(good_payload)
+
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [bad_resp, bad_resp, good_resp]
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    disc = {"id": "r2", "politician": "Jane Doe", "ticker": "AAPL",
+            "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
+            "amount_range": "$50,001 - $100,000"}
+    result = score_entry(disc, committees=["House Energy"],
+                         sector="Technology", lag_days=2, estimated_cost_pct=0.05)
+
+    assert isinstance(result, EntryScore)
+    assert result.conviction == 6
+    assert mock_client.messages.create.call_count == 3
+
+
+def test_bull_bear_use_sonnet(mocker):
+    """_bull_argument and _bear_argument must use claude-sonnet-4-6."""
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = _make_resp("Some argument text")
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    _bull_argument("test prompt")
+    bull_model = mock_client.messages.create.call_args[1]["model"]
+    assert bull_model == "claude-sonnet-4-6", f"Bull used {bull_model!r}"
+
+    mock_client.messages.create.reset_mock()
+    mock_client.messages.create.return_value = _make_resp("Bear argument text")
+
+    _bear_argument("test prompt", "bull text")
+    bear_model = mock_client.messages.create.call_args[1]["model"]
+    assert bear_model == "claude-sonnet-4-6", f"Bear used {bear_model!r}"

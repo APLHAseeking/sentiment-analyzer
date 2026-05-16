@@ -1,7 +1,37 @@
 import json
+import logging
+import time
 from dataclasses import dataclass
 
+import anthropic as _anthropic
 from anthropic import Anthropic
+
+log = logging.getLogger(__name__)
+
+_MAX_RETRIES = 3
+
+
+def _call_with_retry(fn):
+    """Retry fn() up to _MAX_RETRIES times on RateLimitError or JSON parse failure."""
+    last_exc = None
+    delay = 5.0
+    for attempt in range(_MAX_RETRIES):
+        try:
+            return fn()
+        except _anthropic.RateLimitError as exc:
+            last_exc = exc
+            log.warning("Rate limit hit (attempt %d/%d) — retrying in %.0fs",
+                        attempt + 1, _MAX_RETRIES, delay)
+            time.sleep(delay)
+            delay *= 2
+        except ValueError as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES - 1:
+                log.warning("Parse error (attempt %d/%d): %s — retrying",
+                            attempt + 1, _MAX_RETRIES, exc)
+            else:
+                raise
+    raise last_exc
 
 # ── System prompt blocks ──────────────────────────────────────────────────────
 
@@ -16,7 +46,9 @@ Respond with ONLY valid JSON matching this exact schema:
 - conviction 9-10: position_pct 6.0-8.0
 
 ## Entry Hurdle
-- Only set entry="buy" if expected return exceeds estimated_cost_pct by at least 2x"""
+- Only set entry="buy" if expected return over the holding period (typically 30-90 days)
+  exceeds estimated_cost_pct by at least 5x AND exceeds 1.5% absolute
+- If expected alpha is unclear or weak, set entry="skip" — false negatives are cheaper than false positives"""
 
 _CONGRESSIONAL_RULES = """
 ## Congressional Signal Rules
@@ -208,7 +240,7 @@ def _build_entry_prompt(
 def _bull_argument(prompt: str) -> str:
     client = _get_client()
     resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=512,
         system=_BULL_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
@@ -220,7 +252,7 @@ def _bear_argument(prompt: str, bull_text: str) -> str:
     client = _get_client()
     combined = f"{prompt}\n\nBull case:\n{bull_text}"
     resp = client.messages.create(
-        model="claude-haiku-4-5-20251001",
+        model="claude-sonnet-4-6",
         max_tokens=512,
         system=_BEAR_SYSTEM,
         messages=[{"role": "user", "content": combined}],
@@ -257,14 +289,18 @@ def score_entry(
 
     system_text = _build_entry_system(signal_type, has_disclosure=disclosure is not None)
     client = _get_client()
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=512,
-        system=[{"type": "text", "text": system_text,
-                 "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return parse_entry_response(resp.content[0].text)
+
+    def _call():
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=512,
+            system=[{"type": "text", "text": system_text,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return parse_entry_response(resp.content[0].text)
+
+    return _call_with_retry(_call)
 
 
 def score_entry_with_debate(
@@ -345,11 +381,15 @@ def review_exit(ticker: str, entry_price: float, current_price: float,
         prompt += "\n" + format_research_for_prompt(research) + "\n"
     prompt += "Hold, reduce, or exit?"
     client = _get_client()
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=256,
-        system=[{"type": "text", "text": _EXIT_SYSTEM,
-                 "cache_control": {"type": "ephemeral"}}],
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return parse_exit_response(resp.content[0].text)
+
+    def _call():
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=256,
+            system=[{"type": "text", "text": _EXIT_SYSTEM,
+                     "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return parse_exit_response(resp.content[0].text)
+
+    return _call_with_retry(_call)
