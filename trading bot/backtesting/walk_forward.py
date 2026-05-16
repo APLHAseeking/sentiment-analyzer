@@ -209,10 +209,11 @@ def run_walk_forward(
                     n_signals=max(len(enriched_signals), 1),
                 )
                 benchmarks = {
-                    "buy_and_hold":    round(_total_return(bah_eq) * 100, 2),
-                    "trend_following": round(_total_return(tf_eq)  * 100, 2),
-                    "random":          round(_total_return(rand_eq) * 100, 2),
+                    "buy_and_hold": round(_total_return(bah_eq) * 100, 2),
+                    "random":       round(_total_return(rand_eq) * 100, 2),
                 }
+                if not tf_eq.empty:
+                    benchmarks["trend_following"] = round(_total_return(tf_eq) * 100, 2)
         except Exception as exc:
             log.warning("Benchmark computation failed for window %d: %s", i + 1, exc)
 
@@ -349,11 +350,14 @@ def _aggregate(windows: list[WalkForwardWindow]) -> dict:
     result["n_windows"] = len(windows)
 
     # Benchmark excess return vs strategy total_return per window
-    strat_returns = [m.get("total_return_pct", 0.0) for m in metrics_list]
     for bench in ("buy_and_hold", "trend_following", "random"):
-        bench_vals = [w.benchmarks.get(bench, 0.0) for w in windows]
-        if bench_vals:
-            excess = [s - b for s, b in zip(strat_returns, bench_vals)]
+        pairs = [
+            (m.get("total_return_pct", 0.0), w.benchmarks[bench])
+            for m, w in zip(metrics_list, windows)
+            if bench in w.benchmarks
+        ]
+        if pairs:
+            excess = [s - b for s, b in pairs]
             result[f"avg_excess_return_vs_{bench}_pct"] = round(
                 sum(excess) / len(excess), 3
             )
