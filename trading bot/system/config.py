@@ -87,7 +87,7 @@ class RegimeConfig:
     selection_criterion: str = "bic"  # "bic" or "aic"
     n_iter: int = 100                 # HMM EM iterations
     random_state: int = 42
-    covariance_type: str = "full"     # "full", "diag", "tied", "spherical"
+    covariance_type: str = "diag"     # only "diag" is implemented; others fall back to diag with a warning
     # Stability filter
     min_stable_bars: int = 3          # regime must persist N bars before acting on it
     instability_penalty: float = 0.5  # multiply target allocation by this during unstable periods
@@ -115,16 +115,16 @@ class AllocationConfig:
     # Multiplier applied to AI conviction-based position size per regime label
     # These scale the base position_pct that Claude recommends
     regime_size_multiplier: dict[str, float] = field(default_factory=lambda: {
-        "crash":     0.0,    # halt all new positions
-        "deep-bear": 0.0,
-        "bear":      0.25,   # take tiny positions only
-        "neutral":   0.6,    # moderate
+        "crash":     0.3,    # reduced but still trading
+        "deep-bear": 0.3,
+        "bear":      0.5,    # half size in downturns
+        "neutral":   0.7,    # moderate
         "bull":      1.0,    # full size
         "euphoria":  0.75,   # reduce slightly — overheating risk
         "melt-up":   0.5,
     })
     # Additional scaling by regime confidence (linear interpolation)
-    min_confidence_to_trade: float = 0.55  # below this, skip new entries
+    min_confidence_to_trade: float = 0.40  # below this, skip new entries
     confidence_scale: bool = True          # scale size by confidence linearly
 
 
