@@ -220,6 +220,7 @@ class BacktestConfig:
     commission_pct: float = 0.05        # round-trip cost % per trade
     benchmark_ticker: str = "SPY"
     min_train_bars: int = 500
+    initial_cash: float = 100_000.0     # starting capital for each backtest window
 
 
 # ---------------------------------------------------------------------------

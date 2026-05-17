@@ -44,11 +44,35 @@ def test_regime_performance_empty():
 
 def test_confidence_bucket_splits_correctly():
     from backtesting.analysis import confidence_bucket_performance
-    trades = [_trade(conviction=3), _trade(conviction=6), _trade(conviction=9)]
+    # low=[1-5], mid=[6-7], high=[8-10]
+    trades = [_trade(conviction=5), _trade(conviction=7), _trade(conviction=9)]
     result = confidence_bucket_performance(trades)
     assert result["low"]["n_trades"] == 1
     assert result["mid"]["n_trades"] == 1
     assert result["high"]["n_trades"] == 1
+
+
+def test_confidence_bucket_boundary_conviction4_is_low():
+    from backtesting.analysis import confidence_bucket_performance
+    trades = [_trade(conviction=4)]
+    result = confidence_bucket_performance(trades)
+    assert result["low"]["n_trades"] == 1
+    assert result["mid"]["n_trades"] == 0
+
+
+def test_confidence_bucket_boundary_conviction6_is_mid():
+    from backtesting.analysis import confidence_bucket_performance
+    trades = [_trade(conviction=6)]
+    result = confidence_bucket_performance(trades)
+    assert result["mid"]["n_trades"] == 1
+
+
+def test_regime_performance_includes_profit_factor():
+    from backtesting.analysis import regime_performance
+    trades = [_trade("bull", pnl_pct=10.0), _trade("bull", pnl_pct=-5.0)]
+    result = regime_performance(trades)
+    assert "profit_factor" in result["bull"]
+    assert result["bull"]["profit_factor"] == pytest.approx(2.0, rel=0.01)
 
 
 def test_exposure_by_regime_sums_to_one():

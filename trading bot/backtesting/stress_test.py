@@ -73,23 +73,34 @@ def _apply_crash(
     start_idx: int,
     duration: int,
 ) -> dict[str, pd.Series]:
-    """Log-linear decline of drop_pct over duration bars starting at start_idx.
+    """Log-linear decline anchored to the pre-crash price level.
 
-    Prices after the crash window stay at the new (lower) level — no recovery.
+    At bar start_idx the price begins declining; by bar start_idx+duration-1
+    it has fallen exactly drop_pct from the price at start_idx-1 (the anchor).
+    Post-crash bars follow the original log-returns from the crash end level —
+    no artificial V-shaped recovery, but market direction is preserved.
     """
     result: dict[str, pd.Series] = {}
     for ticker, series in price_data.items():
         if series.empty:
             result[ticker] = series.copy()
             continue
-        prices = series.to_numpy(dtype=float).copy()
+        prices_orig = series.to_numpy(dtype=float).copy()
+        prices = prices_orig.copy()
         n = len(prices)
         end_idx = min(start_idx + duration, n)
         n_bars = end_idx - start_idx
-        if n_bars > 0:
+        if n_bars > 0 and start_idx < n:
+            anchor = float(prices_orig[start_idx - 1]) if start_idx > 0 else float(prices_orig[0])
+            log_drop = np.log(max(1.0 - drop_pct, 1e-9))
             for k in range(n_bars):
-                prices[start_idx + k] *= (1 - drop_pct) ** ((k + 1) / n_bars)
-            prices[end_idx:] *= (1 - drop_pct)
+                t = (k + 1) / n_bars
+                prices[start_idx + k] = anchor * np.exp(log_drop * t)
+            # Post-crash: replay original log-returns from the crash end level
+            for j in range(end_idx, n):
+                if prices_orig[j - 1] > 0:
+                    log_ret = np.log(max(prices_orig[j] / prices_orig[j - 1], 1e-9))
+                    prices[j] = prices[j - 1] * np.exp(log_ret)
         result[ticker] = pd.Series(prices, index=series.index, name=series.name)
     return result
 
@@ -100,26 +111,29 @@ def _apply_vol_cluster(
     start_idx: int,
     duration: int,
 ) -> dict[str, pd.Series]:
-    """Amplify daily log-returns by multiplier within [start_idx, start_idx+duration)."""
+    """Amplify daily log-returns by multiplier within [start_idx, start_idx+duration).
+
+    Log-returns are read from the ORIGINAL price series so the amplification
+    is consistent (no compounding of modified prices into the return calculation).
+    Each new bar is built from the running modified price to keep the chain causal.
+    """
     result: dict[str, pd.Series] = {}
     for ticker, series in price_data.items():
         if series.empty or len(series) < 2:
             result[ticker] = series.copy()
             continue
-        prices = series.to_numpy(dtype=float).copy()
+        prices_orig = series.to_numpy(dtype=float).copy()
+        prices = prices_orig.copy()
         n = len(prices)
         end_idx = min(start_idx + duration, n)
         for i in range(max(1, start_idx), end_idx):
-            prev = prices[i - 1]
-            if prev <= 0:
+            if prices_orig[i - 1] <= 0 or prices_orig[i] <= 0:
                 continue
-            raw = prices[i]
-            if raw <= 0:
-                continue
-            log_ret = np.log(raw / prev)
-            new_price = prev * np.exp(log_ret * multiplier)
-            # Clamp to a small positive floor to prevent collapse to zero/inf
-            prices[i] = max(new_price, prev * 1e-6)
+            # Log-return from the ORIGINAL series (not the modified chain)
+            log_ret = np.log(prices_orig[i] / prices_orig[i - 1])
+            # Apply amplified return on top of the running modified price
+            new_price = prices[i - 1] * np.exp(log_ret * multiplier)
+            prices[i] = max(new_price, prices[i - 1] * 1e-6)
         result[ticker] = pd.Series(prices, index=series.index, name=series.name)
     return result
 

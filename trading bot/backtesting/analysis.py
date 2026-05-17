@@ -2,13 +2,18 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any
+
+import pandas as pd
+
+from backtesting.metrics import profit_factor as _profit_factor
 
 
 def regime_performance(trades: list) -> dict[str, dict]:
     """Group SimTrade results by regime label at entry.
 
-    Returns dict mapping regime_label → {n_trades, win_rate, avg_pnl_pct}.
+    Returns dict mapping regime_label →
+    {n_trades, win_rate, avg_pnl_pct, profit_factor}.
+    Labels with zero trades are omitted.
     """
     if not trades:
         return {}
@@ -18,38 +23,47 @@ def regime_performance(trades: list) -> dict[str, dict]:
     result = {}
     for label, group in groups.items():
         wins = sum(1 for t in group if t.pnl_pct > 0)
+        pnl_series = pd.Series([t.pnl_pct / 100 for t in group])
         result[label] = {
             "n_trades": len(group),
             "win_rate": wins / len(group),
             "avg_pnl_pct": sum(t.pnl_pct for t in group) / len(group),
+            "profit_factor": round(_profit_factor(pnl_series), 3),
         }
     return result
 
 
 def confidence_bucket_performance(trades: list) -> dict[str, dict]:
-    """Split trades into conviction buckets: low (1-3), mid (4-6), high (7-10).
+    """Split trades into conviction buckets: low [1-5], mid [6-7], high [8-10].
 
-    Returns dict mapping bucket name → {n_trades, win_rate, avg_pnl_pct}.
+    Returns dict mapping bucket name →
+    {n_trades, win_rate, avg_pnl_pct, profit_factor}.
+    All three buckets are always present (n_trades=0 if empty).
     """
     buckets: dict[str, list] = {"low": [], "mid": [], "high": []}
     for t in trades:
         c = t.conviction
-        if c <= 3:
+        if c <= 5:
             buckets["low"].append(t)
-        elif c <= 6:
+        elif c <= 7:
             buckets["mid"].append(t)
         else:
             buckets["high"].append(t)
     result = {}
     for name, group in buckets.items():
         if not group:
-            result[name] = {"n_trades": 0, "win_rate": 0.0, "avg_pnl_pct": 0.0}
+            result[name] = {
+                "n_trades": 0, "win_rate": 0.0,
+                "avg_pnl_pct": 0.0, "profit_factor": 0.0,
+            }
         else:
             wins = sum(1 for t in group if t.pnl_pct > 0)
+            pnl_series = pd.Series([t.pnl_pct / 100 for t in group])
             result[name] = {
                 "n_trades": len(group),
                 "win_rate": wins / len(group),
                 "avg_pnl_pct": sum(t.pnl_pct for t in group) / len(group),
+                "profit_factor": round(_profit_factor(pnl_series), 3),
             }
     return result
 

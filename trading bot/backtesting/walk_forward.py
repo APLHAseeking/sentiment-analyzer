@@ -80,16 +80,31 @@ def run_walk_forward(
 
     Parameters
     ----------
-    market_data  : daily regime features data (SPY/VIX).
-    signal_data  : historical signals — congressional AND fundamental screener signals
-                   merged and sorted by date. Each dict must have at minimum:
-                   {date, ticker, conviction, position_pct}.
-    price_data   : individual stock price series for simulation.
-    regime_cfg   : regime model configuration.
-    backtest_cfg : train/test window parameters.
+    market_data      : daily regime features data (SPY/VIX).
+    signal_data      : historical signals — congressional AND fundamental screener
+                       signals merged and sorted by date. Each dict must have at
+                       minimum: {date, ticker, conviction, position_pct}.
+    price_data       : individual stock price series for simulation.
+    regime_cfg       : regime model configuration.
+    backtest_cfg     : train/test window parameters.
+    stress_scenarios : list of StressScenario to run per window. Defaults to []
+                       (no stress tests). Pass DEFAULT_STRESS_SCENARIOS to enable
+                       all five. Stress tests multiply run time by len(scenarios)+1.
+
+    Note on overlapping windows
+    ---------------------------
+    With step_months < test_months, consecutive windows share bars. Aggregated
+    metrics (avg_sharpe, etc.) therefore double-count overlapping periods. Treat
+    averages as indicative, not statistically independent estimates.
     """
     if feature_cfg is None:
         feature_cfg = FeatureConfig()
+
+    scenarios = stress_scenarios if stress_scenarios is not None else []
+    if scenarios:
+        log.info("Stress testing enabled: %d scenario(s) per window", len(scenarios))
+
+    initial_cash = getattr(backtest_cfg, "initial_cash", 100_000.0)
 
     windows = _build_windows(market_data.index, backtest_cfg)
     if not windows:
@@ -154,7 +169,13 @@ def run_walk_forward(
             if regime is None:
                 continue
 
-            # Apply regime scaling to position_pct
+            # Confidence gate — mirrors AllocationEngine.compute() live behaviour
+            if alloc_cfg is not None:
+                min_conf = getattr(alloc_cfg, "min_confidence_to_trade", 0.0)
+                if regime.confidence < min_conf:
+                    continue  # would be filtered in production
+
+            # Apply regime size multiplier + optional confidence scaling
             base_pct = float(sig.get("position_pct", 5.0))
             mult = (
                 alloc_cfg.regime_size_multiplier.get(regime.regime_label, 1.0)
@@ -162,6 +183,11 @@ def run_walk_forward(
                 and hasattr(alloc_cfg, "regime_size_multiplier")
                 else 1.0
             )
+            if alloc_cfg is not None and getattr(alloc_cfg, "confidence_scale", False):
+                lo = getattr(alloc_cfg, "min_confidence_to_trade", 0.0)
+                conf_mult = 0.5 + 0.5 * (regime.confidence - lo) / max(1.0 - lo, 1e-6)
+                mult *= min(conf_mult, 1.0)
+
             enriched_signals.append({
                 **sig,
                 "position_pct": base_pct * mult,
@@ -180,7 +206,7 @@ def run_walk_forward(
         sim = simulate_portfolio(
             signals=enriched_signals,
             price_data=test_price_data,
-            initial_cash=100_000.0,
+            initial_cash=initial_cash,
             slippage_bps=backtest_cfg.slippage_bps,
             commission_pct=backtest_cfg.commission_pct,
         )
@@ -202,11 +228,18 @@ def run_walk_forward(
                 (market_data.index <= pd.Timestamp(test_end))
             ]
             if not spy_close.empty:
-                bah_eq = buy_and_hold(spy_close)
-                tf_eq  = trend_following(spy_close)
+                slip = backtest_cfg.slippage_bps
+                comm = backtest_cfg.commission_pct
+                bah_eq = buy_and_hold(spy_close, initial_cash=initial_cash,
+                                      slippage_bps=slip, commission_pct=comm)
+                tf_eq  = trend_following(spy_close, initial_cash=initial_cash,
+                                         slippage_bps=slip, commission_pct=comm)
                 rand_eq = random_allocation(
                     spy_close,
                     n_signals=max(len(enriched_signals), 1),
+                    initial_cash=initial_cash,
+                    slippage_bps=slip,
+                    commission_pct=comm,
                 )
                 benchmarks = {
                     "buy_and_hold": round(_total_return(bah_eq) * 100, 2),
@@ -223,11 +256,6 @@ def run_walk_forward(
         regime_exposure      = exposure_by_regime(test_states)
 
         # --- Stress tests ---
-        scenarios = (
-            stress_scenarios
-            if stress_scenarios is not None
-            else DEFAULT_STRESS_SCENARIOS
-        )
         stress_results: dict = {}
         for scenario in scenarios:
             try:
@@ -237,7 +265,7 @@ def run_walk_forward(
                 s_sim = simulate_portfolio(
                     signals=enriched_signals,
                     price_data=s_prices,
-                    initial_cash=100_000.0,
+                    initial_cash=initial_cash,
                     slippage_bps=s_slip,
                     commission_pct=backtest_cfg.commission_pct,
                     fill_delay_bars=s_delay,
@@ -281,7 +309,13 @@ def run_walk_forward(
                 test_start=window_result.test_start,
                 test_end=window_result.test_end,
                 n_regimes=window_result.n_regimes,
-                metrics=metrics,
+                metrics={
+                    **metrics,
+                    "benchmarks": benchmarks,
+                    "regime_breakdown": regime_breakdown,
+                    "confidence_breakdown": confidence_breakdown,
+                    "stress_results": stress_results,
+                },
             )
 
     aggregated = _aggregate(all_results)
@@ -295,8 +329,6 @@ def _build_windows(
     cfg: Any,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, str, str]]:
     """Generate (train_start, train_end, test_start, test_end) tuples."""
-    import math
-
     if len(index) == 0:
         return []
 
