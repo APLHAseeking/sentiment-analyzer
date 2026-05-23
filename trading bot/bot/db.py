@@ -124,6 +124,12 @@ CREATE TABLE IF NOT EXISTS fundamental_signals (
 );
 CREATE INDEX IF NOT EXISTS idx_fundamental_signals_date ON fundamental_signals(signal_date);
 CREATE INDEX IF NOT EXISTS idx_fundamental_signals_ticker ON fundamental_signals(ticker);
+
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at TEXT NOT NULL
+);
 """
 
 def _db_path() -> str:
@@ -132,6 +138,7 @@ def _db_path() -> str:
 @contextmanager
 def get_conn():
     conn = sqlite3.connect(_db_path())
+    conn.execute("PRAGMA journal_mode=WAL")   # concurrent reads during bot writes
     conn.execute("PRAGMA foreign_keys = ON")
     conn.row_factory = sqlite3.Row
     try:
@@ -143,18 +150,47 @@ def get_conn():
     finally:
         conn.close()
 
-def _migrate_db() -> None:
-    """Add columns introduced after initial schema. Safe to run on existing DBs."""
-    migrations = [
+_MIGRATIONS: list[tuple[int, str, str]] = [
+    (
+        1,
+        "Add signal_source to positions",
         "ALTER TABLE positions ADD COLUMN signal_source TEXT NOT NULL DEFAULT 'congressional'",
+    ),
+    (
+        2,
+        "Add signal_source to closed_positions",
         "ALTER TABLE closed_positions ADD COLUMN signal_source TEXT NOT NULL DEFAULT 'congressional'",
-    ]
+    ),
+]
+
+
+def _migrate_db() -> None:
+    """Apply pending schema migrations. Each migration runs exactly once."""
     with get_conn() as conn:
-        for stmt in migrations:
+        applied = {
+            row[0] for row in conn.execute(
+                "SELECT version FROM schema_version"
+            ).fetchall()
+        }
+        for version, description, sql in _MIGRATIONS:
+            if version in applied:
+                continue
             try:
-                conn.execute(stmt)
-            except Exception:
-                pass  # column already exists
+                conn.execute(sql)
+                conn.execute(
+                    "INSERT INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)",
+                    (version, description, datetime.now(UTC).isoformat()),
+                )
+            except Exception as exc:
+                if "duplicate column" in str(exc).lower():
+                    conn.execute(
+                        "INSERT OR IGNORE INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)",
+                        (version, f"{description} (retroactive)", datetime.now(UTC).isoformat()),
+                    )
+                else:
+                    raise RuntimeError(
+                        f"Migration {version} ('{description}') failed: {exc}"
+                    ) from exc
 
 
 def init_db() -> None:
@@ -163,8 +199,11 @@ def init_db() -> None:
     _migrate_db()
 
 def get_existing_ids() -> set[str]:
+    # Limit to the last 90 days — disclosures older than that are never re-submitted
     with get_conn() as conn:
-        return {row[0] for row in conn.execute("SELECT id FROM disclosures").fetchall()}
+        return {row[0] for row in conn.execute(
+            "SELECT id FROM disclosures WHERE disclosure_date >= date('now', '-90 days')"
+        ).fetchall()}
 
 def insert_disclosures(disclosures: list[dict]) -> None:
     with get_conn() as conn:
@@ -194,14 +233,19 @@ def insert_position(ticker: str, entry_price: float, shares: float,
                     signal_id: int | None, rationale: str,
                     signal_source: str = "congressional") -> None:
     with get_conn() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO positions
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO positions
                (ticker, entry_price, shares, position_pct, entry_date, signal_id,
                 rationale, peak_price, signal_source)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, entry_price, shares, position_pct, entry_date, signal_id,
              rationale, entry_price, signal_source),
         )
+        if cur.rowcount == 0:
+            raise ValueError(
+                f"Position already exists for {ticker} — cannot open duplicate. "
+                "Close the existing position before re-entering."
+            )
 
 def get_open_positions() -> list[sqlite3.Row]:
     with get_conn() as conn:
@@ -225,8 +269,9 @@ def delete_position(ticker: str) -> None:
 def log_closed_position(ticker: str, entry_price: float, exit_price: float,
                         shares: float, entry_date: str, exit_date: str,
                         exit_reason: str, signal_id: int | None,
-                        signal_source: str = "congressional") -> None:
-    realized_pnl = (exit_price - entry_price) * shares
+                        signal_source: str = "congressional",
+                        costs: float = 0.0) -> None:
+    realized_pnl = (exit_price - entry_price) * shares - costs
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO closed_positions

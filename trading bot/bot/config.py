@@ -9,7 +9,7 @@ def _require(key: str) -> str:
         raise RuntimeError(f"Missing required env var: {key}")
     return val
 
-ANTHROPIC_API_KEY: str = _require("ANTHROPIC_API_KEY")
+OPENAI_API_KEY: str = os.environ.get("OPENAI_API_KEY", "")
 # Alpaca keys only required when AlpacaBroker is used (not simulated mode)
 ALPACA_API_KEY: str = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY: str = os.environ.get("ALPACA_SECRET_KEY", "")

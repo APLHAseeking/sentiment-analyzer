@@ -234,6 +234,16 @@ class RiskManager:
         if not veto.allowed:
             return veto
 
+        # Per-position size cap
+        if position_pct > self._risk.max_position_pct:
+            return RiskVeto(
+                allowed=False,
+                reason=(
+                    f"Position size {position_pct:.1f}% exceeds max_position_pct "
+                    f"{self._risk.max_position_pct:.1f}%"
+                ),
+            )
+
         # Sector concentration
         from system.config import settings
         if sector_allocation.get(sector, 0.0) >= self._risk.max_sector_pct:

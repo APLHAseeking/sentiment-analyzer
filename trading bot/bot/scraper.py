@@ -11,7 +11,16 @@ log = logging.getLogger(__name__)
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; congress-bot/1.0; research-only)"}
 TRADES_URL = "https://capitoltrades.com/trades"
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_TICKER_RE = re.compile(r"^[A-Z]{1,5}$")  # covers standard US tickers; excludes BRK.B-style dot suffixes
+# Matches standard US tickers (AAPL) and class-share suffixes (BRK.B, BF.B)
+_TICKER_RE = re.compile(r"^[A-Z]{1,5}([.\-][A-Z])?$")
+
+
+def _normalize_ticker(raw: str) -> str:
+    """Normalize Capitol Trades ticker format to yfinance format.
+
+    Capitol Trades uses dots for class shares (BRK.B); yfinance expects hyphens (BRK-B).
+    """
+    return raw.replace(".", "-")
 
 
 def _validate_trade(trade: dict) -> bool:
@@ -36,7 +45,7 @@ def _parse_trades_page(html: str) -> list[dict]:
         if len(cells) < 7:
             continue
         trade_id = row.get("data-id", "").strip()
-        ticker = cells[2].get_text(strip=True).upper()
+        ticker = _normalize_ticker(cells[2].get_text(strip=True).upper())
         if not trade_id or not ticker:
             continue
         trade = {
@@ -77,7 +86,7 @@ def _fetch_page(page: int, max_retries: int = 3) -> str:
             delay *= 2
 
 
-def run_scraper(max_pages: int = 3) -> list[dict]:
+def run_scraper(max_pages: int = 5) -> list[dict]:
     existing = get_existing_ids()
     new_trades: list[dict] = []
     for page in range(1, max_pages + 1):
@@ -89,7 +98,11 @@ def run_scraper(max_pages: int = 3) -> list[dict]:
         trades = _parse_trades_page(html)
         if not trades:
             if page == 1:
-                log.warning("No trades parsed from page 1 — scraper may need updating")
+                log.error(
+                    "No trades parsed from Capitol Trades page 1 — HTML structure may "
+                    "have changed. Signal pipeline is receiving zero inputs. Manual "
+                    "inspection of %s required.", TRADES_URL
+                )
             break
         fresh = [t for t in trades if t["id"] not in existing]
         new_trades.extend(fresh)

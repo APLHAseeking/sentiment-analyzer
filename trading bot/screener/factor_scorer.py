@@ -4,11 +4,12 @@ import concurrent.futures
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, UTC
 
 import pandas as pd
 import yfinance as yf
 
-from bot.researcher import gather_research, gather_research_batch, ResearchReport
+from bot.researcher import gather_research, ResearchReport
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +17,8 @@ _MIN_VALID_METRICS = 4
 _CHUNK_SIZE = 50    # tickers per chunk
 _CHUNK_DELAY = 1.0  # seconds between chunks
 _MAX_RETRIES = 2
+_MIN_MOMENTUM_BARS = 200  # require at least 200 trading days in the 12-month window
+_MIN_SECTOR_SIZE = 5      # sectors smaller than this fall back to universe-wide ranking
 
 
 def _to_float(v: object) -> float | None:
@@ -68,10 +71,17 @@ def _fetch_all_infos(tickers: list[str]) -> dict[str, dict | None]:
 def _fetch_momentum_batch(
     tickers: list[str],
 ) -> dict[str, tuple[float | None, float | None]]:
+    """Fetch momentum signals. Returns (mom_1m, mom_12m) per ticker.
+
+    mom_12m is 12-month total return — the academically valid momentum signal.
+    mom_1m is 1-month return (mean-reverting; kept for research display only,
+    NOT used in the composite score). Tickers with fewer than _MIN_MOMENTUM_BARS
+    of history are excluded (momentum is unreliable on thin data).
+    """
     if not tickers:
         return {}
     try:
-        raw = yf.download(tickers, period="3mo", auto_adjust=True, progress=False)
+        raw = yf.download(tickers, period="12mo", auto_adjust=True, progress=False)
         if isinstance(raw.columns, pd.MultiIndex):
             close = raw["Close"]
         else:
@@ -81,15 +91,15 @@ def _fetch_momentum_batch(
         for t in tickers:
             try:
                 col = close[t].dropna() if t in close.columns else pd.Series(dtype=float)
-                if len(col) < 2:
+                if len(col) < _MIN_MOMENTUM_BARS:
                     result[t] = (None, None)
                     continue
                 current = float(col.iloc[-1])
                 p1m = float(col.iloc[max(0, len(col) - 21)])
-                p3m = float(col.iloc[0])
+                p12m = float(col.iloc[0])  # ~12 months ago
                 result[t] = (
-                    (current / p1m - 1) * 100 if p1m > 0 else None,
-                    (current / p3m - 1) * 100 if p3m > 0 else None,
+                    (current / p1m - 1) * 100 if p1m > 0 else None,   # 1m (display only)
+                    (current / p12m - 1) * 100 if p12m > 0 else None,  # 12m (used in score)
                 )
             except Exception:
                 result[t] = (None, None)
@@ -115,10 +125,12 @@ def _build_factor_df(
             margin = _to_float(info.get("profitMargins"))
             de = _to_float(info.get("debtToEquity"))
             fcf_yield = fcf / mcap if fcf and mcap and mcap > 0 else None
-            mom1m, mom3m = momentum.get(ticker, (None, None))
+            mom1m, mom12m = momentum.get(ticker, (None, None))
+            sector = (info.get("sector") or "Unknown").strip() or "Unknown"
 
             rows.append({
                 "ticker": ticker,
+                "sector": sector,
                 "pe_inv": -pe if pe and pe > 0 else None,
                 "pb_inv": -pb if pb and pb > 0 else None,
                 "fcf_yield": fcf_yield,
@@ -126,7 +138,7 @@ def _build_factor_df(
                 "margin": margin,
                 "de_inv": -de if de is not None and de >= 0 else None,
                 "mom_1m": mom1m,
-                "mom_3m": mom3m,
+                "mom_12m": mom12m,
             })
         except Exception:
             log.debug("Skipping %s in factor_df build", ticker, exc_info=True)
@@ -134,7 +146,34 @@ def _build_factor_df(
 
     if not rows:
         return pd.DataFrame()
-    return pd.DataFrame(rows).set_index("ticker")
+    df = pd.DataFrame(rows)
+    df = df.set_index("ticker")
+    return df
+
+
+def _sector_rank(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+    """Rank each column within sector for sectors >= _MIN_SECTOR_SIZE members.
+
+    Sectors that are too small (< _MIN_SECTOR_SIZE tickers with data) fall back
+    to the universe-wide percentile rank. This prevents a utility company's low
+    P/E from outranking a genuinely cheap tech company across sectors.
+    """
+    # Universe-wide fallback ranks
+    universe_ranked = df[cols].rank(pct=True, na_option="keep")
+
+    if "sector" not in df.columns:
+        return universe_ranked
+
+    result = universe_ranked.copy()
+    sector_counts = df["sector"].value_counts()
+    large_sectors = sector_counts[sector_counts >= _MIN_SECTOR_SIZE].index
+
+    for sector in large_sectors:
+        mask = df["sector"] == sector
+        sector_slice = df.loc[mask, cols]
+        result.loc[mask, cols] = sector_slice.rank(pct=True, na_option="keep")
+
+    return result
 
 
 # Regime-specific factor weights (value, momentum, quality must sum to 1.0).
@@ -162,14 +201,19 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
     if df.empty:
         return df
 
-    ranked = df.rank(pct=True, na_option="keep")
+    # Sector-normalized ranking: removes cross-sector bias (low P/E utilities vs
+    # growth tech). Sectors with < _MIN_SECTOR_SIZE members fall back to universe rank.
+    score_cols = ["pe_inv", "pb_inv", "fcf_yield", "roe", "margin", "de_inv", "mom_12m"]
+    available_cols = [c for c in score_cols if c in df.columns]
+    ranked = _sector_rank(df, available_cols)
 
     df["value_score"] = (
         ranked[["pe_inv", "pb_inv", "fcf_yield"]].mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
+    # Use 12-month momentum only. 1-month is a mean-reversion effect.
     df["momentum_score"] = (
-        ranked[["mom_1m", "mom_3m"]].mean(axis=1, skipna=True) * 33
-    ).fillna(0).clip(0, 33).astype(int)
+        ranked["mom_12m"].fillna(0) * 33
+    ).clip(0, 33).astype(int)
     df["quality_score"] = (
         ranked[["roe", "margin", "de_inv"]].mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
@@ -187,11 +231,36 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
 def _gather_research_with_momentum(
     ticker: str,
     mom1m: float | None,
-    mom3m: float | None,
+    mom12m: float | None,
 ) -> tuple[str, ResearchReport | None]:
     """Call gather_research and override momentum if precomputed values are available."""
-    report = gather_research(ticker, momentum_1m_override=mom1m, momentum_3m_override=mom3m)
+    # mom12m is 12-month momentum passed as momentum_3m_override for research display.
+    report = gather_research(ticker, momentum_1m_override=mom1m, momentum_3m_override=mom12m)
     return ticker, report
+
+
+def prefetch_screener_data(tickers: list[str]) -> dict:
+    """Fetch all slow data (ticker infos + momentum) for the full universe.
+
+    Returns a dict with keys 'infos', 'momentum', 'timestamp'. Pass this dict
+    to run_factor_screen() as the `prefetched` argument to skip re-fetching.
+    Designed to run before market open so the morning pipeline is fast.
+    """
+    log.info("Pre-fetching screener data for %d tickers...", len(tickers))
+    infos = _fetch_all_infos(tickers)
+    momentum = _fetch_momentum_batch(tickers)
+    result = {
+        "infos": infos,
+        "momentum": momentum,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "ticker_count": len(tickers),
+    }
+    log.info(
+        "Pre-fetch complete: %d infos, %d momentum entries",
+        sum(1 for v in infos.values() if v is not None),
+        sum(1 for v in momentum.values() if v != (None, None)),
+    )
+    return result
 
 
 def run_factor_screen(
@@ -199,14 +268,35 @@ def run_factor_screen(
     top_n: int = 12,
     research_workers: int = 5,
     regime_label: str | None = None,
+    prefetched: dict | None = None,
 ) -> list[FactorCandidate]:
+    """Screen the universe and return the top_n factor candidates.
+
+    Parameters
+    ----------
+    prefetched : optional dict from prefetch_screener_data(). When provided,
+                 the expensive info + momentum fetch is skipped entirely.
+    """
     if not tickers:
         return []
 
-    # Bug 2 fix: chunked fetching with retry instead of 30-worker bulk fetch
-    infos = _fetch_all_infos(tickers)
+    if prefetched is not None:
+        infos = prefetched["infos"]
+        momentum = prefetched["momentum"]
+        log.info(
+            "Using pre-fetched screener data from %s (%d tickers)",
+            prefetched.get("timestamp", "?"), prefetched.get("ticker_count", 0),
+        )
+    else:
+        infos = _fetch_all_infos(tickers)
+        momentum = _fetch_momentum_batch(tickers)
 
-    momentum = _fetch_momentum_batch(tickers)
+    if momentum and all(v == (None, None) for v in momentum.values()):
+        log.error(
+            "Momentum batch fetch returned (None, None) for all %d tickers — "
+            "momentum_score will be zero for every candidate. Check yfinance connectivity.",
+            len(tickers),
+        )
 
     df = _build_factor_df(infos, momentum)
     if df.empty:
@@ -218,7 +308,6 @@ def run_factor_screen(
 
     top = scored.nlargest(top_n, "composite_score")
 
-    # Bug 3 fix: pass precomputed momentum to researcher to avoid double download
     research_map: dict[str, ResearchReport | None] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=research_workers) as pool:
         futures = {

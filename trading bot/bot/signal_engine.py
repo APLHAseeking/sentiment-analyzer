@@ -6,8 +6,8 @@ import yfinance as yf
 import bot.db as db
 from bot.universe import is_in_universe
 from bot.committee import get_committees_for_politician, sector_has_committee_overlap
+from system.config import settings
 
-MAX_LAG_DAYS = 45
 MIN_TRADE_USD = 15_000  # lower bound of the "$15,001 – $50,000" Capitol Trades bracket
 
 
@@ -48,12 +48,9 @@ def is_qualified_signal(disclosure: dict) -> bool:
     if not is_large_enough_trade(disclosure.get("amount_range", "")):
         return False
     lag = compute_lag_days(disclosure["transaction_date"], disclosure["disclosure_date"])
-    if lag > MAX_LAG_DAYS:
+    if lag < 0 or lag > settings.universe.max_lag_days:
         return False
-    try:
-        if not is_in_universe(disclosure["ticker"]):
-            return False
-    except RuntimeError:
+    if not is_in_universe(disclosure["ticker"]):
         return False
     committees = get_committees_for_politician(disclosure["politician"])
     if not committees:

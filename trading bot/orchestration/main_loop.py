@@ -38,7 +38,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from bot.analytics import log_weekly_report
 from bot.researcher import gather_research, gather_research_batch
 from bot.scraper import run_scraper
-from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days, get_cluster_count
+from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days, get_cluster_count, clear_sector_cache
 from bot.committee import get_committees_for_politician
 from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore
 from bot.db import get_open_positions, insert_signal, log_regime
@@ -53,7 +53,7 @@ from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
 from risk.risk_manager import RiskManager, RiskState
-from screener.factor_scorer import run_factor_screen, FactorCandidate
+from screener.factor_scorer import run_factor_screen, prefetch_screener_data, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
 from dashboard.data_store import DashboardStore
 from hedge.hedge_engine import HedgeEngine
@@ -63,6 +63,12 @@ log = logging.getLogger(__name__)
 _AMS = ZoneInfo("Europe/Amsterdam")
 _NYSE = xcals.get_calendar("XNYS")
 _SCREENER_TOP_N = 12
+
+# Congressional signals are supplementary. They boost conviction when combined with a
+# strong factor score ("both" type), but pure congressional-only entries are capped in
+# size and frequency so the portfolio isn't overweight on a single signal source.
+_CONGRESSIONAL_MAX_PCT = 3.0      # max position size for congressional-only signals (% NAV)
+_CONGRESSIONAL_MAX_PER_DAY = 1    # at most 1 pure congressional-only entry per morning
 
 
 class RegimeAwareOrchestrator:
@@ -99,6 +105,9 @@ class RegimeAwareOrchestrator:
         # Hedge engine
         self._hedge_engine = HedgeEngine(self._cfg)
         self._corr_filter = CorrelationFilter(self._cfg)
+
+        # Pre-fetched screener data (populated at 13:00, consumed at 14:00 morning pipeline)
+        self._screener_prefetch: dict | None = None
 
     # ------------------------------------------------------------------
     # Startup
@@ -263,6 +272,29 @@ class RegimeAwareOrchestrator:
                 pass
 
     # ------------------------------------------------------------------
+    # Pre-fetch (13:00 Amsterdam — 1 hour before morning pipeline)
+    # ------------------------------------------------------------------
+
+    def run_screener_prefetch(self) -> None:
+        """Download and cache ticker fundamentals + momentum for the full universe.
+
+        Called at 13:00 so the 14:00 morning pipeline can skip the expensive
+        data-fetch step (~2-5 minutes) and go straight to scoring.
+        The cache is consumed once by run_morning_pipeline, then cleared.
+        """
+        if not _NYSE.is_session(date.today().isoformat()):
+            return
+        try:
+            universe = list(get_universe())
+            if not universe:
+                log.warning("Screener pre-fetch skipped — universe is empty")
+                return
+            self._screener_prefetch = prefetch_screener_data(universe)
+        except Exception as exc:
+            log.warning("Screener pre-fetch failed: %s — morning pipeline will fetch live", exc)
+            self._screener_prefetch = None
+
+    # ------------------------------------------------------------------
     # Morning pipeline (regime-aware)
     # ------------------------------------------------------------------
 
@@ -270,6 +302,9 @@ class RegimeAwareOrchestrator:
         if not _NYSE.is_session(date.today().isoformat()):
             log.info("Market closed — skipping morning pipeline")
             return
+
+        # Clear sector cache daily so stale GICS classifications don't persist across sessions
+        clear_sector_cache()
 
         self._maybe_rolling_refit()
         self._update_market_data()
@@ -325,10 +360,11 @@ class RegimeAwareOrchestrator:
                 _invested_pct, self._cfg.risk.max_invested_pct,
             )
 
-        # --- Scrape (always, for DB persistence) ------------------------
+        # --- Scrape congressional disclosures (always, for DB persistence) ---
         new_disclosures = run_scraper()
         qualified = filter_disclosures(new_disclosures)
         log.info("Disclosures: %d new, %d qualified", len(new_disclosures), len(qualified))
+        congress_tickers: set[str] = {disc["ticker"] for disc in qualified}
 
         if not _at_capacity:
             # --- Regime state as gate -----------------------------------
@@ -358,50 +394,72 @@ class RegimeAwareOrchestrator:
             except Exception as exc:
                 log.warning("Sector allocation computation failed: %s", exc)
 
-            congress_tickers: set[str] = {disc["ticker"] for disc in qualified}
+            # Tickers already in the portfolio — updated as new positions are opened
+            all_open_tickers = (
+                {p["ticker"] for p in self._broker.get_positions()}
+                | {pos["ticker"] for pos in get_open_positions()}
+            )
 
-            for disc in qualified:
-                if not self._portfolio.can_open_new_position():
-                    log.info("Position limit reached — stopping")
-                    break
-                try:
-                    self._process_signal(disc, sector_allocation)
-                except Exception:
-                    log.exception("Failed processing %s — skipping", disc.get("ticker", "?"))
-
-            # ── Phase 2: fundamental screener (regime-aware) ─────────────────────
+            # ── Phase 1: Fundamental factor screener (primary signal source) ─────
             try:
                 universe = list(get_universe())
+                # Use pre-fetched data if available (populated by run_screener_prefetch at 13:00)
+                prefetch = self._screener_prefetch
+                self._screener_prefetch = None  # consume once
+                if prefetch is None:
+                    log.info("No pre-fetched screener data — fetching live (pipeline will be slower)")
                 candidates = run_factor_screen(
                     universe,
                     top_n=_SCREENER_TOP_N,
                     research_workers=self._cfg.universe.research_concurrency,
                     regime_label=self._regime_state.regime_label if self._regime_state else None,
+                    prefetched=prefetch,
                 )
-                already_open = (
-                    {p["ticker"] for p in self._broker.get_positions()}
-                    | {pos["ticker"] for pos in get_open_positions()}
-                )
-
                 for candidate in candidates:
                     if not self._portfolio.can_open_new_position():
-                        log.info("Position limit reached — stopping Phase 2")
+                        log.info("Position limit reached — stopping Phase 1")
                         break
-                    if candidate.ticker in already_open:
+                    if candidate.ticker in all_open_tickers:
                         continue
                     try:
                         opened = self._process_fundamental_candidate(
                             candidate, sector_allocation, congress_tickers
                         )
                         if opened:
-                            already_open.add(candidate.ticker)
+                            all_open_tickers.add(candidate.ticker)
                     except Exception:
                         log.exception(
                             "Failed processing fundamental candidate %s — skipping",
                             candidate.ticker,
                         )
             except Exception:
-                log.exception("Phase 2 fundamental screener failed — skipping")
+                log.exception("Phase 1 fundamental screener failed — skipping")
+
+            # ── Phase 2: Congressional signals (supplementary) ───────────────────
+            # These are capped at _CONGRESSIONAL_MAX_PCT per position and
+            # _CONGRESSIONAL_MAX_PER_DAY entries per morning. When a congressional
+            # ticker also appears in the fundamental screener, it was already handled
+            # above with the "both" signal type and full conviction credit.
+            congressional_opened = 0
+            for disc in qualified:
+                if not self._portfolio.can_open_new_position():
+                    log.info("Position limit reached — stopping Phase 2")
+                    break
+                if congressional_opened >= _CONGRESSIONAL_MAX_PER_DAY:
+                    log.info(
+                        "Congressional daily limit (%d) reached — skipping remaining",
+                        _CONGRESSIONAL_MAX_PER_DAY,
+                    )
+                    break
+                if disc["ticker"] in all_open_tickers:
+                    continue
+                try:
+                    opened = self._process_signal(disc, sector_allocation)
+                    if opened:
+                        all_open_tickers.add(disc["ticker"])
+                        congressional_opened += 1
+                except Exception:
+                    log.exception("Failed processing %s — skipping", disc.get("ticker", "?"))
 
         # ── Phase 3: inverse ETF hedge pass ─────────────────────────
         if is_hedge_now:
@@ -410,7 +468,8 @@ class RegimeAwareOrchestrator:
 
         self._corr_filter.clear()
 
-    def _process_signal(self, disc: dict, sector_allocation: dict) -> None:
+    def _process_signal(self, disc: dict, sector_allocation: dict) -> bool:
+        """Process a congressional disclosure signal. Returns True if a position was opened."""
         ticker = disc["ticker"]
         committees = get_committees_for_politician(disc["politician"])
         sector = get_sector_for_ticker(ticker)
@@ -423,11 +482,11 @@ class RegimeAwareOrchestrator:
         )
         if has_event:
             log.info("Skipping %s: upcoming event — %s", ticker, event_reason)
-            return
+            return False
 
         research = gather_research(ticker)
 
-        # AI entry scoring (unchanged from existing bot)
+        # AI entry scoring
         score: EntryScore = score_entry_with_debate(
             disc, committees=committees, sector=sector,
             lag_days=lag, estimated_cost_pct=1.5,
@@ -435,7 +494,7 @@ class RegimeAwareOrchestrator:
         )
         if score.entry != "buy":
             log.info("Skipping %s: AI conviction %d", ticker, score.conviction)
-            return
+            return False
 
         # Regime allocation scaling
         base_pct = score.position_pct
@@ -445,9 +504,12 @@ class RegimeAwareOrchestrator:
             if final_pct < 0.1:
                 emit_event(log, EventType.SIGNAL_REJECTED,
                            f"{ticker} blocked by regime allocation ({alloc_decision.rationale})")
-                return
+                return False
         else:
             final_pct = base_pct
+
+        # Congressional-only signals are supplementary — cap position size
+        final_pct = min(final_pct, _CONGRESSIONAL_MAX_PCT)
 
         # Correlation filter
         corr_mult = self._corr_filter.size_multiplier(ticker)
@@ -455,16 +517,22 @@ class RegimeAwareOrchestrator:
         if final_pct < 0.1:
             emit_event(log, EventType.SIGNAL_REJECTED,
                        f"{ticker} reduced to zero by correlation filter (mult={corr_mult:.2f})")
-            return
+            return False
 
-        # Risk manager veto
-        entry_price_info = yf.Ticker(ticker).info
-        entry_price = entry_price_info.get("regularMarketPrice", 0)
+        # Price fetch — fast_info.last_price is available pre/post market; avoids stale close
+        try:
+            entry_price = yf.Ticker(ticker).fast_info.last_price or 0.0
+        except Exception:
+            entry_price = 0.0
         if not entry_price:
             log.warning("No price for %s — skipping", ticker)
-            return
+            return False
 
-        position_size_usd = self._broker.get_cash() * final_pct / 100
+        _positions_now = self._broker.get_positions()
+        _nav = self._broker.get_cash() + sum(
+            p["qty"] * p["current_price"] for p in _positions_now
+        )
+        position_size_usd = _nav * final_pct / 100
         adv_usd = research.avg_daily_volume_usd if research else None
         veto = self._risk.validate_order(
             ticker=ticker, position_pct=final_pct, sector=sector,
@@ -475,7 +543,7 @@ class RegimeAwareOrchestrator:
         if not veto.allowed:
             emit_event(log, EventType.RISK_VETO,
                        f"{ticker} vetoed: {veto.reason}")
-            return
+            return False
 
         # Apply size multiplier from risk state (e.g. 0.5× during daily drawdown)
         final_pct *= veto.size_multiplier
@@ -490,10 +558,11 @@ class RegimeAwareOrchestrator:
         )
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(log, EventType.ORDER_PLACED,
-                   f"Opened {ticker} pct={final_pct:.1f}% conv={score.conviction}",
+                   f"Opened {ticker} (congressional) pct={final_pct:.1f}% conv={score.conviction}",
                    data={"ticker": ticker, "pct": final_pct,
                          "regime": self._regime_state.regime_label if self._regime_state else "?",
                          "conviction": score.conviction})
+        return True
 
     def _process_fundamental_candidate(
         self,
@@ -557,12 +626,19 @@ class RegimeAwareOrchestrator:
             )
             return False
 
-        entry_price = yf.Ticker(ticker).info.get("regularMarketPrice", 0)
+        try:
+            entry_price = yf.Ticker(ticker).fast_info.last_price or 0.0
+        except Exception:
+            entry_price = 0.0
         if not entry_price:
             log.warning("No price for %s — skipping", ticker)
             return False
 
-        position_size_usd = self._broker.get_cash() * final_pct / 100
+        _positions_now = self._broker.get_positions()
+        _nav = self._broker.get_cash() + sum(
+            p["qty"] * p["current_price"] for p in _positions_now
+        )
+        position_size_usd = _nav * final_pct / 100
         adv_usd = candidate.research.avg_daily_volume_usd if candidate.research else None
         veto = self._risk.validate_order(
             ticker=ticker,
@@ -651,7 +727,10 @@ class RegimeAwareOrchestrator:
 
             for order in orders:
                 try:
-                    entry_price = yf.Ticker(order.ticker).info.get("regularMarketPrice", 0)
+                    try:
+                        entry_price = yf.Ticker(order.ticker).fast_info.last_price or 0.0
+                    except Exception:
+                        entry_price = 0.0
                     if not entry_price:
                         log.warning("No price for hedge ETF %s — skipping", order.ticker)
                         continue
@@ -695,7 +774,10 @@ class RegimeAwareOrchestrator:
                     )
                     if pos_meta is None:
                         continue
-                    exit_price = yf.Ticker(ticker).info.get("regularMarketPrice", 0)
+                    try:
+                        exit_price = yf.Ticker(ticker).fast_info.last_price or 0.0
+                    except Exception:
+                        exit_price = 0.0
                     if not exit_price:
                         log.warning("No price for hedge exit %s — skipping", ticker)
                         continue
@@ -751,8 +833,10 @@ class RegimeAwareOrchestrator:
 
         for pos in positions:
             try:
-                info = yf.Ticker(pos["ticker"]).info
-                current_price = info.get("regularMarketPrice", pos["entry_price"])
+                try:
+                    current_price = yf.Ticker(pos["ticker"]).fast_info.last_price or pos["entry_price"]
+                except Exception:
+                    current_price = pos["entry_price"]
                 days_held = (date.today() - date.fromisoformat(pos["entry_date"])).days
                 research = research_map.get(pos["ticker"])
                 decision = review_exit(pos["ticker"], pos["entry_price"],
@@ -811,8 +895,10 @@ class RegimeAwareOrchestrator:
         open_pos = get_open_positions()
         for pos in open_pos:
             try:
-                import yfinance as yf
-                price = yf.Ticker(pos["ticker"]).info.get("regularMarketPrice", 0)
+                try:
+                    price = yf.Ticker(pos["ticker"]).fast_info.last_price or 0.0
+                except Exception:
+                    price = 0.0
                 if not price:
                     continue
                 self._portfolio.close_position(
@@ -873,9 +959,14 @@ class RegimeAwareOrchestrator:
 
     def start(self) -> None:
         from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
+        from apscheduler.executors.pool import ThreadPoolExecutor
         from monitoring.alerts import fire_alert
 
-        scheduler = BlockingScheduler(timezone=_AMS)
+        # Single-thread executor: jobs run sequentially. This prevents concurrent
+        # access to the portfolio and SQLite DB when the morning pipeline overlaps
+        # with the exit review. Delayed jobs are logged as missed (not silently dropped).
+        executors = {"default": ThreadPoolExecutor(1)}
+        scheduler = BlockingScheduler(executors=executors, timezone=_AMS)
 
         def _on_job_error(event) -> None:
             msg = f"Scheduler job '{event.job_id}' raised an exception: {event.exception}"
@@ -893,15 +984,32 @@ class RegimeAwareOrchestrator:
         scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
         scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
 
-        scheduler.add_job(refresh_universe, "cron", day_of_week="mon", hour=7, minute=0)
-        scheduler.add_job(self.run_morning_pipeline, "cron", hour=14, minute=0)
-        scheduler.add_job(self.run_exit_review, "cron", hour=15, minute=0)
+        # misfire_grace_time: if a job fires late by more than this many seconds it
+        # is still run (rather than silently skipped). Intraday checks get a tighter
+        # window — a stop-loss check that's an hour late is not useful.
+        _grace = 3600   # 1 hour for pipeline / eod (expected to be long)
+        _intraday_grace = 600  # 10 min for time-sensitive intraday checks
+
+        scheduler.add_job(refresh_universe, "cron", day_of_week="mon", hour=7, minute=0,
+                          misfire_grace_time=_grace)
+        # 13:00: pre-fetch screener data 1 hour before the morning pipeline
+        scheduler.add_job(self.run_screener_prefetch, "cron", hour=13, minute=0,
+                          misfire_grace_time=_grace)
+        scheduler.add_job(self.run_morning_pipeline, "cron", hour=14, minute=0,
+                          misfire_grace_time=_grace)
+        scheduler.add_job(self.run_exit_review, "cron", hour=16, minute=0,
+                          misfire_grace_time=_grace)
         # 15:45 = 15 mins after US open (15:30 Amsterdam = 09:30 EST)
-        scheduler.add_job(self.run_intraday_check, "cron", hour=15, minute=45)
-        scheduler.add_job(self.run_eod, "cron", hour=22, minute=30)
-        scheduler.add_job(log_weekly_report, "cron", day_of_week="fri", hour=22, minute=45)
+        scheduler.add_job(self.run_intraday_check, "cron", hour=15, minute=45,
+                          misfire_grace_time=_intraday_grace)
+        scheduler.add_job(self.run_eod, "cron", hour=22, minute=30,
+                          misfire_grace_time=_grace)
+        scheduler.add_job(log_weekly_report, "cron", day_of_week="fri", hour=22, minute=45,
+                          misfire_grace_time=_grace)
         # Midday / afternoon US market checks (17:00 = 11:00 EST, 20:00 = 14:00 EST)
-        scheduler.add_job(self.run_intraday_check, "cron", hour=17, minute=0)
-        scheduler.add_job(self.run_intraday_check, "cron", hour=20, minute=0)
-        log.info("Regime-aware scheduler started (Amsterdam timezone)")
+        scheduler.add_job(self.run_intraday_check, "cron", hour=17, minute=0,
+                          misfire_grace_time=_intraday_grace)
+        scheduler.add_job(self.run_intraday_check, "cron", hour=20, minute=0,
+                          misfire_grace_time=_intraday_grace)
+        log.info("Regime-aware scheduler started (Amsterdam timezone, single-thread executor)")
         scheduler.start()
