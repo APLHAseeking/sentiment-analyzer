@@ -102,7 +102,7 @@ def run_backtest() -> None:
     log.info("Fetching price data for %d tickers...", len(tickers))
     import yfinance as yf
     price_data = {}
-    for ticker in tickers[:50]:  # limit for speed; increase as needed
+    for ticker in tickers:
         try:
             df = yf.download(ticker, period=f"{settings.market_data.history_years+1}y",
                              progress=False, auto_adjust=True)

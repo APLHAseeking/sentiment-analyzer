@@ -1,7 +1,7 @@
 import os
 
 _DEFAULTS = {
-    "ANTHROPIC_API_KEY": "test-anthropic-key",
+    "OPENAI_API_KEY": "test-openai-key",
     "ALPACA_API_KEY": "test-alpaca-key",
     "ALPACA_SECRET_KEY": "test-alpaca-secret",
     "PROPUBLICA_API_KEY": "test-propublica-key",

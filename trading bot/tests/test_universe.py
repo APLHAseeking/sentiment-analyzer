@@ -38,13 +38,14 @@ def test_refresh_universe_builds_from_fetchers(mocker):
     assert bot.universe._UNIVERSE == {"AAPL", "GOOGL"}
 
 
-def test_is_in_universe_raises_when_empty(mocker):
+def test_is_in_universe_returns_false_when_empty(mocker):
+    # Empty universe now returns False (with a warning) instead of crashing.
+    # The bot continues gracefully; the signal is just skipped.
     import bot.universe
     original = bot.universe._UNIVERSE
     bot.universe._UNIVERSE = set()
     try:
-        with pytest.raises(RuntimeError, match="Universe not initialized"):
-            is_in_universe("AAPL")
+        assert is_in_universe("AAPL") is False
     finally:
         bot.universe._UNIVERSE = original
 

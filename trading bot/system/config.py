@@ -30,15 +30,12 @@ def _require(key: str) -> str:
 
 @dataclass(frozen=True)
 class Credentials:
-    anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
+    openai_api_key: str = field(default_factory=lambda: _env("OPENAI_API_KEY"))
     alpaca_api_key: str = field(default_factory=lambda: _env("ALPACA_API_KEY"))
     alpaca_secret_key: str = field(default_factory=lambda: _env("ALPACA_SECRET_KEY"))
     alpaca_base_url: str = field(default_factory=lambda: _env("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
     propublica_api_key: str = field(default_factory=lambda: _env("PROPUBLICA_API_KEY"))
-    fincept_scripts_path: str = field(default_factory=lambda: _env(
-        "FINCEPT_SCRIPTS_PATH",
-        "/Users/thomasvromen/Documents/FinceptTerminal/fincept-qt/scripts/Analytics",
-    ))
+    fincept_scripts_path: str = field(default_factory=lambda: _env("FINCEPT_SCRIPTS_PATH", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +87,6 @@ class RegimeConfig:
     covariance_type: str = "diag"     # only "diag" is implemented; others fall back to diag with a warning
     # Stability filter
     min_stable_bars: int = 3          # regime must persist N bars before acting on it
-    instability_penalty: float = 0.5  # multiply target allocation by this during unstable periods
     # Labels — assigned in order from lowest mean return to highest
     # 3 regimes: crash=0, neutral=1, bull=2
     # 4 regimes: crash=0, bear=1, bull=2, euphoria=3
@@ -126,6 +122,9 @@ class AllocationConfig:
     # Additional scaling by regime confidence (linear interpolation)
     min_confidence_to_trade: float = 0.40  # below this, skip new entries
     confidence_scale: bool = True          # scale size by confidence linearly
+    # Size multiplier applied when the regime has been switching rapidly.
+    # AllocationEngine reads this from AllocationConfig (not RegimeConfig).
+    instability_penalty: float = 0.5      # multiply position size by this when regime is unstable
 
 
 # ---------------------------------------------------------------------------

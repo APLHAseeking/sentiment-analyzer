@@ -14,8 +14,6 @@ import yfinance as yf
 
 log = logging.getLogger(__name__)
 
-_CACHE: dict[str, pd.DataFrame] = {}
-
 
 def fetch_daily_bars(
     ticker: str,

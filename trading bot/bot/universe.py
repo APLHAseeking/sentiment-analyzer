@@ -1,8 +1,15 @@
 import io
+import json
+import logging
+import os
+
 import pandas as pd
 import requests
 
+log = logging.getLogger(__name__)
+
 _UNIVERSE: set[str] = set()
+_CACHE_FILE = "universe_cache.json"
 
 
 def _fetch_sp500() -> pd.DataFrame:
@@ -35,14 +42,61 @@ def _build_universe() -> set[str]:
     return sp500 | russell
 
 
+def _save_cache(universe: set[str]) -> None:
+    try:
+        with open(_CACHE_FILE, "w") as f:
+            json.dump(sorted(universe), f)
+    except Exception as exc:
+        log.warning("Could not save universe cache: %s", exc)
+
+
+def _load_cache() -> set[str] | None:
+    try:
+        if not os.path.exists(_CACHE_FILE):
+            return None
+        with open(_CACHE_FILE) as f:
+            data = json.load(f)
+        if not isinstance(data, list) or not data:
+            return None
+        return set(data)
+    except Exception as exc:
+        log.warning("Could not load universe cache: %s", exc)
+        return None
+
+
 def refresh_universe() -> None:
+    """Fetch the current S&P 500 + Russell 1000 universe.
+
+    On network failure, falls back to a local cache written by the previous
+    successful run. Raises RuntimeError only if the live fetch fails AND no
+    cache exists — the bot cannot operate without any universe.
+    """
     global _UNIVERSE
-    _UNIVERSE = _build_universe()
+    try:
+        _UNIVERSE = _build_universe()
+        _save_cache(_UNIVERSE)
+        log.info("Universe refreshed: %d tickers", len(_UNIVERSE))
+    except Exception as exc:
+        cached = _load_cache()
+        if cached:
+            _UNIVERSE = cached
+            log.warning(
+                "Universe refresh failed (%s) — using cached universe (%d tickers)",
+                exc, len(_UNIVERSE),
+            )
+        else:
+            raise RuntimeError(
+                f"Universe fetch failed and no local cache found: {exc}"
+            ) from exc
 
 
 def is_in_universe(ticker: str) -> bool:
     if not _UNIVERSE:
-        raise RuntimeError("Universe not initialized. Call refresh_universe() first.")
+        log.warning(
+            "Universe is empty — call refresh_universe() first. "
+            "Treating %s as not in universe.", ticker,
+        )
+        return False
     return ticker.strip().upper() in _UNIVERSE
 
 

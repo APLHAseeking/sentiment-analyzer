@@ -3,8 +3,8 @@ import logging
 import time
 from dataclasses import dataclass
 
-import anthropic as _anthropic
-from anthropic import Anthropic
+import openai as _openai
+from openai import OpenAI
 
 log = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ def _call_with_retry(fn):
     for attempt in range(_MAX_RETRIES):
         try:
             return fn()
-        except _anthropic.RateLimitError as exc:
+        except _openai.RateLimitError as exc:
             last_exc = exc
             log.warning("Rate limit hit (attempt %d/%d) — retrying in %.0fs",
                         attempt + 1, _MAX_RETRIES, delay)
@@ -125,17 +125,17 @@ _VALID_ENTRY_VALUES = {"buy", "skip"}
 _VALID_ACTION_VALUES = {"hold", "exit", "reduce"}
 _VALID_SIGNAL_TYPES = {"congressional", "fundamental", "both"}
 
-_client: Anthropic | None = None
+_client: OpenAI | None = None
 
 
-def _get_client() -> Anthropic:
+def _get_client() -> OpenAI:
     global _client
     if _client is None:
         import os
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
-            raise RuntimeError("Missing required env var: ANTHROPIC_API_KEY")
-        _client = Anthropic(api_key=api_key)
+            raise RuntimeError("Missing required env var: OPENAI_API_KEY")
+        _client = OpenAI(api_key=api_key)
     return _client
 
 
@@ -173,7 +173,7 @@ def parse_entry_response(text: str) -> EntryScore:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Claude returned invalid JSON for entry: {text!r}") from exc
+        raise ValueError(f"LLM returned invalid JSON for entry: {text!r}") from exc
     conviction = int(data["conviction"])
     if not (1 <= conviction <= 10):
         raise ValueError(f"conviction {conviction} out of range 1-10")
@@ -193,7 +193,7 @@ def parse_exit_response(text: str) -> ExitDecision:
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError(f"Claude returned invalid JSON for exit: {text!r}") from exc
+        raise ValueError(f"LLM returned invalid JSON for exit: {text!r}") from exc
     action = data["action"]
     if action not in _VALID_ACTION_VALUES:
         raise ValueError(f"action {action!r} not in {_VALID_ACTION_VALUES}")
@@ -239,25 +239,29 @@ def _build_entry_prompt(
 
 def _bull_argument(prompt: str) -> str:
     client = _get_client()
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
+    resp = client.chat.completions.create(
+        model="gpt-4o",
         max_tokens=512,
-        system=_BULL_SYSTEM,
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {"role": "system", "content": _BULL_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
     )
-    return resp.content[0].text
+    return resp.choices[0].message.content
 
 
 def _bear_argument(prompt: str, bull_text: str) -> str:
     client = _get_client()
     combined = f"{prompt}\n\nBull case:\n{bull_text}"
-    resp = client.messages.create(
-        model="claude-sonnet-4-6",
+    resp = client.chat.completions.create(
+        model="gpt-4o",
         max_tokens=512,
-        system=_BEAR_SYSTEM,
-        messages=[{"role": "user", "content": combined}],
+        messages=[
+            {"role": "system", "content": _BEAR_SYSTEM},
+            {"role": "user", "content": combined},
+        ],
     )
-    return resp.content[0].text
+    return resp.choices[0].message.content
 
 
 def score_entry(
@@ -291,14 +295,15 @@ def score_entry(
     client = _get_client()
 
     def _call():
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
+        resp = client.chat.completions.create(
+            model="gpt-4o",
             max_tokens=512,
-            system=[{"type": "text", "text": system_text,
-                     "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": prompt},
+            ],
         )
-        return parse_entry_response(resp.content[0].text)
+        return parse_entry_response(resp.choices[0].message.content)
 
     return _call_with_retry(_call)
 
@@ -383,13 +388,14 @@ def review_exit(ticker: str, entry_price: float, current_price: float,
     client = _get_client()
 
     def _call():
-        resp = client.messages.create(
-            model="claude-sonnet-4-6",
+        resp = client.chat.completions.create(
+            model="gpt-4o",
             max_tokens=256,
-            system=[{"type": "text", "text": _EXIT_SYSTEM,
-                     "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": _EXIT_SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
         )
-        return parse_exit_response(resp.content[0].text)
+        return parse_exit_response(resp.choices[0].message.content)
 
     return _call_with_retry(_call)

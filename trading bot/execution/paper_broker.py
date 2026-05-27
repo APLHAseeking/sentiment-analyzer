@@ -61,11 +61,10 @@ class SimulatedBroker(BrokerInterface):
     def get_positions(self) -> list[dict[str, Any]]:
         result = []
         for pos in self._positions.values():
-            # Refresh current price from yfinance if possible
             try:
-                info = yf.Ticker(pos.ticker).info
-                price = info.get("regularMarketPrice") or pos.current_price
-                pos.current_price = float(price)
+                price = yf.Ticker(pos.ticker).fast_info.last_price
+                if price:
+                    pos.current_price = float(price)
             except Exception:
                 pass
             result.append({
@@ -113,12 +112,13 @@ class SimulatedBroker(BrokerInterface):
 
     def _get_fill_price(self, ticker: str, side: str) -> float:
         """Fetch market price and apply directional slippage."""
-        info = yf.Ticker(ticker).info
-        price = info.get("regularMarketPrice")
+        try:
+            price = yf.Ticker(ticker).fast_info.last_price
+        except Exception:
+            price = None
         if not price:
             raise RuntimeError(f"No market price available for {ticker}")
         price = float(price)
-        # Buy orders fill slightly above mid; sell orders slightly below
         slip = price * self._slippage_bps / 10_000
         return price + slip if side == "buy" else price - slip
 

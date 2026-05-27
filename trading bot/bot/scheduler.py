@@ -1,3 +1,9 @@
+"""DEPRECATED — superseded by orchestration/main_loop.py.
+
+This module contains the original congressional-only pipeline without regime
+detection, correlation filtering, or inverse ETF hedging. run_bot.py no longer
+imports from here. Do not run or import this file in production.
+"""
 import logging
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo

@@ -71,6 +71,13 @@ def has_upcoming_event(
     """
     _today = today or date.today()
 
+    if _FOMC_DATES and _today > _FOMC_DATES[-1]:
+        log.warning(
+            "FOMC date list expired (last known: %s). "
+            "Update _FOMC_DATES in event_calendar.py for the new year.",
+            _FOMC_DATES[-1],
+        )
+
     for fomc_date in _FOMC_DATES:
         days_until = (fomc_date - _today).days
         if 0 <= days_until <= window_days:

@@ -112,17 +112,17 @@ _RATING_MAP: dict[str, str] = {
     "sell": "Sell", "strong_sell": "Sell",
 }
 
-_sentiment_client: "Anthropic | None" = None
+_sentiment_client: "OpenAI | None" = None
 
 
-def _get_sentiment_client() -> "Anthropic":
+def _get_sentiment_client() -> "OpenAI":
     global _sentiment_client
     if _sentiment_client is None:
-        from anthropic import Anthropic
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        from openai import OpenAI
+        api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
-            raise RuntimeError("Missing required env var: ANTHROPIC_API_KEY")
-        _sentiment_client = Anthropic(api_key=api_key)
+            raise RuntimeError("Missing required env var: OPENAI_API_KEY")
+        _sentiment_client = OpenAI(api_key=api_key)
     return _sentiment_client
 
 
@@ -139,13 +139,15 @@ def _score_sentiment(
 ) -> tuple[str | None, int | None, tuple[str, ...]]:
     try:
         client = _get_sentiment_client()
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
             max_tokens=128,
-            system=_SENTIMENT_SYSTEM,
-            messages=[{"role": "user", "content": news_block}],
+            messages=[
+                {"role": "system", "content": _SENTIMENT_SYSTEM},
+                {"role": "user", "content": news_block},
+            ],
         )
-        data = json.loads(resp.content[0].text)
+        data = json.loads(resp.choices[0].message.content)
         label = data.get("sentiment")
         strength = int(data.get("strength", 1))
         themes = tuple(str(t) for t in data.get("key_themes", [])[:3])
@@ -187,20 +189,24 @@ def gather_research(
         t = yf.Ticker(ticker)
         info = t.info
 
-        hist = t.history(period="3mo")
-        momentum_1m = momentum_3m = None
-        if not hist.empty and len(hist) >= 2:
-            current = hist["Close"].iloc[-1]
-            price_1m = hist["Close"].iloc[max(0, len(hist) - 21)]
-            price_3m = hist["Close"].iloc[0]
-            momentum_1m = (current / price_1m - 1) * 100
-            momentum_3m = (current / price_3m - 1) * 100
-
-        # Use precomputed momentum from factor screener if available (avoids double download)
-        if momentum_1m_override is not None:
+        # Skip the history download if the caller already computed momentum
+        # (factor screener pre-fetches 12 months; re-downloading 3 months here wastes time)
+        if momentum_1m_override is not None and momentum_3m_override is not None:
             momentum_1m = momentum_1m_override
-        if momentum_3m_override is not None:
             momentum_3m = momentum_3m_override
+        else:
+            hist = t.history(period="3mo")
+            momentum_1m = momentum_3m = None
+            if not hist.empty and len(hist) >= 2:
+                current = hist["Close"].iloc[-1]
+                price_1m = hist["Close"].iloc[max(0, len(hist) - 21)]
+                price_3m = hist["Close"].iloc[0]
+                momentum_1m = (current / price_1m - 1) * 100
+                momentum_3m = (current / price_3m - 1) * 100
+            if momentum_1m_override is not None:
+                momentum_1m = momentum_1m_override
+            if momentum_3m_override is not None:
+                momentum_3m = momentum_3m_override
 
         raw_rating = (info.get("recommendationKey") or "").lower()
         analyst_rating = _RATING_MAP.get(raw_rating)

@@ -100,7 +100,7 @@ def compute_features(
 def build_feature_matrix(
     data: pd.DataFrame,
     cfg: FeatureConfig | None = None,
-) -> tuple[np.ndarray, pd.DatetimeIndex]:
+) -> tuple[np.ndarray, pd.DatetimeIndex, "StandardScaler"]:
     """Return (X, index) where X is the scaled feature matrix for HMM fitting.
 
     Only uses features that are fully available (no NaN in selected columns).

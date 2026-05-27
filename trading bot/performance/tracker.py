@@ -47,14 +47,20 @@ class PerformanceTracker:
         """Per-regime trade attribution.
 
         Returns {regime_label: {n_trades, avg_return_pct, win_rate}}.
-        Joins closed_positions with regime_log on entry_date.
+        Joins closed_positions with the most-recent regime_log entry for each date
+        (regime_log can have multiple entries per date; DISTINCT prevents duplicates).
         """
         with db.get_conn() as conn:
             rows = conn.execute(
                 """SELECT cp.entry_price, cp.exit_price, cp.shares,
                           COALESCE(rl.regime_label, 'unknown') AS regime_label
                    FROM closed_positions cp
-                   LEFT JOIN regime_log rl ON cp.entry_date = rl.date"""
+                   LEFT JOIN (
+                       SELECT date, regime_label
+                       FROM regime_log
+                       GROUP BY date
+                       HAVING id = MAX(id)
+                   ) rl ON cp.entry_date = rl.date"""
             ).fetchall()
         grouped: dict[str, list[float]] = {}
         for r in rows:

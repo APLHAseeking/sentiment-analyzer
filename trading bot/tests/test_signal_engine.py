@@ -38,7 +38,8 @@ def test_no_committees_disqualifies():
 
 def test_uninitialized_universe_disqualifies():
     disc = _disc()
-    with patch("bot.signal_engine.is_in_universe", side_effect=RuntimeError("Universe not initialized")):
+    # is_in_universe now returns False (not raises) when universe is empty
+    with patch("bot.signal_engine.is_in_universe", return_value=False):
         assert is_qualified_signal(disc) is False
 
 def test_no_sector_overlap_disqualifies():

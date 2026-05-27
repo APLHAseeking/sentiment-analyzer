@@ -9,7 +9,10 @@ from bot.committee import (
 )
 
 def test_map_has_entries():
-    assert len(COMMITTEE_SECTOR_MAP) >= 21
+    # Appropriations committees were removed (they mapped to "All", causing false positives)
+    assert len(COMMITTEE_SECTOR_MAP) >= 19
+    assert "Senate Appropriations" not in COMMITTEE_SECTOR_MAP
+    assert "House Appropriations" not in COMMITTEE_SECTOR_MAP
     assert "Financial Services" in COMMITTEE_SECTOR_MAP["Senate Banking"]
 
 def test_overlap_true():
@@ -40,8 +43,11 @@ def test_get_committees_returns_empty_for_unknown(mocker):
 def test_intelligence_committee_covers_technology():
     assert sector_has_committee_overlap("Technology", ["Senate Intelligence"]) is True
 
-def test_appropriations_covers_all_sectors():
-    assert sector_has_committee_overlap("Healthcare", ["Senate Appropriations"]) is True
+def test_appropriations_removed_from_map():
+    # Appropriations was removed: it mapped "All" which generated false positives
+    # across every sector for every member. The correct behavior is no overlap.
+    assert sector_has_committee_overlap("Healthcare", ["Senate Appropriations"]) is False
+    assert sector_has_committee_overlap("Technology", ["House Appropriations"]) is False
 
 # --- New tests for Bug 2 and Bug 3 fixes ---
 

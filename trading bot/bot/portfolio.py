@@ -68,7 +68,8 @@ class Portfolio:
                 "Sell order failed for %s after retries: %s — manual close may be required",
                 ticker, order.reject_reason,
             )
-        costs = shares * getattr(self.broker, "_commission_per_share", 0.0)
+        _commission = vars(self.broker).get("_commission_per_share", 0.0)
+        costs = shares * _commission if isinstance(_commission, (int, float)) else 0.0
         db.log_closed_position(
             ticker=ticker,
             entry_price=entry_price,
@@ -107,7 +108,8 @@ class Portfolio:
                 "Reduce sell failed for %s after retries: %s — manual close may be required",
                 ticker, order.reject_reason,
             )
-        costs = sell_qty * getattr(self.broker, "_commission_per_share", 0.0)
+        _commission = vars(self.broker).get("_commission_per_share", 0.0)
+        costs = sell_qty * _commission if isinstance(_commission, (int, float)) else 0.0
         db.log_closed_position(
             ticker=ticker,
             entry_price=entry_price,

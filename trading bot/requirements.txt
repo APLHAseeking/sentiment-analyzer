@@ -1,5 +1,5 @@
 # Existing dependencies
-anthropic>=0.40.0
+openai>=1.30.0
 alpaca-py>=0.26.0
 apscheduler>=3.10.4
 beautifulsoup4>=4.12.3

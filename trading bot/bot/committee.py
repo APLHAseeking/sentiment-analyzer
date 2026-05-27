@@ -28,8 +28,9 @@ COMMITTEE_SECTOR_MAP: dict[str, list[str]] = {
     "Senate Commerce Science": ["Technology", "Communication Services"],
     "Senate Intelligence": ["Technology", "Communication Services", "Industrials"],
     "House Intelligence": ["Technology", "Communication Services", "Industrials"],
-    "Senate Appropriations": ["All"],
-    "House Appropriations": ["All"],
+    # Appropriations committees were removed: their "All" catch-all caused every
+    # member's trade to pass the sector filter for any ticker, generating false
+    # positives across the entire universe. They have no sector-specific informational edge.
     "Senate Foreign Relations": ["Energy", "Basic Materials", "Industrials"],
     "House Foreign Affairs": ["Energy", "Basic Materials", "Industrials"],
     "Senate Judiciary": ["Technology", "Communication Services"],

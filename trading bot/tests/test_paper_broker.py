@@ -12,8 +12,9 @@ def broker():
 
 
 def _mock_price(mocker, ticker: str, price: float):
-    mock_info = {"regularMarketPrice": price}
-    mocker.patch("execution.paper_broker.yf.Ticker", return_value=MagicMock(info=mock_info))
+    mock_ticker = MagicMock()
+    mock_ticker.fast_info.last_price = price
+    mocker.patch("execution.paper_broker.yf.Ticker", return_value=mock_ticker)
 
 
 def test_initial_cash(broker):

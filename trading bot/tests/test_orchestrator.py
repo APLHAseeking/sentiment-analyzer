@@ -220,7 +220,8 @@ def test_process_signal_applies_correlation_multiplier(mocker, orch):
     orch._process_signal(disc, {})
 
     call_kwargs = orch._portfolio.open_position.call_args[1]
-    assert call_kwargs["position_pct"] == pytest.approx(2.0)  # 4.0 * 0.5
+    # AI says 4.0%, capped at _CONGRESSIONAL_MAX_PCT=3.0%, then corr mult 0.5 → 1.5%
+    assert call_kwargs["position_pct"] == pytest.approx(1.5)
 
 
 def test_process_fundamental_candidate_applies_correlation_multiplier(mocker, orch):

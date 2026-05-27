@@ -51,9 +51,9 @@ def test_regime_size_multiplier_keys_match_label_maps():
 
 
 def test_credentials_loads_from_env(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     creds = Credentials()
-    assert creds.anthropic_api_key == "test-key"
+    assert creds.openai_api_key == "test-key"
 
 
 @pytest.mark.parametrize("pct", [1.0, 50.0, 80.0, 100.0])
