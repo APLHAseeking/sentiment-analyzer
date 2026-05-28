@@ -2,6 +2,7 @@ import io
 import json
 import logging
 import os
+import re
 
 import pandas as pd
 import requests
@@ -33,7 +34,16 @@ def _fetch_russell1000() -> pd.DataFrame:
     df = pd.read_csv(io.StringIO(resp.text), skiprows=9)
     if "Ticker" not in df.columns:
         raise ValueError(f"Unexpected iShares CSV format. Columns found: {df.columns.tolist()}")
-    return df[["Ticker"]].dropna()
+    tickers = df[["Ticker"]].dropna()
+    # Validate: tickers should be 1-5 uppercase letters, not numeric strings or headers
+    _VALID_TICKER = re.compile(r"^[A-Z]{1,5}$")
+    valid = tickers[tickers["Ticker"].str.match(_VALID_TICKER, na=False)]
+    if len(valid) < 100:
+        raise ValueError(
+            f"Russell 1000 CSV parsed only {len(valid)} valid tickers — "
+            f"skiprows value or CSV format may have changed."
+        )
+    return valid
 
 
 def _build_universe() -> set[str]:

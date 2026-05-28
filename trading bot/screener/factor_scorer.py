@@ -84,7 +84,13 @@ def _fetch_momentum_batch(
         raw = yf.download(tickers, period="12mo", auto_adjust=True, progress=False)
         if isinstance(raw.columns, pd.MultiIndex):
             close = raw["Close"]
+        elif "Close" in raw.columns:
+            # Single-ticker or older yfinance: flat DataFrame
+            close = raw[["Close"]]
+            if len(tickers) == 1:
+                close.columns = tickers  # name the single column with the ticker
         else:
+            log.warning("_fetch_momentum_batch: unexpected columns %s — skipping", raw.columns.tolist())
             return {t: (None, None) for t in tickers}
 
         result: dict[str, tuple[float | None, float | None]] = {}

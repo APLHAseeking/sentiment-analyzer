@@ -1,6 +1,7 @@
 import os
 
 _DEFAULTS = {
+    "ANTHROPIC_API_KEY": "test-anthropic-key",
     "OPENAI_API_KEY": "test-openai-key",
     "ALPACA_API_KEY": "test-alpaca-key",
     "ALPACA_SECRET_KEY": "test-alpaca-secret",
@@ -37,10 +38,12 @@ def mock_broker(mocker):
     broker = mocker.MagicMock()
     broker.get_cash.return_value = 100_000.0
     broker.get_positions.return_value = []
+    broker.get_commission_per_share.return_value = 0.0
     # Return a submitted (accepted) order by default so open_position writes to DB.
     _default_order = Order(
         ticker="MOCK", side=OrderSide.BUY, qty=1.0, order_type=OrderType.MARKET,
     )
     _default_order.status = OrderStatus.SUBMITTED
+    _default_order.filled_qty = 1.0
     broker.place_order.return_value = _default_order
     return broker

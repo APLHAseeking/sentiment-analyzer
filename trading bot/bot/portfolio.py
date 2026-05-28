@@ -8,11 +8,6 @@ from execution.broker_interface import OrderStatus
 
 log = logging.getLogger(__name__)
 
-# Kept for any external code that imports these constants directly.
-MAX_POSITIONS = 20
-MAX_POSITIONS_PER_DAY = 3
-MAX_POSITION_PCT = 8.0
-
 
 class Portfolio:
     def __init__(self, broker, risk_cfg=None):
