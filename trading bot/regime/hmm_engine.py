@@ -244,25 +244,23 @@ class HMMRegimeEngine:
 
         # Filtered (causal) posteriors — forward-only, no look-ahead bias
         posteriors = self._result.model.predict_proba_filtered(X)  # shape (T, n_regimes)
-        viterbi = self._result.model.predict(X)
 
         n = self._result.n_regimes
-        # Use the state→rank mapping computed and stored at fit time
         state_to_rank = self._result.state_to_rank
         label_options = self._result.label_options
 
         states: list[RegimeState] = []
-        for i, (ts, raw_state) in enumerate(zip(index, viterbi)):
-            rank = state_to_rank.get(int(raw_state), int(raw_state))
-            label = label_options[rank] if rank < len(label_options) else str(rank)
-
-            # Remap posteriors to rank order
+        for i, ts in enumerate(index):
+            # Remap raw posteriors to rank order
             ranked_posteriors = [0.0] * n
             for s in range(n):
                 r = state_to_rank.get(s, s)
                 if r < n:
                     ranked_posteriors[r] += float(posteriors[i, s])
 
+            # Derive regime from filtered posteriors argmax — fully causal, no Viterbi look-ahead
+            rank = int(np.argmax(ranked_posteriors))
+            label = label_options[rank] if rank < len(label_options) else str(rank)
             confidence = ranked_posteriors[rank]
             is_stable, transition_rate, instability_score = self._compute_stability_metrics(rank)
             states.append(RegimeState(
