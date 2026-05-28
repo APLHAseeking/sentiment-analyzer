@@ -365,6 +365,9 @@ class HMMRegimeEngine:
         # Extend the cached tail with the new bar for feature computation
         extended = pd.concat([self._data_tail, new_bar]).sort_index()
         extended = extended[~extended.index.duplicated(keep="last")]
+        # Forward-fill VIX to handle single-bar network gaps without zero-padding
+        if "vix" in extended.columns:
+            extended["vix"] = extended["vix"].ffill()
 
         feat_df = compute_features(extended, feature_cfg)
         if feat_df.empty:

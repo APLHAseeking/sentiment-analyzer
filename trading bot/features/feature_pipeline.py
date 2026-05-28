@@ -85,9 +85,9 @@ def compute_features(
     if cfg.use_momentum:
         df["momentum"] = df["close"] / df["close"].shift(cfg.momentum_window) - 1
 
-    # --- Drawdown from rolling peak --------------------------------------
+    # --- Drawdown from rolling 1-year peak (consistent window regardless of data length) ---
     if cfg.use_drawdown:
-        rolling_peak = df["close"].expanding().max()
+        rolling_peak = df["close"].rolling(252, min_periods=1).max()
         df["drawdown"] = df["close"] / rolling_peak - 1
 
     # Drop rows where core features are NaN (initial warm-up period)
