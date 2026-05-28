@@ -54,6 +54,7 @@ class ResearchReport:
     sentiment_strength: int | None = None
     sentiment_themes: tuple[str, ...] = ()
     sentiment_news_count: int = 0
+    momentum_12m: float | None = None  # 12-month return (factor screener signal)
 
 
 def _fmt(value: float | None, spec: str = ".2f", suffix: str = "") -> str:
@@ -69,6 +70,7 @@ def format_research_for_prompt(report: ResearchReport) -> str:
 
     mom_1m = f"{report.momentum_1m:+.1f}%" if report.momentum_1m is not None else "n/a"
     mom_3m = f"{report.momentum_3m:+.1f}%" if report.momentum_3m is not None else "n/a"
+    mom_12m = f"{report.momentum_12m:+.1f}%" if report.momentum_12m is not None else "n/a"
     rev_g = f"{report.revenue_growth * 100:+.1f}%" if report.revenue_growth is not None else "n/a"
     earn_g = f"{report.earnings_growth * 100:+.1f}%" if report.earnings_growth is not None else "n/a"
     roe_s = f"{report.roe * 100:.1f}%" if report.roe is not None else "n/a"
@@ -88,7 +90,7 @@ def format_research_for_prompt(report: ResearchReport) -> str:
         f"Financial health: ROE {roe_s} | Margin {margin_s} | "
         f"D/E {_fmt(report.debt_to_equity, '.2f')} | "
         f"FCF ${_fmt(fcf, '.1f')}B\n"
-        f"Momentum: {mom_1m} (1m) | {mom_3m} (3m) | "
+        f"Momentum: {mom_1m} (1m) | {mom_3m} (3m) | {mom_12m} (12m) | "
         f"52w ${_fmt(report.week52_low, '.2f')}–${_fmt(report.week52_high, '.2f')} | "
         f"Beta {_fmt(report.beta, '.2f')}\n"
         f"Growth: Revenue {rev_g} YoY | Earnings {earn_g} YoY\n"
@@ -184,6 +186,7 @@ def gather_research(
     ticker: str,
     momentum_1m_override: float | None = None,
     momentum_3m_override: float | None = None,
+    momentum_12m_override: float | None = None,
 ) -> ResearchReport | None:
     try:
         t = yf.Ticker(ticker)
@@ -207,6 +210,8 @@ def gather_research(
                 momentum_1m = momentum_1m_override
             if momentum_3m_override is not None:
                 momentum_3m = momentum_3m_override
+
+        momentum_12m = momentum_12m_override
 
         raw_rating = (info.get("recommendationKey") or "").lower()
         analyst_rating = _RATING_MAP.get(raw_rating)
@@ -317,6 +322,7 @@ def gather_research(
             week52_low=week52_low,
             momentum_1m=momentum_1m,
             momentum_3m=momentum_3m,
+            momentum_12m=momentum_12m,
             short_interest_pct=short_interest_pct,
             avg_daily_volume_usd=avg_daily_volume_usd,
             analyst_target=_f(info.get("targetMeanPrice")),

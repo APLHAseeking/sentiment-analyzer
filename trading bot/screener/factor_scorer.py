@@ -235,7 +235,7 @@ def _gather_research_with_momentum(
 ) -> tuple[str, ResearchReport | None]:
     """Call gather_research and override momentum if precomputed values are available."""
     # mom12m is 12-month momentum passed as momentum_3m_override for research display.
-    report = gather_research(ticker, momentum_1m_override=mom1m, momentum_3m_override=mom12m)
+    report = gather_research(ticker, momentum_1m_override=mom1m, momentum_12m_override=mom12m)
     return ticker, report
 
 
