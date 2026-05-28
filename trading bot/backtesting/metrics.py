@@ -52,8 +52,11 @@ def sortino_ratio(equity: pd.Series, risk_free: float = 0.04, trading_days: int 
     if len(rets) < 2:
         return 0.0
     excess = rets - risk_free / trading_days
-    downside = rets[rets < 0].std()
-    if downside == 0:
+    neg_rets = rets[rets < 0]
+    if len(neg_rets) == 0:
+        return 0.0  # no downside — undefined; return 0 rather than NaN
+    downside = neg_rets.std()
+    if downside == 0 or pd.isna(downside):
         return 0.0
     return float(excess.mean() / downside * np.sqrt(trading_days))
 
