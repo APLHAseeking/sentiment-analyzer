@@ -3,35 +3,13 @@ import logging
 import time
 from dataclasses import dataclass
 
-import openai as _openai
-from openai import OpenAI
+import anthropic as _anthropic
 
 log = logging.getLogger(__name__)
 
 _MAX_RETRIES = 3
-
-
-def _call_with_retry(fn):
-    """Retry fn() up to _MAX_RETRIES times on RateLimitError or JSON parse failure."""
-    last_exc = None
-    delay = 5.0
-    for attempt in range(_MAX_RETRIES):
-        try:
-            return fn()
-        except _openai.RateLimitError as exc:
-            last_exc = exc
-            log.warning("Rate limit hit (attempt %d/%d) — retrying in %.0fs",
-                        attempt + 1, _MAX_RETRIES, delay)
-            time.sleep(delay)
-            delay *= 2
-        except ValueError as exc:
-            last_exc = exc
-            if attempt < _MAX_RETRIES - 1:
-                log.warning("Parse error (attempt %d/%d): %s — retrying",
-                            attempt + 1, _MAX_RETRIES, exc)
-            else:
-                raise
-    raise last_exc
+_RATE_LIMIT_SLEEP_INITIAL = 5.0
+_INTER_CALL_SLEEP = 0.5   # throttle: max 2 calls/second
 
 # ── System prompt blocks ──────────────────────────────────────────────────────
 
@@ -125,25 +103,49 @@ _VALID_ENTRY_VALUES = {"buy", "skip"}
 _VALID_ACTION_VALUES = {"hold", "exit", "reduce"}
 _VALID_SIGNAL_TYPES = {"congressional", "fundamental", "both"}
 
-_client: OpenAI | None = None
+_client: _anthropic.Anthropic | None = None
 
 
-def _get_client() -> OpenAI:
+def _get_client() -> _anthropic.Anthropic:
     global _client
     if _client is None:
-        import os
-        api_key = os.environ.get("OPENAI_API_KEY", "")
+        from system.config import settings
+        api_key = settings.credentials.anthropic_api_key
         if not api_key:
-            raise RuntimeError("Missing required env var: OPENAI_API_KEY")
-        _client = OpenAI(api_key=api_key)
+            raise RuntimeError("Missing required env var: ANTHROPIC_API_KEY")
+        _client = _anthropic.Anthropic(api_key=api_key)
     return _client
+
+
+def _call_with_retry(fn):
+    """Retry fn() up to _MAX_RETRIES times on RateLimitError or JSON parse failure."""
+    last_exc = None
+    delay = _RATE_LIMIT_SLEEP_INITIAL
+    for attempt in range(_MAX_RETRIES):
+        try:
+            result = fn()
+            time.sleep(_INTER_CALL_SLEEP)  # throttle: max 2 calls/second
+            return result
+        except _anthropic.RateLimitError as exc:
+            last_exc = exc
+            log.warning("Rate limit hit (attempt %d/%d) — retrying in %.0fs",
+                        attempt + 1, _MAX_RETRIES, delay)
+            time.sleep(delay)
+            delay *= 2
+        except ValueError as exc:
+            last_exc = exc
+            if attempt < _MAX_RETRIES - 1:
+                log.warning("Parse error (attempt %d/%d): %s — retrying",
+                            attempt + 1, _MAX_RETRIES, exc)
+            else:
+                raise
+    raise last_exc
 
 
 def _build_entry_system(signal_type: str, has_disclosure: bool = True) -> str:
     if signal_type not in _VALID_SIGNAL_TYPES:
         raise ValueError(f"signal_type {signal_type!r} not in {_VALID_SIGNAL_TYPES}")
     parts = [_ENTRY_SCHEMA]
-    # Only include congressional lag/cluster rules when actual disclosure data is present
     if signal_type in ("congressional", "both") and has_disclosure:
         parts.append(_CONGRESSIONAL_RULES)
     if signal_type in ("fundamental", "both"):
@@ -237,31 +239,33 @@ def _build_entry_prompt(
     return "\n".join(lines)
 
 
-def _bull_argument(prompt: str) -> str:
+def _claude_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
+    """Single Claude API call with prompt caching on the system prompt."""
     client = _get_client()
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        max_tokens=512,
-        messages=[
-            {"role": "system", "content": _BULL_SYSTEM},
-            {"role": "user", "content": prompt},
-        ],
+    msg = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=max_tokens,
+        system=[{
+            "type": "text",
+            "text": system_text,
+            "cache_control": {"type": "ephemeral"},  # prompt caching
+        }],
+        messages=[{"role": "user", "content": user_text}],
     )
-    return resp.choices[0].message.content
+    return msg.content[0].text
+
+
+def _bull_argument(prompt: str) -> str:
+    def _call():
+        return _claude_call(_BULL_SYSTEM, prompt, max_tokens=512)
+    return _call_with_retry(_call)
 
 
 def _bear_argument(prompt: str, bull_text: str) -> str:
-    client = _get_client()
     combined = f"{prompt}\n\nBull case:\n{bull_text}"
-    resp = client.chat.completions.create(
-        model="gpt-4o",
-        max_tokens=512,
-        messages=[
-            {"role": "system", "content": _BEAR_SYSTEM},
-            {"role": "user", "content": combined},
-        ],
-    )
-    return resp.choices[0].message.content
+    def _call():
+        return _claude_call(_BEAR_SYSTEM, combined, max_tokens=512)
+    return _call_with_retry(_call)
 
 
 def score_entry(
@@ -278,32 +282,15 @@ def score_entry(
     debate_context: str | None = None,
 ) -> EntryScore:
     prompt = _build_entry_prompt(
-        disclosure=disclosure,
-        committees=committees,
-        sector=sector,
-        lag_days=lag_days,
-        estimated_cost_pct=estimated_cost_pct,
-        research=research,
-        cluster_count=cluster_count,
-        signal_type=signal_type,
-        factor_score=factor_score,
-        ticker=ticker,
-        debate_context=debate_context,
+        disclosure=disclosure, committees=committees, sector=sector,
+        lag_days=lag_days, estimated_cost_pct=estimated_cost_pct,
+        research=research, cluster_count=cluster_count, signal_type=signal_type,
+        factor_score=factor_score, ticker=ticker, debate_context=debate_context,
     )
-
     system_text = _build_entry_system(signal_type, has_disclosure=disclosure is not None)
-    client = _get_client()
 
     def _call():
-        resp = client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=512,
-            messages=[
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return parse_entry_response(resp.choices[0].message.content)
+        return parse_entry_response(_claude_call(system_text, prompt))
 
     return _call_with_retry(_call)
 
@@ -322,53 +309,33 @@ def score_entry_with_debate(
 ) -> EntryScore:
     """score_entry() with adversarial bull/bear deliberation for conviction >= 7.
 
-    For conviction < 7: identical to score_entry() (1 API call).
-    For conviction >= 7: runs bull argument, bear counter-argument, then
-    re-scores with the debate appended (4 API calls total).
+    For conviction < 7: 1 API call.
+    For conviction >= 7: bull argument + bear counter + final rescore (4 calls total).
     """
     initial = score_entry(
-        disclosure=disclosure,
-        committees=committees,
-        sector=sector,
-        lag_days=lag_days,
-        estimated_cost_pct=estimated_cost_pct,
-        research=research,
-        cluster_count=cluster_count,
-        signal_type=signal_type,
-        factor_score=factor_score,
-        ticker=ticker,
+        disclosure=disclosure, committees=committees, sector=sector,
+        lag_days=lag_days, estimated_cost_pct=estimated_cost_pct,
+        research=research, cluster_count=cluster_count, signal_type=signal_type,
+        factor_score=factor_score, ticker=ticker,
     )
     if initial.conviction < 7:
         return initial
 
     prompt = _build_entry_prompt(
-        disclosure=disclosure,
-        committees=committees,
-        sector=sector,
-        lag_days=lag_days,
-        estimated_cost_pct=estimated_cost_pct,
-        research=research,
-        cluster_count=cluster_count,
-        signal_type=signal_type,
-        factor_score=factor_score,
-        ticker=ticker,
+        disclosure=disclosure, committees=committees, sector=sector,
+        lag_days=lag_days, estimated_cost_pct=estimated_cost_pct,
+        research=research, cluster_count=cluster_count, signal_type=signal_type,
+        factor_score=factor_score, ticker=ticker,
     )
     bull = _bull_argument(prompt)
     bear = _bear_argument(prompt, bull)
     debate = f"Bull case:\n{bull}\n\nBear case:\n{bear}"
 
     return score_entry(
-        disclosure=disclosure,
-        committees=committees,
-        sector=sector,
-        lag_days=lag_days,
-        estimated_cost_pct=estimated_cost_pct,
-        research=research,
-        cluster_count=cluster_count,
-        signal_type=signal_type,
-        factor_score=factor_score,
-        ticker=ticker,
-        debate_context=debate,
+        disclosure=disclosure, committees=committees, sector=sector,
+        lag_days=lag_days, estimated_cost_pct=estimated_cost_pct,
+        research=research, cluster_count=cluster_count, signal_type=signal_type,
+        factor_score=factor_score, ticker=ticker, debate_context=debate,
     )
 
 
@@ -385,17 +352,8 @@ def review_exit(ticker: str, entry_price: float, current_price: float,
     if research is not None:
         prompt += "\n" + format_research_for_prompt(research) + "\n"
     prompt += "Hold, reduce, or exit?"
-    client = _get_client()
 
     def _call():
-        resp = client.chat.completions.create(
-            model="gpt-4o",
-            max_tokens=256,
-            messages=[
-                {"role": "system", "content": _EXIT_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return parse_exit_response(resp.choices[0].message.content)
+        return parse_exit_response(_claude_call(_EXIT_SYSTEM, prompt, max_tokens=256))
 
     return _call_with_retry(_call)

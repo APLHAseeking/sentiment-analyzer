@@ -30,6 +30,7 @@ def _require(key: str) -> str:
 
 @dataclass(frozen=True)
 class Credentials:
+    anthropic_api_key: str = field(default_factory=lambda: _env("ANTHROPIC_API_KEY"))
     openai_api_key: str = field(default_factory=lambda: _env("OPENAI_API_KEY"))
     alpaca_api_key: str = field(default_factory=lambda: _env("ALPACA_API_KEY"))
     alpaca_secret_key: str = field(default_factory=lambda: _env("ALPACA_SECRET_KEY"))
