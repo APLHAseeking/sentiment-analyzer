@@ -241,15 +241,16 @@ def insert_signal(disclosure_id: str, ticker: str, conviction: int,
 def insert_position(ticker: str, entry_price: float, shares: float,
                     position_pct: float, entry_date: str,
                     signal_id: int | None, rationale: str,
-                    signal_source: str = "congressional") -> None:
+                    signal_source: str = "congressional",
+                    entry_commission: float = 0.0) -> None:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO positions
                (ticker, entry_price, shares, position_pct, entry_date, signal_id,
-                rationale, peak_price, signal_source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rationale, peak_price, signal_source, entry_commission)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, entry_price, shares, position_pct, entry_date, signal_id,
-             rationale, entry_price, signal_source),
+             rationale, entry_price, signal_source, entry_commission),
         )
         if cur.rowcount == 0:
             raise ValueError(
@@ -294,8 +295,12 @@ def log_closed_position(ticker: str, entry_price: float, exit_price: float,
                         shares: float, entry_date: str, exit_date: str,
                         exit_reason: str, signal_id: int | None,
                         signal_source: str = "congressional",
-                        costs: float = 0.0) -> None:
-    realized_pnl = (exit_price - entry_price) * shares - costs
+                        costs: float = 0.0,
+                        entry_commission: float = 0.0) -> None:
+    # Realized PnL = gross proceeds - entry cost (including both-side commissions)
+    gross_proceeds = exit_price * shares - costs          # exit proceeds after commission
+    entry_cost = entry_price * shares + entry_commission  # entry cost including commission
+    realized_pnl = gross_proceeds - entry_cost
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO closed_positions

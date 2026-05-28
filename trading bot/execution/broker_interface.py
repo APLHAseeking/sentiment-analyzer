@@ -91,6 +91,10 @@ class BrokerInterface(ABC):
     @abstractmethod
     def get_order_history(self) -> list[Order]: ...
 
+    def get_commission_per_share(self) -> float:
+        """Return per-share commission. Override in implementations."""
+        return 0.0
+
     @property
     @abstractmethod
     def is_paper(self) -> bool: ...

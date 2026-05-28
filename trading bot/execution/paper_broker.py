@@ -51,6 +51,9 @@ class SimulatedBroker(BrokerInterface):
     def is_paper(self) -> bool:
         return True
 
+    def get_commission_per_share(self) -> float:
+        return self._commission_per_share
+
     def get_cash(self) -> float:
         return self._cash
 

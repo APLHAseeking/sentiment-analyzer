@@ -57,6 +57,7 @@ class Portfolio:
             log.warning("Order rejected for %s: %s", ticker, order.reject_reason)
             return False
 
+        entry_commission = shares * self.broker.get_commission_per_share()
         try:
             db.insert_position(
                 ticker=ticker,
@@ -67,6 +68,7 @@ class Portfolio:
                 signal_id=signal_id,
                 rationale=rationale,
                 signal_source=signal_source,
+                entry_commission=entry_commission,
             )
         except Exception:
             log.critical(
@@ -88,8 +90,12 @@ class Portfolio:
                 "Sell order failed for %s after retries: %s — manual close may be required",
                 ticker, order.reject_reason,
             )
-        _commission = vars(self.broker).get("_commission_per_share", 0.0)
-        costs = shares * _commission if isinstance(_commission, (int, float)) else 0.0
+        exit_commission = order.filled_qty * self.broker.get_commission_per_share()
+        entry_commission = 0.0
+        for pos in db.get_open_positions():
+            if pos["ticker"] == ticker:
+                entry_commission = pos["entry_commission"] if pos["entry_commission"] is not None else 0.0
+                break
         db.log_closed_position(
             ticker=ticker,
             entry_price=entry_price,
@@ -100,7 +106,8 @@ class Portfolio:
             exit_reason=exit_reason,
             signal_id=signal_id,
             signal_source=signal_source,
-            costs=costs,
+            costs=exit_commission,
+            entry_commission=entry_commission,
         )
         db.delete_position(ticker)
 
@@ -128,8 +135,13 @@ class Portfolio:
                 "Reduce sell failed for %s after retries: %s — manual close may be required",
                 ticker, order.reject_reason,
             )
-        _commission = vars(self.broker).get("_commission_per_share", 0.0)
-        costs = sell_qty * _commission if isinstance(_commission, (int, float)) else 0.0
+        exit_commission = order.filled_qty * self.broker.get_commission_per_share()
+        entry_commission = 0.0
+        for pos in db.get_open_positions():
+            if pos["ticker"] == ticker:
+                full_entry_comm = pos["entry_commission"] if pos["entry_commission"] is not None else 0.0
+                entry_commission = full_entry_comm * (sell_qty / shares) if shares > 0 else 0.0
+                break
         db.log_closed_position(
             ticker=ticker,
             entry_price=entry_price,
@@ -140,7 +152,8 @@ class Portfolio:
             exit_reason="reduce",
             signal_id=signal_id,
             signal_source=signal_source,
-            costs=costs,
+            costs=exit_commission,
+            entry_commission=entry_commission,
         )
         db.update_position_shares(ticker, shares - sell_qty)
 
