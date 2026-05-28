@@ -41,21 +41,41 @@ class Portfolio:
                       signal_source: str = "congressional") -> bool:
         """Returns True if position was successfully opened."""
         position_pct = min(position_pct, self._risk.max_position_pct)
-        shares = (self.get_cash() * position_pct / 100) / entry_price
+
+        # Pre-flight duplicate check before committing real capital
+        if db.position_exists(ticker):
+            log.warning("open_position: %s already in DB — skipping duplicate open", ticker)
+            return False
+
+        # Size against NAV (cash + mark-to-market positions), not cash alone
+        positions_now = self.broker.get_positions()
+        nav = self.get_cash() + sum(p["qty"] * p["current_price"] for p in positions_now)
+        shares = (nav * position_pct / 100) / entry_price
+
         order = self.broker.place_order(ticker=ticker, side="buy", qty=shares)
         if order.status == OrderStatus.REJECTED:
             log.warning("Order rejected for %s: %s", ticker, order.reject_reason)
             return False
-        db.insert_position(
-            ticker=ticker,
-            entry_price=entry_price,
-            shares=shares,
-            position_pct=position_pct,
-            entry_date=date.today().isoformat(),
-            signal_id=signal_id,
-            rationale=rationale,
-            signal_source=signal_source,
-        )
+
+        try:
+            db.insert_position(
+                ticker=ticker,
+                entry_price=entry_price,
+                shares=shares,
+                position_pct=position_pct,
+                entry_date=date.today().isoformat(),
+                signal_id=signal_id,
+                rationale=rationale,
+                signal_source=signal_source,
+            )
+        except Exception:
+            log.critical(
+                "CRITICAL: broker order for %s was filled but DB insert failed — "
+                "manual close required. Shares=%.4f @ $%.2f",
+                ticker, shares, entry_price,
+            )
+            raise
+
         self._opened_today += 1
         return True
 

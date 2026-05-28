@@ -247,6 +247,14 @@ def insert_position(ticker: str, entry_price: float, shares: float,
                 "Close the existing position before re-entering."
             )
 
+def position_exists(ticker: str) -> bool:
+    """Return True if an open position for ticker already exists in the DB."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM positions WHERE ticker = ? LIMIT 1", (ticker,)
+        ).fetchone()
+        return row is not None
+
 def get_open_positions() -> list[sqlite3.Row]:
     with get_conn() as conn:
         return conn.execute("SELECT * FROM positions").fetchall()
