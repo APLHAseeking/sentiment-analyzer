@@ -93,7 +93,7 @@ class RegimeConfig:
     # 4 regimes: crash=0, bear=1, bull=2, euphoria=3
     # 5 regimes: crash=0, bear=1, neutral=2, bull=3, euphoria=4
     label_maps: dict[int, list[str]] = field(default_factory=lambda: {
-        3: ["bear", "neutral", "bull"],
+        3: ["crash", "neutral", "bull"],
         4: ["crash", "bear", "bull", "euphoria"],
         5: ["crash", "bear", "neutral", "bull", "euphoria"],
         6: ["crash", "bear", "neutral", "bull", "euphoria", "melt-up"],
