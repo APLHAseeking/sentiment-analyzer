@@ -214,9 +214,11 @@ class Portfolio:
     def enforce_take_profits(
         self,
         take_profit_pct: float | None = None,
+        hard_exit_pct: float | None = None,
         source_exclude: str | None = None,
     ) -> list[str]:
-        pct = take_profit_pct if take_profit_pct is not None else self._risk.take_profit_pct
+        tp_pct = take_profit_pct if take_profit_pct is not None else self._risk.take_profit_pct
+        he_pct = hard_exit_pct if hard_exit_pct is not None else self._risk.hard_exit_pct
         reduced = []
         open_positions = {p["ticker"]: dict(p) for p in db.get_open_positions()}
 
@@ -230,19 +232,38 @@ class Portfolio:
             if source_exclude is not None and source == source_exclude:
                 continue
 
-            entry = pos["avg_entry_price"]
+            # Use DB entry_price as canonical (not broker avg which can drift)
+            entry = meta.get("entry_price") or pos["avg_entry_price"]
             current = pos["current_price"]
+            if entry <= 0:
+                continue
             gain_pct = (current - entry) / entry * 100
-            if gain_pct >= pct:
+
+            if gain_pct >= he_pct:
+                # Hard exit: full close
+                self.close_position(
+                    ticker=ticker,
+                    shares=pos["qty"],
+                    exit_price=current,
+                    exit_reason="hard_exit",
+                    signal_id=meta.get("signal_id"),
+                    entry_price=entry,
+                    entry_date=meta.get("entry_date") or date.today().isoformat(),
+                    signal_source=source,
+                )
+                reduced.append(ticker)
+            elif gain_pct >= tp_pct and not meta.get("take_profit_taken", 0):
+                # Partial reduce: sell 50%, mark flag so we don't reduce again
                 self.reduce_position(
                     ticker=ticker,
                     shares=pos["qty"],
                     exit_price=current,
                     signal_id=meta.get("signal_id"),
-                    entry_price=meta.get("entry_price") or entry,
+                    entry_price=entry,
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
-                    signal_source=meta.get("signal_source", "congressional"),
+                    signal_source=source,
                 )
+                db.mark_take_profit_taken(ticker)
                 reduced.append(ticker)
         return reduced
 

@@ -161,6 +161,16 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         "Add signal_source to closed_positions",
         "ALTER TABLE closed_positions ADD COLUMN signal_source TEXT NOT NULL DEFAULT 'congressional'",
     ),
+    (
+        3,
+        "Add take_profit_taken to positions",
+        "ALTER TABLE positions ADD COLUMN take_profit_taken INTEGER NOT NULL DEFAULT 0",
+    ),
+    (
+        4,
+        "Add entry_commission to positions",
+        "ALTER TABLE positions ADD COLUMN entry_commission REAL NOT NULL DEFAULT 0",
+    ),
 ]
 
 
@@ -262,6 +272,12 @@ def get_open_positions() -> list[sqlite3.Row]:
 def update_position_shares(ticker: str, shares: float) -> None:
     with get_conn() as conn:
         conn.execute("UPDATE positions SET shares = ? WHERE ticker = ?", (shares, ticker))
+
+def mark_take_profit_taken(ticker: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE positions SET take_profit_taken = 1 WHERE ticker = ?", (ticker,)
+        )
 
 def update_position_peak(ticker: str, peak_price: float) -> None:
     with get_conn() as conn:

@@ -71,7 +71,6 @@ def _reduce_position(
     exit_reason: str,
     slippage_bps: float,
     commission_pct: float,
-    peak_prices: dict,
 ) -> None:
     """Sell 50% of position, keeping the other half open."""
     if ticker not in state.positions:
@@ -116,6 +115,7 @@ def simulate_portfolio(
     max_position_pct: float = 8.0,
     trailing_stop_pct: float = 15.0,
     take_profit_pct: float = 25.0,
+    hard_exit_pct: float = 40.0,
     fill_delay_bars: int = 0,
 ) -> SimState:
     """Simulate the portfolio day-by-day through the provided signal list.
@@ -170,11 +170,19 @@ def simulate_portfolio(
                 closed_today.append(ticker)
                 continue
 
-            # Take profit — sell 50% once to match live system behaviour
             gain = (current_price - pos["entry_price"]) / pos["entry_price"] * 100
+
+            # Hard exit — full close at hard_exit_pct gain
+            if gain >= hard_exit_pct:
+                _close_position(state, ticker, current_price, day_str,
+                                "hard_exit", slippage_bps, commission_pct, peak_prices)
+                closed_today.append(ticker)
+                continue
+
+            # Take profit — sell 50% once to match live system behaviour
             if gain >= take_profit_pct and not pos.get("take_profit_taken"):
                 _reduce_position(state, ticker, current_price, day_str,
-                                 "take_profit", slippage_bps, commission_pct, peak_prices)
+                                 "take_profit", slippage_bps, commission_pct)
                 if ticker in state.positions:
                     state.positions[ticker]["take_profit_taken"] = True
 
