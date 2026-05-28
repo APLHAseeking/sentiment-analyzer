@@ -307,6 +307,20 @@ class RegimeAwareOrchestrator:
         if hasattr(self._broker, "refresh_prices"):
             self._broker.refresh_prices()
 
+        # Reconcile broker vs DB at start of each morning pipeline.
+        # Clears ghost positions from crashes or manual broker interventions.
+        try:
+            reconcile = self._portfolio.reconcile_with_broker()
+            if reconcile["ghost_positions"] or reconcile["untracked_positions"]:
+                emit_event(
+                    log, EventType.STARTUP,
+                    f"Morning reconciliation: {len(reconcile['ghost_positions'])} ghost(s) removed, "
+                    f"{len(reconcile['untracked_positions'])} untracked position(s) at broker",
+                    alert=bool(reconcile["untracked_positions"]),
+                )
+        except Exception as exc:
+            log.warning("Morning reconciliation failed: %s — continuing", exc)
+
         # Clear sector cache daily so stale GICS classifications don't persist across sessions
         clear_sector_cache()
 
