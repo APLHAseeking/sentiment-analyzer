@@ -164,8 +164,10 @@ def _score_sentiment(
 
 def _try_fincept(ticker: str) -> dict | None:
     """Attempt to load extended data from FinceptTerminal if available."""
-    from bot.config import FINCEPT_SCRIPTS_PATH
-    fincept_path = FINCEPT_SCRIPTS_PATH
+    from system.config import settings
+    fincept_path = settings.credentials.fincept_scripts_path
+    if not fincept_path:  # guard: empty string would insert CWD into sys.path
+        return None
     if fincept_path not in sys.path:
         sys.path.insert(0, fincept_path)
     try:
