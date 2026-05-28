@@ -303,6 +303,10 @@ class RegimeAwareOrchestrator:
             log.info("Market closed — skipping morning pipeline")
             return
 
+        # Refresh broker position prices once per pipeline (avoids repeated yfinance calls)
+        if hasattr(self._broker, "refresh_prices"):
+            self._broker.refresh_prices()
+
         # Clear sector cache daily so stale GICS classifications don't persist across sessions
         clear_sector_cache()
 

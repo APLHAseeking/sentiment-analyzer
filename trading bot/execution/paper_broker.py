@@ -59,7 +59,25 @@ class SimulatedBroker(BrokerInterface):
         return self._cash + pos_value
 
     def get_positions(self) -> list[dict[str, Any]]:
-        result = []
+        """Return current positions using in-memory prices (no live API calls).
+
+        Call refresh_prices() first if you need up-to-date market values.
+        """
+        return [
+            {
+                "ticker": pos.ticker,
+                "qty": pos.qty,
+                "current_price": pos.current_price,
+                "avg_entry_price": pos.avg_entry_price,
+            }
+            for pos in self._positions.values()
+        ]
+
+    def refresh_prices(self) -> None:
+        """Fetch current market prices for all held positions via yfinance.
+
+        Call once per pipeline run rather than implicitly on every get_positions().
+        """
         for pos in self._positions.values():
             try:
                 price = yf.Ticker(pos.ticker).fast_info.last_price
@@ -67,13 +85,6 @@ class SimulatedBroker(BrokerInterface):
                     pos.current_price = float(price)
             except Exception:
                 pass
-            result.append({
-                "ticker": pos.ticker,
-                "qty": pos.qty,
-                "current_price": pos.current_price,
-                "avg_entry_price": pos.avg_entry_price,
-            })
-        return result
 
     def place_order(self, ticker: str, side: str, qty: float) -> Order:
         order = Order(
@@ -126,6 +137,7 @@ class SimulatedBroker(BrokerInterface):
         ticker = order.ticker
         qty = order.qty
         commission = qty * self._commission_per_share
+        filled_qty = qty  # default; overwritten for partial sells
 
         if order.side == OrderSide.BUY:
             cost = fill_price * qty + commission
@@ -153,16 +165,16 @@ class SimulatedBroker(BrokerInterface):
             if ticker not in self._positions:
                 raise RuntimeError(f"Cannot sell {ticker}: no position held")
             pos = self._positions[ticker]
-            sell_qty = min(qty, pos.qty)
-            proceeds = fill_price * sell_qty - commission
+            filled_qty = min(qty, pos.qty)     # actual shares sold (may be < requested)
+            proceeds = fill_price * filled_qty - commission
             self._cash += proceeds
-            pos.qty -= sell_qty
+            pos.qty -= filled_qty
             pos.current_price = fill_price
             if pos.qty <= 1e-6:
                 del self._positions[ticker]
 
         order.status = OrderStatus.FILLED
-        order.filled_qty = qty
+        order.filled_qty = filled_qty
         order.filled_avg_price = fill_price
         order.filled_at = datetime.now(UTC).isoformat()
 
