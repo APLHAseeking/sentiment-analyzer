@@ -128,13 +128,83 @@ def avg_holding_period(trades: list) -> float:
     return float(sum(days) / len(days)) if days else 0.0
 
 
+def _align(s1: pd.Series, s2: pd.Series) -> tuple[pd.Series, pd.Series]:
+    """Inner-join two return series on their date index, drop any NaN rows."""
+    combined = pd.concat([s1, s2], axis=1).dropna()
+    return combined.iloc[:, 0], combined.iloc[:, 1]
+
+
+def beta(strategy_returns: pd.Series, benchmark_returns: pd.Series) -> float:
+    """OLS beta: cov(strategy, benchmark) / var(benchmark)."""
+    s, b = _align(strategy_returns, benchmark_returns)
+    if len(s) < 2:
+        return 0.0
+    var_b = float(b.var())
+    if not np.isfinite(var_b) or var_b < 1e-20:
+        return 0.0
+    return float(np.cov(s.values, b.values, ddof=1)[0, 1] / var_b)
+
+
+def alpha_annualized(
+    strategy_returns: pd.Series,
+    benchmark_returns: pd.Series,
+    risk_free: float = 0.04,
+    trading_days: int = 252,
+) -> float:
+    """Jensen's alpha: intercept of r_s - rf = a + b*(r_b - rf), annualized."""
+    s, b = _align(strategy_returns, benchmark_returns)
+    if len(s) < 2:
+        return 0.0
+    rf_daily = risk_free / trading_days
+    b_val = beta(s, b)
+    alpha_daily = (s - rf_daily).mean() - b_val * (b - rf_daily).mean()
+    return float(alpha_daily * trading_days)
+
+
+def information_ratio(
+    strategy_returns: pd.Series,
+    benchmark_returns: pd.Series,
+    trading_days: int = 252,
+) -> float:
+    """IR = mean(active return) / std(active return) * sqrt(trading_days)."""
+    s, b = _align(strategy_returns, benchmark_returns)
+    if len(s) < 2:
+        return 0.0
+    active = s - b
+    std = float(active.std())
+    if std == 0 or pd.isna(std):
+        return 0.0
+    return float(active.mean() / std * np.sqrt(trading_days))
+
+
+def downside_beta(
+    strategy_returns: pd.Series,
+    benchmark_returns: pd.Series,
+) -> float:
+    """Beta computed only on days the benchmark return is negative."""
+    s, b = _align(strategy_returns, benchmark_returns)
+    mask = b < 0
+    if mask.sum() < 2:
+        return 0.0
+    s_down, b_down = s[mask], b[mask]
+    var_b = float(b_down.var())
+    if not np.isfinite(var_b) or var_b < 1e-20:
+        return 0.0
+    return float(np.cov(s_down.values, b_down.values, ddof=1)[0, 1] / var_b)
+
+
 def compute_all(
     equity: pd.Series,
     trade_returns: pd.Series | None = None,
     trades: list | None = None,
     total_volume_traded: float | None = None,
+    benchmark_returns: pd.Series | None = None,
 ) -> dict:
-    """Compute the full metrics suite."""
+    """Compute the full metrics suite.
+
+    When benchmark_returns is provided, also computes beta, alpha_annualized_pct,
+    information_ratio, and downside_beta relative to that benchmark.
+    """
     tr = trade_returns if trade_returns is not None else pd.Series(dtype=float)
     result = {
         "total_return_pct": round(total_return(equity) * 100, 2),
@@ -156,4 +226,16 @@ def compute_all(
             if total_volume_traded is not None else None
         ),
     }
+    if benchmark_returns is not None:
+        strat_rets = daily_returns(equity)
+        result["beta"] = round(beta(strat_rets, benchmark_returns), 3)
+        result["alpha_annualized_pct"] = round(
+            alpha_annualized(strat_rets, benchmark_returns) * 100, 3
+        )
+        result["information_ratio"] = round(
+            information_ratio(strat_rets, benchmark_returns), 3
+        )
+        result["downside_beta"] = round(
+            downside_beta(strat_rets, benchmark_returns), 3
+        )
     return result

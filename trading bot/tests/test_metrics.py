@@ -7,6 +7,7 @@ from backtesting.metrics import (
     total_return, annualized_return, sharpe_ratio, sortino_ratio,
     max_drawdown, win_rate, profit_factor, compute_all,
     turnover, avg_holding_period,
+    beta, alpha_annualized, information_ratio, downside_beta,
 )
 from backtesting.simulation import SimTrade
 
@@ -147,3 +148,108 @@ def test_compute_all_turnover_none_when_not_provided():
     eq = _equity([100_000.0, 101_000.0])
     result = compute_all(eq)
     assert result.get("turnover") is None
+
+
+# ── Risk-adjusted attribution metrics ────────────────────────────────────────
+
+def _returns(values):
+    """Build a daily-return Series from a list of values."""
+    dates = pd.date_range("2020-01-01", periods=len(values), freq="B")
+    return pd.Series(values, index=dates)
+
+
+def test_beta_double_benchmark():
+    """strategy = 2 * benchmark → beta ≈ 2."""
+    np.random.seed(42)
+    bench = _returns(np.random.normal(0.001, 0.01, 300))
+    strat = bench * 2
+    assert beta(strat, bench) == pytest.approx(2.0, rel=0.01)
+
+
+def test_beta_identical_series():
+    """strategy = benchmark → beta ≈ 1."""
+    np.random.seed(1)
+    bench = _returns(np.random.normal(0.0005, 0.01, 300))
+    assert beta(bench, bench) == pytest.approx(1.0, rel=0.01)
+
+
+def test_beta_zero_variance_benchmark():
+    """Benchmark with no variability (all zeros) → beta = 0.0, no crash."""
+    bench = _returns([0.0] * 100)
+    strat = _returns([0.001] * 100)
+    assert beta(strat, bench) == 0.0
+
+
+def test_beta_short_series():
+    """Fewer than 2 aligned points → 0.0."""
+    s = _returns([0.01])
+    b = _returns([0.01])
+    assert beta(s, b) == 0.0
+
+
+def test_alpha_constant_drift():
+    """strategy = benchmark + constant daily drift → alpha ≈ drift * 252, beta ≈ 1."""
+    np.random.seed(7)
+    bench = _returns(np.random.normal(0.0003, 0.01, 500))
+    drift = 0.0002
+    strat = bench + drift
+    b = beta(strat, bench)
+    a = alpha_annualized(strat, bench, risk_free=0.0)
+    assert b == pytest.approx(1.0, rel=0.05)
+    assert a == pytest.approx(drift * 252, rel=0.05)
+
+
+def test_alpha_zero_when_scaled():
+    """strategy = 2 * benchmark → alpha ≈ 0 (no excess return beyond leveraged beta)."""
+    np.random.seed(3)
+    bench = _returns(np.random.normal(0.0003, 0.01, 500))
+    strat = bench * 2
+    a = alpha_annualized(strat, bench, risk_free=0.0)
+    assert a == pytest.approx(0.0, abs=0.02)
+
+
+def test_information_ratio_positive_for_consistent_outperformer():
+    """Consistently outperforming strategy → IR > 0."""
+    np.random.seed(5)
+    bench = _returns(np.random.normal(0.0003, 0.01, 300))
+    strat = bench + 0.0003
+    assert information_ratio(strat, bench) > 0
+
+
+def test_information_ratio_zero_identical():
+    """Identical series → active return is constant zero → IR = 0."""
+    bench = _returns(np.random.normal(0.0003, 0.01, 300))
+    assert information_ratio(bench, bench) == 0.0
+
+
+def test_downside_beta_equals_full_beta_when_all_days_down():
+    """If benchmark is always negative, downside_beta == beta."""
+    np.random.seed(9)
+    bench = _returns(-np.abs(np.random.normal(0.001, 0.005, 300)))
+    strat = bench * 1.5
+    assert downside_beta(strat, bench) == pytest.approx(beta(strat, bench), rel=0.05)
+
+
+def test_downside_beta_few_down_days():
+    """Fewer than 2 benchmark-down days → 0.0."""
+    bench = _returns([0.01] * 100)  # all positive
+    strat = _returns([0.02] * 100)
+    assert downside_beta(strat, bench) == 0.0
+
+
+def test_compute_all_includes_attribution_when_benchmark_provided():
+    """compute_all with benchmark_returns includes beta/alpha/IR/downside_beta keys."""
+    np.random.seed(11)
+    bench_rets = _returns(np.random.normal(0.0003, 0.01, 252))
+    eq = _equity([100_000.0 * (1 + 0.0005) ** i for i in range(253)])
+    result = compute_all(eq, benchmark_returns=bench_rets)
+    for key in ("beta", "alpha_annualized_pct", "information_ratio", "downside_beta"):
+        assert key in result, f"Missing key: {key}"
+
+
+def test_compute_all_no_attribution_without_benchmark():
+    """compute_all without benchmark_returns does not include attribution keys."""
+    eq = _equity([100_000.0 * (1 + 0.0005) ** i for i in range(253)])
+    result = compute_all(eq)
+    for key in ("beta", "alpha_annualized_pct", "information_ratio", "downside_beta"):
+        assert key not in result, f"Unexpected key: {key}"

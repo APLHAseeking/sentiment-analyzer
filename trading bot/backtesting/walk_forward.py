@@ -213,21 +213,17 @@ def run_walk_forward(
 
         eq = equity_series(sim)
         tr = trade_returns(sim)
-        metrics = compute_all(
-            eq, tr,
-            trades=sim.trades,
-            total_volume_traded=sim.total_volume_traded,
-        )
-        metrics["n_regimes"] = engine.n_regimes
 
-        # --- Benchmarks ---
+        # --- Benchmarks (compute before metrics so SPY returns go into compute_all) ---
         benchmarks: dict = {}
+        spy_benchmark_returns: pd.Series | None = None
         try:
             spy_close = market_data["close"].loc[
                 (market_data.index >= pd.Timestamp(test_start)) &
                 (market_data.index <= pd.Timestamp(test_end))
             ]
             if not spy_close.empty:
+                spy_benchmark_returns = spy_close.pct_change().dropna()
                 slip = backtest_cfg.slippage_bps
                 comm = backtest_cfg.commission_pct
                 bah_eq = buy_and_hold(spy_close, initial_cash=initial_cash,
@@ -249,6 +245,14 @@ def run_walk_forward(
                     benchmarks["trend_following"] = round(_total_return(tf_eq) * 100, 2)
         except Exception as exc:
             log.warning("Benchmark computation failed for window %d: %s", i + 1, exc)
+
+        metrics = compute_all(
+            eq, tr,
+            trades=sim.trades,
+            total_volume_traded=sim.total_volume_traded,
+            benchmark_returns=spy_benchmark_returns,
+        )
+        metrics["n_regimes"] = engine.n_regimes
 
         # --- Analysis ---
         regime_breakdown     = regime_performance(sim.trades)
@@ -297,9 +301,14 @@ def run_walk_forward(
             stress_results=stress_results,
         )
         all_results.append(window_result)
-        log.info("Window %d complete: Sharpe=%.2f, MaxDD=%.1f%%, n_trades=%d",
-                 i + 1, metrics.get("sharpe", 0), metrics.get("max_drawdown_pct", 0),
-                 metrics.get("n_trades", 0))
+        log.info(
+            "Window %d complete: Sharpe=%.2f, MaxDD=%.1f%%, n_trades=%d, "
+            "beta=%.2f, alpha=%.1f%%",
+            i + 1, metrics.get("sharpe", 0), metrics.get("max_drawdown_pct", 0),
+            metrics.get("n_trades", 0),
+            metrics.get("beta", float("nan")),
+            metrics.get("alpha_annualized_pct", float("nan")),
+        )
 
         if persist_to_db:
             db.log_backtest_result(
@@ -371,7 +380,10 @@ def _aggregate(windows: list[WalkForwardWindow]) -> dict:
     if not windows:
         return {}
     metrics_list = [w.metrics for w in windows]
-    keys = ["sharpe", "sortino", "max_drawdown_pct", "total_return_pct", "win_rate"]
+    keys = [
+        "sharpe", "sortino", "max_drawdown_pct", "total_return_pct", "win_rate",
+        "beta", "alpha_annualized_pct", "information_ratio", "downside_beta",
+    ]
     result: dict = {}
     for k in keys:
         vals = [m.get(k, 0.0) for m in metrics_list if k in m]
