@@ -25,20 +25,28 @@ def test_finance_committee_covers_financial_services():
     # Senate Finance covers tax/trade/Medicare — financial services is in scope
     assert sector_has_committee_overlap("Financial Services", ["Senate Finance"]) is True
 
-def test_get_committees_calls_propublica(mocker):
+def test_get_committees_via_yaml_map(mocker):
+    """Committee lookup resolves from YAML-built map (no network call needed)."""
     clear_committee_cache()
-    mocker.patch("bot.committee._search_propublica_member", return_value={
-        "results": [{
-            "roles": [{"committees": [{"name": "Senate Banking, Housing, and Urban Affairs"}]}]
-        }]
-    })
-    committees = get_committees_for_politician("Jane Doe")
+    mock_map = {
+        "john smith": ["Senate Banking, Housing, and Urban Affairs"],
+    }
+    mocker.patch("bot.committee._build_committee_map", return_value=mock_map)
+    # Reset module-level map cache so the mock is picked up
+    import bot.committee as cm
+    cm._committee_map_cache = None
+
+    committees = get_committees_for_politician("John Smith")
     assert any("Banking" in c for c in committees)
+
 
 def test_get_committees_returns_empty_for_unknown(mocker):
     clear_committee_cache()
-    mocker.patch("bot.committee._search_propublica_member", return_value={"results": []})
+    import bot.committee as cm
+    cm._committee_map_cache = None
+    mocker.patch("bot.committee._build_committee_map", return_value={})
     assert get_committees_for_politician("Nobody Known") == ()
+
 
 def test_intelligence_committee_covers_technology():
     assert sector_has_committee_overlap("Technology", ["Senate Intelligence"]) is True
@@ -61,11 +69,10 @@ def test_committee_disk_cache_survives_clear(mocker, tmp_path, monkeypatch):
     monkeypatch.setattr(cm, "_COMMITTEE_CACHE_PATH", str(tmp_path / "test_cache"))
     # Clear both layers first
     cm._in_memory_cache.clear()
+    cm._committee_map_cache = None
 
-    mocker.patch("bot.committee._search_propublica_member", return_value={
-        "results": [{
-            "roles": [{"committees": [{"name": "Senate Banking"}]}]
-        }]
+    mocker.patch("bot.committee._build_committee_map", return_value={
+        "test politician": ["Senate Banking"],
     })
 
     # First call — hits live lookup and writes to disk
@@ -74,7 +81,46 @@ def test_committee_disk_cache_survives_clear(mocker, tmp_path, monkeypatch):
 
     # Evict from in-memory cache only (simulate process restart)
     cm._in_memory_cache.clear()
+    # Keep _committee_map_cache in place (module-level cache persists in process)
 
-    # Second call — should recover from disk without calling ProPublica again
+    # Second call — should recover from disk without calling _build_committee_map again
     result2 = cm.get_committees_for_politician("Test Politician")
     assert result2 == ("Senate Banking",)
+
+
+# --- New test: YAML source integration (mocked) ---
+
+def test_build_committee_map_from_yaml(mocker):
+    """_build_committee_map correctly maps legislator names to committee names from YAML data."""
+    import bot.committee as cm
+
+    legislators_yaml = [
+        {
+            "id": {"bioguide": "S000001"},
+            "name": {"official_full": "Jane Smith"},
+            "terms": [{"type": "sen"}],
+        }
+    ]
+    committees_yaml = [
+        {"thomas_id": "SSBN", "name": "Senate Banking, Housing, and Urban Affairs"},
+    ]
+    membership_yaml = {
+        "SSBN": [
+            {"bioguide_id": "S000001", "rank": 1, "party": "D"},
+        ]
+    }
+
+    def fake_fetch_yaml(url):
+        if "legislators-current" in url:
+            return legislators_yaml
+        elif "committees-current" in url:
+            return committees_yaml
+        elif "committee-membership-current" in url:
+            return membership_yaml
+        return {}
+
+    mocker.patch("bot.committee._fetch_yaml", side_effect=fake_fetch_yaml)
+
+    result = cm._build_committee_map()
+    assert "jane smith" in result
+    assert "Senate Banking, Housing, and Urban Affairs" in result["jane smith"]

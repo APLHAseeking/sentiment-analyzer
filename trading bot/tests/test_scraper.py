@@ -1,6 +1,12 @@
 import pytest
 import requests
-from bot.scraper import _parse_trades_page, _validate_trade, _fetch_page, run_scraper
+from bot.scraper import (
+    _parse_trades_page,
+    _parse_json_response,
+    _validate_trade,
+    _fetch_page,
+    run_scraper,
+)
 
 SAMPLE_HTML = """
 <html><body><table class="q-table"><tbody>
@@ -152,3 +158,163 @@ def test_run_scraper_emits_dead_feed_alert_on_empty_page1(mocker, db):
     call = mock_fire_alert.call_args
     event_value = call.kwargs.get("event") or (call.args[0] if call.args else None)
     assert event_value == "dead_feed"
+
+
+# --- JSON endpoint parser tests ---
+
+SAMPLE_JSON_RESPONSE = {
+    "data": [
+        {
+            "id": "abc123",
+            "politician": {"name": "John Smith"},
+            "issuer": {"ticker": "AAPL"},
+            "txDate": "2025-10-15",
+            "disclDate": "2025-10-20",
+            "txType": "buy",
+            "amount": "$50,001 - $100,000",
+        },
+        {
+            "id": "def456",
+            "politician": {"name": "Nancy Pelosi"},
+            "issuer": {"ticker": "NVDA"},
+            "txDate": "2025-11-01",
+            "disclDate": "2025-11-10",
+            "txType": "sell",
+            "amount": "$100,001 - $250,000",
+        },
+    ]
+}
+
+
+def test_parse_json_response_returns_correct_count():
+    trades = _parse_json_response(SAMPLE_JSON_RESPONSE)
+    assert len(trades) == 2
+
+
+def test_parse_json_response_fields_match_trade_dict_shape():
+    """JSON parser must produce the same dict shape as the HTML parser."""
+    trades = _parse_json_response(SAMPLE_JSON_RESPONSE)
+    t = trades[0]
+    assert t["id"] == "abc123"
+    assert t["politician"] == "John Smith"
+    assert t["ticker"] == "AAPL"
+    assert t["transaction_type"] == "buy"
+    assert t["transaction_date"] == "2025-10-15"
+    assert t["disclosure_date"] == "2025-10-20"
+    assert t["amount_range"] == "$50,001 - $100,000"
+    # scraped_at must be present (ISO string)
+    assert "scraped_at" in t and t["scraped_at"]
+
+
+def test_parse_json_response_normalizes_ticker_dots_to_hyphens():
+    data = {
+        "data": [{
+            "id": "x1",
+            "politician": {"name": "Jane Doe"},
+            "issuer": {"ticker": "BRK.B"},
+            "txDate": "2025-10-15",
+            "disclDate": "2025-10-20",
+            "txType": "buy",
+            "amount": "$1,001 - $15,000",
+        }]
+    }
+    trades = _parse_json_response(data)
+    assert len(trades) == 1
+    assert trades[0]["ticker"] == "BRK-B"
+
+
+def test_parse_json_response_skips_invalid_items():
+    """Items missing id or with bad dates must be skipped."""
+    data = {
+        "data": [
+            # Missing id
+            {
+                "id": "",
+                "politician": {"name": "John Smith"},
+                "issuer": {"ticker": "AAPL"},
+                "txDate": "2025-10-15",
+                "disclDate": "2025-10-20",
+                "txType": "buy",
+                "amount": "$50,001 - $100,000",
+            },
+            # Bad transaction date
+            {
+                "id": "valid1",
+                "politician": {"name": "John Smith"},
+                "issuer": {"ticker": "MSFT"},
+                "txDate": "October 15 2025",  # not ISO
+                "disclDate": "2025-10-20",
+                "txType": "buy",
+                "amount": "$50,001 - $100,000",
+            },
+        ]
+    }
+    trades = _parse_json_response(data)
+    assert trades == []
+
+
+def test_parse_json_response_handles_flat_politician_string():
+    """Politician field may be a plain string (not a nested dict)."""
+    data = {
+        "data": [{
+            "id": "z99",
+            "politician": "Jane Doe",
+            "issuer": {"ticker": "TSLA"},
+            "txDate": "2025-09-01",
+            "disclDate": "2025-09-10",
+            "txType": "buy",
+            "amount": "$1,001 - $15,000",
+        }]
+    }
+    trades = _parse_json_response(data)
+    assert len(trades) == 1
+    assert trades[0]["politician"] == "Jane Doe"
+
+
+def test_parse_json_response_handles_trades_key():
+    """Some responses may use 'trades' instead of 'data' as the top-level key."""
+    data = {
+        "trades": [{
+            "id": "t01",
+            "politician": {"name": "Bob Jones"},
+            "issuer": {"ticker": "LMT"},
+            "txDate": "2025-08-01",
+            "disclDate": "2025-08-15",
+            "txType": "sell",
+            "amount": "$15,001 - $50,000",
+        }]
+    }
+    trades = _parse_json_response(data)
+    assert len(trades) == 1
+    assert trades[0]["id"] == "t01"
+
+
+def test_run_scraper_uses_json_when_available(mocker, db):
+    """run_scraper must use JSON trades when the JSON endpoint returns valid data."""
+    # JSON endpoint returns valid data
+    json_resp = mocker.MagicMock()
+    json_resp.raise_for_status = mocker.MagicMock()
+    json_resp.headers = {"Content-Type": "application/json"}
+    json_resp.json.return_value = {
+        "data": [{
+            "id": "json001",
+            "politician": {"name": "Test Politician"},
+            "issuer": {"ticker": "MSFT"},
+            "txDate": "2026-01-10",
+            "disclDate": "2026-01-15",
+            "txType": "buy",
+            "amount": "$50,001 - $100,000",
+        }]
+    }
+
+    def fake_get(url, **kwargs):
+        if "api/trades" in url:
+            return json_resp
+        # HTML fallback should not be called when JSON works
+        raise AssertionError("HTML fallback should not be called when JSON succeeds")
+
+    mocker.patch("bot.scraper.requests.get", side_effect=fake_get)
+    result = run_scraper(max_pages=1)
+    assert len(result) == 1
+    assert result[0]["id"] == "json001"
+    assert result[0]["ticker"] == "MSFT"
