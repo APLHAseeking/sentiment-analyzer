@@ -165,6 +165,24 @@ class CorrelationConfig:
 
 
 # ---------------------------------------------------------------------------
+# Deterministic position sizing
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class SizingConfig:
+    """Parameters for volatility-targeted position sizing.
+
+    The formula is:
+        size_pct = clamp(per_trade_risk_pct / atr_pct, 0, max_position_pct)
+
+    where atr_pct is the 14-bar ATR expressed as % of entry price.
+    """
+    target_portfolio_vol_pct: float = 15.0   # target annualised portfolio vol (informational)
+    per_trade_risk_pct: float = 0.5          # risk budget per trade as % of NAV
+    atr_window: int = 14                     # ATR lookback in bars
+
+
+# ---------------------------------------------------------------------------
 # Risk management
 # ---------------------------------------------------------------------------
 
@@ -260,6 +278,7 @@ class Settings:
     hedge: HedgeConfig = field(default_factory=HedgeConfig)
     correlation: CorrelationConfig = field(default_factory=CorrelationConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    sizing: SizingConfig = field(default_factory=SizingConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)

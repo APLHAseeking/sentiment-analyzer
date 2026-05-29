@@ -30,6 +30,8 @@ import os
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
+import numpy as np
+
 import yfinance as yf
 import exchange_calendars as xcals
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -53,6 +55,7 @@ from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
 from risk.risk_manager import RiskManager, RiskState
+from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt
 from screener.factor_scorer import run_factor_screen, prefetch_screener_data, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
 from dashboard.data_store import DashboardStore
@@ -514,8 +517,52 @@ class RegimeAwareOrchestrator:
             log.info("Skipping %s: AI conviction %d", ticker, score.conviction)
             return False
 
+        # Log the LLM's position_pct for diagnostic comparison (not used for sizing)
+        log.debug("%s: LLM position_pct=%.2f%% (ignored for sizing)", ticker, score.position_pct)
+
+        # Price fetch — fast_info.last_price is available pre/post market; avoids stale close
+        try:
+            entry_price = yf.Ticker(ticker).fast_info.last_price or 0.0
+        except Exception:
+            entry_price = 0.0
+        if not entry_price:
+            log.warning("No price for %s — skipping", ticker)
+            return False
+
+        # ATR-based deterministic position sizing
+        try:
+            hist = yf.Ticker(ticker).history(period="30d")
+            if len(hist) >= 14:
+                hi = hist["High"].values
+                lo = hist["Low"].values
+                cl = hist["Close"].values
+                tr = np.maximum(
+                    hi[1:] - lo[1:],
+                    np.maximum(abs(hi[1:] - cl[:-1]), abs(lo[1:] - cl[:-1])),
+                )
+                atr = float(tr[-14:].mean())
+                atr_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
+            else:
+                atr_pct = 1.0  # fallback: 1% ATR → full per_trade_risk_pct used
+        except Exception:
+            atr_pct = 1.0
+
+        base_pct = vol_target_size_pct(
+            atr_pct=atr_pct,
+            per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+            max_position_pct=self._cfg.risk.max_position_pct,
+        )
+        base_pct = apply_conviction_tilt(
+            base_pct=base_pct,
+            conviction=score.conviction,
+            max_position_pct=self._cfg.risk.max_position_pct,
+        )
+        log.debug(
+            "%s: vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d)",
+            ticker, base_pct, atr_pct, score.conviction,
+        )
+
         # Regime allocation scaling
-        base_pct = score.position_pct
         if self._regime_state is not None:
             alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
             final_pct = alloc_decision.final_position_pct
@@ -535,15 +582,6 @@ class RegimeAwareOrchestrator:
         if final_pct < 0.1:
             emit_event(log, EventType.SIGNAL_REJECTED,
                        f"{ticker} reduced to zero by correlation filter (mult={corr_mult:.2f})")
-            return False
-
-        # Price fetch — fast_info.last_price is available pre/post market; avoids stale close
-        try:
-            entry_price = yf.Ticker(ticker).fast_info.last_price or 0.0
-        except Exception:
-            entry_price = 0.0
-        if not entry_price:
-            log.warning("No price for %s — skipping", ticker)
             return False
 
         _positions_now = self._broker.get_positions()
@@ -620,7 +658,51 @@ class RegimeAwareOrchestrator:
             log.info("Skipping %s (%s): conviction %d", ticker, signal_type, score.conviction)
             return False
 
-        base_pct = score.position_pct
+        # Log the LLM's position_pct for diagnostic comparison (not used for sizing)
+        log.debug("%s: LLM position_pct=%.2f%% (ignored for sizing)", ticker, score.position_pct)
+
+        # Price fetch — fast_info.last_price is available pre/post market; avoids stale close
+        try:
+            entry_price = yf.Ticker(ticker).fast_info.last_price or 0.0
+        except Exception:
+            entry_price = 0.0
+        if not entry_price:
+            log.warning("No price for %s — skipping", ticker)
+            return False
+
+        # ATR-based deterministic position sizing
+        try:
+            hist = yf.Ticker(ticker).history(period="30d")
+            if len(hist) >= 14:
+                hi = hist["High"].values
+                lo = hist["Low"].values
+                cl = hist["Close"].values
+                tr = np.maximum(
+                    hi[1:] - lo[1:],
+                    np.maximum(abs(hi[1:] - cl[:-1]), abs(lo[1:] - cl[:-1])),
+                )
+                atr = float(tr[-14:].mean())
+                atr_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
+            else:
+                atr_pct = 1.0  # fallback: 1% ATR → full per_trade_risk_pct used
+        except Exception:
+            atr_pct = 1.0
+
+        base_pct = vol_target_size_pct(
+            atr_pct=atr_pct,
+            per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+            max_position_pct=self._cfg.risk.max_position_pct,
+        )
+        base_pct = apply_conviction_tilt(
+            base_pct=base_pct,
+            conviction=score.conviction,
+            max_position_pct=self._cfg.risk.max_position_pct,
+        )
+        log.debug(
+            "%s (%s): vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d)",
+            ticker, signal_type, base_pct, atr_pct, score.conviction,
+        )
+
         if self._regime_state is not None:
             alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
             final_pct = alloc_decision.final_position_pct
@@ -642,14 +724,6 @@ class RegimeAwareOrchestrator:
                 f"{ticker} ({signal_type}) reduced to zero by correlation filter "
                 f"(mult={corr_mult:.2f})",
             )
-            return False
-
-        try:
-            entry_price = yf.Ticker(ticker).fast_info.last_price or 0.0
-        except Exception:
-            entry_price = 0.0
-        if not entry_price:
-            log.warning("No price for %s — skipping", ticker)
             return False
 
         _positions_now = self._broker.get_positions()

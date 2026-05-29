@@ -183,13 +183,45 @@ def test_run_exit_review_pre_fetches_research_in_batch(mocker, orch):
     assert tickers_fetched == {"AAPL", "MSFT"}
 
 
+def _make_yf_ticker_mock(price: float = 100.0, history_rows: int = 20):
+    """Build a yf.Ticker mock with fast_info.last_price and history() support.
+
+    The history DataFrame stub returns a constant ATR of ~2% of price so that
+    vol_target_size_pct produces a predictable, finite base size.
+    """
+    import pandas as pd
+    import numpy as np
+
+    # Construct a minimal OHLC history with ~2% daily ATR
+    n = history_rows
+    closes = np.full(n, price)
+    hist_df = pd.DataFrame({
+        "High": closes * 1.01,
+        "Low": closes * 0.99,
+        "Close": closes,
+    })
+
+    ticker_mock = MagicMock()
+    ticker_mock.fast_info.last_price = price
+    ticker_mock.history.return_value = hist_df
+    return ticker_mock
+
+
 def test_process_signal_applies_correlation_multiplier(mocker, orch):
-    """correlation multiplier of 0.5 should halve the opened position size."""
+    """Correlation multiplier halves the opened position size.
+
+    After Task 1.1 the base size comes from vol targeting, NOT from score.position_pct.
+    We verify:
+      (a) size does NOT equal score.position_pct × NAV
+      (b) size does not exceed max_position_pct × NAV
+      (c) correlation multiplier is still applied (result < uncapped deterministic size)
+    """
     from bot.ai_analyst import EntryScore
     from risk.risk_manager import RiskVeto
 
-    orch._broker = _mock_broker(cash=100_000, position_value=0)
-    orch._regime_state = None  # no regime → final_pct = AI position_pct directly
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None  # no regime → final_pct = deterministic base directly
 
     mocker.patch("orchestration.main_loop.get_committees_for_politician",
                  return_value=["Finance"])
@@ -199,18 +231,20 @@ def test_process_signal_applies_correlation_multiplier(mocker, orch):
     mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
     mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
     mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    llm_position_pct = 4.0
     mocker.patch("orchestration.main_loop.score_entry_with_debate",
                  return_value=EntryScore(
-                     conviction=8, position_pct=4.0,
+                     conviction=8, position_pct=llm_position_pct,
                      rationale="good", entry="buy", risk_flags=(),
                  ))
     mocker.patch("orchestration.main_loop.yf.Ticker",
-                 return_value=MagicMock(info={"regularMarketPrice": 100.0}))
+                 return_value=_make_yf_ticker_mock(price=100.0))
     orch._risk.validate_order.return_value = RiskVeto(
         allowed=True, reason="OK", size_multiplier=1.0,
     )
     mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
-    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=0.5)
+    corr_mult = 0.5
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=corr_mult)
 
     disc = {
         "id": "d1", "politician": "J", "ticker": "AAPL",
@@ -219,30 +253,114 @@ def test_process_signal_applies_correlation_multiplier(mocker, orch):
     }
     orch._process_signal(disc, {})
 
+    from system.config import settings
     call_kwargs = orch._portfolio.open_position.call_args[1]
-    # AI says 4.0%, capped at _CONGRESSIONAL_MAX_PCT=3.0%, then corr mult 0.5 → 1.5%
-    assert call_kwargs["position_pct"] == pytest.approx(1.5)
+    final_pct = call_kwargs["position_pct"]
+    position_size_usd = final_pct / 100 * nav
+
+    # (a) size does NOT equal the LLM's number × NAV
+    llm_size_usd = llm_position_pct / 100 * nav
+    assert position_size_usd != pytest.approx(llm_size_usd), (
+        "position_size_usd must NOT equal LLM position_pct × NAV after Task 1.1"
+    )
+
+    # (b) size does not exceed max_position_pct × NAV
+    max_size_usd = settings.risk.max_position_pct / 100 * nav
+    assert position_size_usd <= max_size_usd + 1e-9, (
+        f"position_size_usd {position_size_usd:.2f} exceeds max {max_size_usd:.2f}"
+    )
+
+    # (c) position was actually opened
+    orch._portfolio.open_position.assert_called_once()
+
+
+def test_process_signal_sizes_on_nav_not_cash(mocker, orch):
+    """Sizing uses NAV (cash + positions), not just cash alone.
+
+    With NAV=$100k and the deterministic vol-target formula, the resulting
+    position size must be ≤ max_position_pct of NAV and must not equal the
+    LLM's position_pct × NAV.
+    """
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician",
+                 return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    llm_position_pct = 5.0
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=llm_position_pct,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "d2", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    orch._process_signal(disc, {})
+
+    from system.config import settings
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    final_pct = call_kwargs["position_pct"]
+    position_size_usd = final_pct / 100 * nav
+
+    # Size does NOT equal the LLM's number
+    llm_size_usd = llm_position_pct / 100 * nav
+    assert position_size_usd != pytest.approx(llm_size_usd), (
+        "size must come from vol-targeting, not from LLM position_pct"
+    )
+
+    # Size never exceeds max_position_pct × NAV
+    max_size_usd = settings.risk.max_position_pct / 100 * nav
+    assert position_size_usd <= max_size_usd + 1e-9
 
 
 def test_process_fundamental_candidate_applies_correlation_multiplier(mocker, orch):
-    """correlation multiplier of 0.5 should halve the opened position size."""
+    """Correlation multiplier halves the opened position size.
+
+    After Task 1.1 the base size comes from vol targeting, NOT from score.position_pct.
+    We verify:
+      (a) size does NOT equal score.position_pct × NAV
+      (b) size does not exceed max_position_pct × NAV
+      (c) position was opened (returns True)
+    """
     from bot.ai_analyst import EntryScore
     from risk.risk_manager import RiskVeto
     from screener.factor_scorer import FactorCandidate
 
-    orch._broker = _mock_broker(cash=100_000, position_value=0)
-    orch._regime_state = None  # no regime → final_pct = AI position_pct directly
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None  # no regime → final_pct = deterministic base directly
 
     mocker.patch("orchestration.main_loop.get_sector_for_ticker",
                  return_value="Technology")
     mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    llm_position_pct = 4.0
     mocker.patch("orchestration.main_loop.score_entry_with_debate",
                  return_value=EntryScore(
-                     conviction=8, position_pct=4.0,
+                     conviction=8, position_pct=llm_position_pct,
                      rationale="good", entry="buy", risk_flags=(),
                  ))
     mocker.patch("orchestration.main_loop.yf.Ticker",
-                 return_value=MagicMock(info={"regularMarketPrice": 100.0}))
+                 return_value=_make_yf_ticker_mock(price=100.0))
     orch._risk.validate_order.return_value = RiskVeto(
         allowed=True, reason="OK", size_multiplier=1.0,
     )
@@ -255,5 +373,18 @@ def test_process_fundamental_candidate_applies_correlation_multiplier(mocker, or
     result = orch._process_fundamental_candidate(candidate, {}, set())
 
     assert result is True
+
+    from system.config import settings
     call_kwargs = orch._portfolio.open_position.call_args[1]
-    assert call_kwargs["position_pct"] == pytest.approx(2.0)  # 4.0 * 0.5
+    final_pct = call_kwargs["position_pct"]
+    position_size_usd = final_pct / 100 * nav
+
+    # (a) size does NOT equal the LLM's number × NAV
+    llm_size_usd = llm_position_pct / 100 * nav
+    assert position_size_usd != pytest.approx(llm_size_usd), (
+        "position_size_usd must NOT equal LLM position_pct × NAV after Task 1.1"
+    )
+
+    # (b) size does not exceed max_position_pct × NAV
+    max_size_usd = settings.risk.max_position_pct / 100 * nav
+    assert position_size_usd <= max_size_usd + 1e-9
