@@ -239,6 +239,8 @@ class BacktestConfig:
     benchmark_ticker: str = "SPY"
     min_train_bars: int = 500
     initial_cash: float = 100_000.0     # starting capital for each backtest window
+    slippage_model: str = "flat"        # "flat" or "market_impact"
+    impact_coef_bps_per_adv_pct: float = 2.0  # market-impact coefficient (bps per 1% of ADV)
 
 
 # ---------------------------------------------------------------------------

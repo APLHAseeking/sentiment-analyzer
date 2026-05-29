@@ -311,3 +311,123 @@ def test_walk_forward_empty_stress_list_produces_no_stress_results():
     w = result.windows[0]
     assert hasattr(w, "stress_results")
     assert w.stress_results == {}
+
+
+# ---------------------------------------------------------------------------
+# Task 1.2 — NAV-based sizing
+# ---------------------------------------------------------------------------
+
+def test_nav_based_sizing_uses_updated_nav_not_shrinking_cash():
+    """Two identical signals on consecutive days should be sized off updated NAV,
+    so the second trade's cost_basis is not smaller than the first.
+
+    With cash-only sizing, signal 2 fires after cash has been reduced by signal 1's
+    position, so it gets a smaller allocation.  With NAV-based sizing, the second
+    position is sized off (cash + mark-to-market of position 1), which should be
+    approximately the original NAV.
+    """
+    # Flat prices so mark-to-market = cost_basis exactly
+    dates = pd.date_range("2020-01-01", periods=10, freq="B")
+    price_data = {
+        "AAPL": pd.Series([100.0] * 10, index=dates),
+        "MSFT": pd.Series([100.0] * 10, index=dates),
+    }
+    # Both signals fire on back-to-back days; same position_pct
+    signals = [
+        {"date": str(dates[0].date()), "ticker": "AAPL",
+         "conviction": 7, "position_pct": 10.0, "regime_label": "bull"},
+        {"date": str(dates[1].date()), "ticker": "MSFT",
+         "conviction": 7, "position_pct": 10.0, "regime_label": "bull"},
+    ]
+    sim = simulate_portfolio(
+        signals, price_data, initial_cash=100_000,
+        slippage_bps=0, commission_pct=0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+    )
+    # Both positions should have been opened
+    assert len(sim.trades) >= 2
+    entry_trades = sorted(sim.trades, key=lambda t: t.entry_date)
+    shares_1 = entry_trades[0].shares
+    shares_2 = entry_trades[1].shares
+
+    # With flat prices, NAV ≈ initial_cash throughout.
+    # position_pct=10.0 is capped by default max_position_pct=8.0, so:
+    #   cost_basis = initial_cash * 8.0 / 100 = 8_000
+    #   shares = 8_000 / fill_price(100) = 80
+    # The KEY assertion is that both trades get the SAME shares (sized off NAV
+    # not shrinking cash), because day_nav ≈ initial_cash for both days.
+    expected_shares = 100_000 * 8.0 / 100 / 100.0  # = 80.0
+    assert abs(shares_1 - expected_shares) < 1e-6, (
+        f"Expected ~{expected_shares} shares for trade 1, got {shares_1}"
+    )
+    assert abs(shares_2 - expected_shares) < 1e-6, (
+        f"Expected ~{expected_shares} shares for trade 2, got {shares_2}  "
+        f"(NAV-based sizing should yield same size as trade 1; "
+        f"cash-based sizing would give less)"
+    )
+
+
+def test_market_impact_slippage_larger_order_incurs_more_slippage():
+    """When slippage_model='market_impact', a larger order relative to ADV should
+    result in a higher fill price (more slippage) than a smaller order.
+    """
+    dates = pd.date_range("2020-01-01", periods=5, freq="B")
+    price_data = {"AAPL": pd.Series([100.0] * 5, index=dates)}
+
+    # Small order: 1% of ADV ($1M ADV → $10k order → 1% of ADV)
+    signals_small = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                      "conviction": 7, "position_pct": 1.0, "regime_label": "bull",
+                      "adv_usd": 1_000_000.0}]
+    # Large order: 10% of ADV ($1M ADV → $100k order → 10% of ADV — but cap at max_position_pct)
+    signals_large = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                      "conviction": 7, "position_pct": 8.0, "regime_label": "bull",
+                      "adv_usd": 100_000.0}]  # small ADV makes order a large % of ADV
+
+    sim_small = simulate_portfolio(
+        signals_small, price_data, initial_cash=100_000,
+        slippage_bps=10.0, commission_pct=0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+        slippage_model="market_impact",
+    )
+    sim_large = simulate_portfolio(
+        signals_large, price_data, initial_cash=100_000,
+        slippage_bps=10.0, commission_pct=0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+        slippage_model="market_impact",
+    )
+
+    assert sim_small.trades, "Small-order sim must have at least one trade"
+    assert sim_large.trades, "Large-order sim must have at least one trade"
+
+    # Entry price for large order should be higher (more slippage) than small order
+    small_entry = sim_small.trades[0].entry_price
+    large_entry = sim_large.trades[0].entry_price
+    assert large_entry > small_entry, (
+        f"Expected large order to pay higher fill price ({large_entry}) "
+        f"than small order ({small_entry})"
+    )
+
+
+def test_flat_slippage_model_unchanged_behavior():
+    """Default slippage_model='flat' should produce the same results with or without
+    adv_usd in the signal (backward-compatible).
+    """
+    dates = pd.date_range("2020-01-01", periods=10, freq="B")
+    price_data = {"AAPL": pd.Series([100.0] * 10, index=dates)}
+    signals_no_adv = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                       "conviction": 7, "position_pct": 5.0, "regime_label": "bull"}]
+    signals_with_adv = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                         "conviction": 7, "position_pct": 5.0, "regime_label": "bull",
+                         "adv_usd": 1_000_000.0}]
+
+    sim_no_adv = simulate_portfolio(signals_no_adv, price_data, initial_cash=100_000,
+                                    slippage_bps=10.0, commission_pct=0,
+                                    trailing_stop_pct=9999.0, take_profit_pct=9999.0)
+    sim_with_adv = simulate_portfolio(signals_with_adv, price_data, initial_cash=100_000,
+                                      slippage_bps=10.0, commission_pct=0,
+                                      trailing_stop_pct=9999.0, take_profit_pct=9999.0)
+
+    assert sim_no_adv.trades and sim_with_adv.trades
+    assert sim_no_adv.trades[0].entry_price == pytest.approx(
+        sim_with_adv.trades[0].entry_price
+    ), "Flat model must not be affected by presence of adv_usd"

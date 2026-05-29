@@ -117,6 +117,8 @@ def simulate_portfolio(
     take_profit_pct: float = 25.0,
     hard_exit_pct: float = 40.0,
     fill_delay_bars: int = 0,
+    slippage_model: str = "flat",
+    impact_coef_bps_per_adv_pct: float = 2.0,
 ) -> SimState:
     """Simulate the portfolio day-by-day through the provided signal list.
 
@@ -186,6 +188,20 @@ def simulate_portfolio(
                 if ticker in state.positions:
                     state.positions[ticker]["take_profit_taken"] = True
 
+        # --- Compute NAV once per day (cash + mark-to-market positions) -----
+        day_pos_value = 0.0
+        for ticker, pos in state.positions.items():
+            series = price_data.get(ticker)
+            if series is None:
+                day_pos_value += pos["shares"] * pos["entry_price"]
+                continue
+            snap_price = _get_price(series, day_str)
+            if snap_price is not None:
+                day_pos_value += pos["shares"] * snap_price
+            else:
+                day_pos_value += pos["shares"] * pos["entry_price"]
+        day_nav = state.cash + day_pos_value
+
         # --- Open new positions ------------------------------------------
         for sig in day_signals:
             ticker = sig["ticker"]
@@ -201,8 +217,20 @@ def simulate_portfolio(
                 continue
 
             position_pct = min(float(sig.get("position_pct", 5.0)), max_position_pct)
-            fill_price = _apply_slippage(price, "buy", slippage_bps)
-            cost_basis = state.cash * position_pct / 100
+            cost_basis = day_nav * position_pct / 100
+
+            # Determine effective slippage (flat or market-impact)
+            if slippage_model == "market_impact":
+                adv_usd = float(sig.get("adv_usd", 0.0) or 0.0)
+                if adv_usd > 0:
+                    adv_pct = (cost_basis / adv_usd) * 100
+                    effective_slippage = slippage_bps + impact_coef_bps_per_adv_pct * adv_pct
+                else:
+                    effective_slippage = slippage_bps
+            else:
+                effective_slippage = slippage_bps
+
+            fill_price = _apply_slippage(price, "buy", effective_slippage)
             commission = _apply_commission(cost_basis, commission_pct)
             total_cost = cost_basis + commission
             if total_cost > state.cash:
