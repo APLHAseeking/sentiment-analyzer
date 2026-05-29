@@ -245,6 +245,7 @@ def _claude_call(system_text: str, user_text: str, max_tokens: int = 512) -> str
     msg = client.messages.create(
         model="claude-sonnet-4-6",
         max_tokens=max_tokens,
+        temperature=0,
         system=[{
             "type": "text",
             "text": system_text,

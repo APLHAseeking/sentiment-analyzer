@@ -144,6 +144,8 @@ def _score_sentiment(
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             max_tokens=128,
+            temperature=0,
+            seed=0,
             messages=[
                 {"role": "system", "content": _SENTIMENT_SYSTEM},
                 {"role": "user", "content": news_block},
