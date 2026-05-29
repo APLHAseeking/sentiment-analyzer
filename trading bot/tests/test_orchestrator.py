@@ -388,3 +388,109 @@ def test_process_fundamental_candidate_applies_correlation_multiplier(mocker, or
     # (b) size does not exceed max_position_pct × NAV
     max_size_usd = settings.risk.max_position_pct / 100 * nav
     assert position_size_usd <= max_size_usd + 1e-9
+
+
+# ------------------------------------------------------------------
+# Portfolio vol gate tests (Task 2.1)
+# ------------------------------------------------------------------
+
+def test_port_vol_mult_below_one_when_vol_exceeds_target(mocker, orch):
+    """When realized portfolio vol > target, _port_vol_mult must be < 1.0."""
+    import numpy as np
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    # Construct a NAV history with ~30% annualised vol (default target is 15%)
+    np.random.seed(42)
+    daily_rets = np.random.normal(0, 0.30 / np.sqrt(252), 30)
+    nav_series = [100_000.0]
+    for r in daily_rets:
+        nav_series.append(nav_series[-1] * (1 + r))
+
+    mocker.patch("orchestration.main_loop.get_nav_history", return_value=nav_series)
+
+    orch.run_morning_pipeline()
+
+    assert orch._port_vol_mult < 1.0, (
+        f"_port_vol_mult should be < 1.0 when realized vol > target, got {orch._port_vol_mult}"
+    )
+
+
+def test_port_vol_mult_stays_one_when_vol_below_target(mocker, orch):
+    """When realized portfolio vol ≤ target, _port_vol_mult must remain 1.0."""
+    import numpy as np
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    # NAV history with ~5% annualised vol (target is 15%)
+    np.random.seed(0)
+    daily_rets = np.random.normal(0, 0.05 / np.sqrt(252), 30)
+    nav_series = [100_000.0]
+    for r in daily_rets:
+        nav_series.append(nav_series[-1] * (1 + r))
+
+    mocker.patch("orchestration.main_loop.get_nav_history", return_value=nav_series)
+
+    orch.run_morning_pipeline()
+
+    assert orch._port_vol_mult == pytest.approx(1.0)
+
+
+def test_port_vol_mult_stays_one_when_history_too_short(mocker, orch):
+    """With fewer than 20 NAV data points, _port_vol_mult must remain 1.0."""
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    mocker.patch("orchestration.main_loop.get_nav_history", return_value=[100_000.0] * 5)
+
+    orch.run_morning_pipeline()
+
+    assert orch._port_vol_mult == pytest.approx(1.0)
+
+
+def test_process_signal_uses_port_vol_mult(mocker, orch):
+    """_process_signal must apply _port_vol_mult to final_pct before validate_order."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=[])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=4.0,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "d-voltest-1", "politician": "J", "ticker": "NVDA",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+
+    # Run with vol mult = 1.0 for baseline
+    orch._port_vol_mult = 1.0
+    orch._process_signal(disc, {})
+    pct_full = orch._portfolio.open_position.call_args[1]["position_pct"]
+
+    orch._portfolio.open_position.reset_mock()
+
+    # Run with vol mult = 0.5
+    orch._port_vol_mult = 0.5
+    orch._process_signal(disc, {})
+    pct_halved = orch._portfolio.open_position.call_args[1]["position_pct"]
+
+    assert pct_halved == pytest.approx(pct_full * 0.5, rel=1e-3)

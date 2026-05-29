@@ -356,6 +356,14 @@ def log_portfolio(date: str, cash: float, positions_value: float, total_nav: flo
             (date, cash, positions_value, total_nav),
         )
 
+def get_nav_history() -> list[float]:
+    """Return chronologically ordered list of total_nav values from portfolio_log."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT total_nav FROM portfolio_log ORDER BY date ASC, id ASC"
+        ).fetchall()
+    return [float(r["total_nav"]) for r in rows]
+
 def log_regime(date: str, regime_label: str, regime_index: int,
                confidence: float, is_stable: bool, n_regimes: int) -> None:
     with get_conn() as conn:

@@ -42,6 +42,8 @@ class SimulatedBroker(BrokerInterface):
         self._positions: dict[str, Position] = {}
         # full order history
         self._orders: list[Order] = []
+        # resting stop orders: ticker → (stop_price, qty)
+        self._stop_orders: dict[str, tuple[float, float]] = {}
 
     # ------------------------------------------------------------------
     # BrokerInterface implementation
@@ -180,6 +182,24 @@ class SimulatedBroker(BrokerInterface):
         order.filled_qty = filled_qty
         order.filled_avg_price = fill_price
         order.filled_at = datetime.now(UTC).isoformat()
+
+    # ------------------------------------------------------------------
+    # Stop order simulation
+    # ------------------------------------------------------------------
+
+    def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
+        """Register a resting stop. The polled enforce_stop_losses() does the actual fill."""
+        self._stop_orders[ticker] = (stop_price, qty)
+        log.info("SimulatedBroker: stop registered %s qty=%.4f @ $%.2f", ticker, qty, stop_price)
+        return f"sim-stop-{ticker}"
+
+    def cancel_stop_order(self, ticker: str) -> None:
+        """Cancel the resting stop for ticker (no-op if none registered)."""
+        self._stop_orders.pop(ticker, None)
+
+    def get_stop_orders(self) -> dict[str, tuple[float, float]]:
+        """Return {ticker: (stop_price, qty)} for all registered stops."""
+        return dict(self._stop_orders)
 
     # ------------------------------------------------------------------
     # Extra simulation utilities

@@ -131,3 +131,59 @@ def test_set_position_price_updates_valuation(broker, mocker):
 
 def test_is_paper_is_true(broker):
     assert broker.is_paper is True
+
+
+# ------------------------------------------------------------------
+# Stop order tests (Task 2.1)
+# ------------------------------------------------------------------
+
+def test_place_stop_order_registers_stop(broker):
+    order_id = broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
+    assert order_id == "sim-stop-AAPL"
+    stops = broker.get_stop_orders()
+    assert "AAPL" in stops
+    assert stops["AAPL"] == (90.0, 10.0)
+
+
+def test_place_stop_order_returns_id(broker):
+    result = broker.place_stop_order("MSFT", qty=5.0, stop_price=200.0)
+    assert result == "sim-stop-MSFT"
+
+
+def test_get_stop_orders_empty_initially(broker):
+    assert broker.get_stop_orders() == {}
+
+
+def test_place_stop_order_overwrites_existing(broker):
+    broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
+    broker.place_stop_order("AAPL", qty=10.0, stop_price=95.0)  # trail up
+    stops = broker.get_stop_orders()
+    assert stops["AAPL"][0] == 95.0  # latest stop_price
+
+
+def test_cancel_stop_order_removes_entry(broker):
+    broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
+    broker.cancel_stop_order("AAPL")
+    assert "AAPL" not in broker.get_stop_orders()
+
+
+def test_cancel_stop_order_noop_if_not_registered(broker):
+    # Should not raise even when ticker has no stop
+    broker.cancel_stop_order("NONEXISTENT")
+
+
+def test_get_stop_orders_returns_copy(broker):
+    broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
+    stops = broker.get_stop_orders()
+    stops["AAPL"] = (0.0, 0.0)  # mutate the returned dict
+    # Original should be unchanged
+    assert broker.get_stop_orders()["AAPL"][0] == 90.0
+
+
+def test_multiple_tickers_tracked_independently(broker):
+    broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
+    broker.place_stop_order("MSFT", qty=5.0, stop_price=200.0)
+    stops = broker.get_stop_orders()
+    assert len(stops) == 2
+    assert stops["AAPL"] == (90.0, 10.0)
+    assert stops["MSFT"] == (200.0, 5.0)

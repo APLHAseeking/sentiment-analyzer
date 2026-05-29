@@ -108,3 +108,9 @@ class AlpacaBroker(BrokerInterface):
 
     def get_order_history(self) -> list[Order]:
         return []
+
+    def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
+        # No-op: Alpaca paper mode does not use resting stop orders in this integration.
+        # The polled enforce_stop_losses() in Portfolio is the primary stop mechanism.
+        # Override with a real implementation when switching to live trading.
+        return None
