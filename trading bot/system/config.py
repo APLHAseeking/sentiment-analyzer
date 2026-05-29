@@ -298,6 +298,8 @@ class Settings:
             raise ValueError("min_confidence_to_trade must be in [0, 1]")
         if self.risk.max_invested_pct <= 0 or self.risk.max_invested_pct > 100:
             raise ValueError("max_invested_pct must be in (0, 100]")
+        if not (0 < self.sizing.per_trade_risk_pct <= self.risk.max_position_pct):
+            raise ValueError("per_trade_risk_pct must be in (0, max_position_pct]")
 
 
 # Module-level singleton — import this everywhere

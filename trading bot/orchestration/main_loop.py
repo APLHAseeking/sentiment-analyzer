@@ -521,8 +521,9 @@ class RegimeAwareOrchestrator:
         log.debug("%s: LLM position_pct=%.2f%% (ignored for sizing)", ticker, score.position_pct)
 
         # Price fetch — fast_info.last_price is available pre/post market; avoids stale close
+        _t = yf.Ticker(ticker)
         try:
-            entry_price = yf.Ticker(ticker).fast_info.last_price or 0.0
+            entry_price = _t.fast_info.last_price or 0.0
         except Exception:
             entry_price = 0.0
         if not entry_price:
@@ -531,8 +532,8 @@ class RegimeAwareOrchestrator:
 
         # ATR-based deterministic position sizing
         try:
-            hist = yf.Ticker(ticker).history(period="30d")
-            if len(hist) >= 14:
+            hist = _t.history(period="30d")
+            if len(hist) >= self._cfg.sizing.atr_window:
                 hi = hist["High"].values
                 lo = hist["Low"].values
                 cl = hist["Close"].values
@@ -540,7 +541,7 @@ class RegimeAwareOrchestrator:
                     hi[1:] - lo[1:],
                     np.maximum(abs(hi[1:] - cl[:-1]), abs(lo[1:] - cl[:-1])),
                 )
-                atr = float(tr[-14:].mean())
+                atr = float(tr[-self._cfg.sizing.atr_window:].mean())
                 atr_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
             else:
                 atr_pct = 1.0  # fallback: 1% ATR → full per_trade_risk_pct used
@@ -662,8 +663,9 @@ class RegimeAwareOrchestrator:
         log.debug("%s: LLM position_pct=%.2f%% (ignored for sizing)", ticker, score.position_pct)
 
         # Price fetch — fast_info.last_price is available pre/post market; avoids stale close
+        _t = yf.Ticker(ticker)
         try:
-            entry_price = yf.Ticker(ticker).fast_info.last_price or 0.0
+            entry_price = _t.fast_info.last_price or 0.0
         except Exception:
             entry_price = 0.0
         if not entry_price:
@@ -672,8 +674,8 @@ class RegimeAwareOrchestrator:
 
         # ATR-based deterministic position sizing
         try:
-            hist = yf.Ticker(ticker).history(period="30d")
-            if len(hist) >= 14:
+            hist = _t.history(period="30d")
+            if len(hist) >= self._cfg.sizing.atr_window:
                 hi = hist["High"].values
                 lo = hist["Low"].values
                 cl = hist["Close"].values
@@ -681,7 +683,7 @@ class RegimeAwareOrchestrator:
                     hi[1:] - lo[1:],
                     np.maximum(abs(hi[1:] - cl[:-1]), abs(lo[1:] - cl[:-1])),
                 )
-                atr = float(tr[-14:].mean())
+                atr = float(tr[-self._cfg.sizing.atr_window:].mean())
                 atr_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
             else:
                 atr_pct = 1.0  # fallback: 1% ATR → full per_trade_risk_pct used
