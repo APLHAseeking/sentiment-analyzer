@@ -6,6 +6,7 @@ import time
 import requests
 
 from bot.config import PROPUBLICA_API_KEY
+from monitoring.logger import EventType, emit_event
 
 log = logging.getLogger(__name__)
 
@@ -101,8 +102,35 @@ def get_committees_for_politician(name: str) -> tuple[str, ...]:
     except Exception as exc:
         log.debug("Disk cache read failed for %r: %s", name, exc)
 
-    # 3. Live lookup
-    result = _fetch_committees(name)
+    # 3. Live lookup — falls back to stale cache or empty on API failure
+    try:
+        result = _fetch_committees(name)
+    except RuntimeError as exc:
+        # ProPublica API is discontinued / unreachable; try returning expired cache entry
+        log.warning("Committee API failed for %r: %s", name, exc)
+        try:
+            with shelve.open(_COMMITTEE_CACHE_PATH) as cache:
+                if name in cache:
+                    entry = cache[name]
+                    stale_result: tuple[str, ...] = entry[1] if (
+                        isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[0], float)
+                    ) else entry
+                    emit_event(
+                        log, EventType.DEAD_FEED,
+                        f"Committee API failed for {name!r} — using stale cache fallback",
+                        alert=True,
+                    )
+                    _in_memory_cache[name] = stale_result
+                    return stale_result
+        except Exception:
+            pass
+        emit_event(
+            log, EventType.DEAD_FEED,
+            f"Committee lookup failed for {name!r} and no cache available — returning empty",
+            alert=True,
+        )
+        result = ()
+
     _in_memory_cache[name] = result
     try:
         with shelve.open(_COMMITTEE_CACHE_PATH) as cache:

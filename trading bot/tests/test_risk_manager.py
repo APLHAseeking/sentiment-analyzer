@@ -180,3 +180,37 @@ def test_status_dict_includes_max_invested_pct(tmp_path):
     d = mgr.status_dict()
     assert "max_invested_pct" in d
     assert d["max_invested_pct"] == 75.0
+
+
+def test_stale_data_blocks_new_entries(tmp_path):
+    """After set_stale_data(True), validate_order must return allowed=False with STALE_DATA reason."""
+    mgr = _make_manager(tmp_path)
+    mgr.start_of_day(100_000)
+    mgr.set_stale_data(True)
+    veto = mgr.validate_order(
+        ticker="AAPL",
+        position_pct=5.0,
+        sector="Technology",
+        sector_allocation={},
+        position_size_usd=5_000,
+        adv_usd=None,
+    )
+    assert not veto.allowed
+    assert "STALE_DATA" in veto.reason
+
+
+def test_stale_data_cleared_allows_entries(tmp_path):
+    """After set_stale_data(False), validate_order must proceed normally."""
+    mgr = _make_manager(tmp_path)
+    mgr.start_of_day(100_000)
+    mgr.set_stale_data(True)
+    mgr.set_stale_data(False)
+    veto = mgr.validate_order(
+        ticker="AAPL",
+        position_pct=5.0,
+        sector="Technology",
+        sector_allocation={},
+        position_size_usd=5_000,
+        adv_usd=None,
+    )
+    assert veto.allowed

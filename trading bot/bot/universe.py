@@ -7,6 +7,8 @@ import re
 import pandas as pd
 import requests
 
+from monitoring.logger import EventType, emit_event
+
 log = logging.getLogger(__name__)
 
 _UNIVERSE: set[str] = set()
@@ -111,5 +113,16 @@ def is_in_universe(ticker: str) -> bool:
 
 
 def get_universe() -> set[str]:
-    """Return a copy of the current universe. Empty set if not yet initialized."""
-    return set(_UNIVERSE)
+    """Return a copy of the current universe. Empty set if not yet initialized.
+
+    Emits a DEAD_FEED alert if the universe is empty, because an empty universe
+    means the signal pipeline has no candidates to screen.
+    """
+    result = set(_UNIVERSE)
+    if not result:
+        emit_event(
+            log, EventType.DEAD_FEED,
+            "get_universe() returned empty set — universe not initialised or fetch failed",
+            alert=True,
+        )
+    return result

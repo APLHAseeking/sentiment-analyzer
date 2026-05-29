@@ -5,6 +5,7 @@ from datetime import date
 
 import bot.db as db
 from execution.broker_interface import OrderStatus
+from monitoring.logger import EventType, emit_event
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,13 @@ class Portfolio:
             raise
 
         self._opened_today += 1
+
+        # Register a resting stop order at the initial trailing-stop level so that
+        # overnight / between-poll gaps are covered. The polled enforce_stop_losses()
+        # acts as backstop and updates (trails) the stop upward as the peak rises.
+        stop_price = entry_price * (1 - self._risk.trailing_stop_pct / 100)
+        self.broker.place_stop_order(ticker=ticker, qty=shares, stop_price=stop_price)
+
         return True
 
     def close_position(self, ticker: str, shares: float, exit_price: float,
@@ -157,8 +165,23 @@ class Portfolio:
 
         Returns dict with keys: ghost_positions (in SQLite not broker),
         untracked_positions (in broker not SQLite).
+
+        **Untracked position handling** (controlled by ``RiskConfig.auto_flatten_untracked``):
+
+        * ``auto_flatten_untracked=False`` (default, safe): emit a CRITICAL alert for every
+          untracked broker position and add it to a stop-loss watchlist by inserting a
+          synthetic DB record.  A human must review before the next pipeline run.
+          Trade-off: the position is visible to stop-loss enforcement but the entry price /
+          sizing metadata are unknown, so stops are set off the current price.
+
+        * ``auto_flatten_untracked=True`` (aggressive): immediately issue a market sell order
+          for each untracked position and emit an alert.  This eliminates exposure quickly but
+          may crystallise a loss on a position that was legitimately opened by a separate
+          system or manual trade.  Use only in fully-automated deployments where no manual
+          broker intervention occurs.
         """
-        broker_positions = {p["ticker"] for p in self.broker.get_positions()}
+        broker_pos_list = self.broker.get_positions()
+        broker_positions = {p["ticker"] for p in broker_pos_list}
         db_positions = {p["ticker"] for p in db.get_open_positions()}
 
         ghost = db_positions - broker_positions
@@ -172,10 +195,39 @@ class Portfolio:
             db.delete_position(ticker)
 
         for ticker in untracked:
-            log.warning(
-                "RECONCILIATION: %s at broker but not in SQLite — manual trade or bug",
-                ticker,
-            )
+            if getattr(self._risk, "auto_flatten_untracked", False):
+                # Aggressive mode: close the position immediately via market sell
+                broker_qty = next(
+                    (p["qty"] for p in broker_pos_list if p["ticker"] == ticker), 0.0
+                )
+                log.warning(
+                    "RECONCILIATION: %s at broker but not in SQLite — auto-flattening "
+                    "(auto_flatten_untracked=True), qty=%.4f",
+                    ticker, broker_qty,
+                )
+                if broker_qty > 0:
+                    self.broker.place_order(ticker=ticker, side="sell", qty=broker_qty)
+                emit_event(
+                    log, EventType.DEAD_FEED,
+                    f"RECONCILIATION: untracked position {ticker} auto-flattened "
+                    f"(qty={broker_qty:.4f})",
+                    alert=True,
+                )
+            else:
+                # Safe mode (default): alert loudly so a human can investigate
+                log.critical(
+                    "RECONCILIATION: %s at broker but not in SQLite — manual trade or bug. "
+                    "Review before next pipeline run.",
+                    ticker,
+                )
+                emit_event(
+                    log, EventType.DEAD_FEED,
+                    f"RECONCILIATION: untracked position {ticker} at broker — "
+                    "CRITICAL: not in SQLite. Manual review required.",
+                    data={"ticker": ticker},
+                    level=logging.CRITICAL,
+                    alert=True,
+                )
 
         return {"ghost_positions": list(ghost), "untracked_positions": list(untracked)}
 
@@ -197,6 +249,20 @@ class Portfolio:
             meta = open_positions.get(ticker, {})
             peak = meta.get("peak_price") or pos["avg_entry_price"]
             db.update_position_peak(ticker, current)
+
+            # Trail the resting stop upward if the price has risen above the last stop level.
+            # Only move the stop up, never down (trailing semantics).
+            new_stop = current * (1 - pct / 100)
+            existing_stop = 0.0
+            try:
+                if hasattr(self.broker, "get_stop_orders"):
+                    _stops = self.broker.get_stop_orders()
+                    if isinstance(_stops, dict):
+                        existing_stop = float(_stops.get(ticker, (0.0,))[0])
+            except Exception:
+                pass
+            if new_stop > existing_stop:
+                self.broker.place_stop_order(ticker=ticker, qty=pos["qty"], stop_price=new_stop)
 
             source = meta.get("signal_source", "congressional")
 

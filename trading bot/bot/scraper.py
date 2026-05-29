@@ -5,6 +5,7 @@ import requests
 from datetime import datetime, UTC
 from bs4 import BeautifulSoup
 from bot.db import get_existing_ids, insert_disclosures
+from monitoring.logger import EventType, emit_event
 
 log = logging.getLogger(__name__)
 
@@ -103,6 +104,9 @@ def run_scraper(max_pages: int = 5) -> list[dict]:
                     "have changed. Signal pipeline is receiving zero inputs. Manual "
                     "inspection of %s required.", TRADES_URL
                 )
+                emit_event(log, EventType.DEAD_FEED,
+                           "Capitol Trades scraper returned 0 trades on page 1 — signal pipeline dead",
+                           alert=True)
             break
         fresh = [t for t in trades if t["id"] not in existing]
         new_trades.extend(fresh)

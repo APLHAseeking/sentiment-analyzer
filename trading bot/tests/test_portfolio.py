@@ -396,3 +396,155 @@ def test_enforce_take_profits_source_exclude_skips_matching(mock_broker, db):
     reduced = p.enforce_take_profits(source_exclude="hedge")
     assert "SH" not in reduced
     assert "AAPL" in reduced
+
+
+# ------------------------------------------------------------------
+# Stop order registration + trailing tests (Task 2.1)
+# ------------------------------------------------------------------
+
+def test_open_position_registers_stop_order(mock_broker, db):
+    """Opening a position must call place_stop_order on the broker."""
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("AAPL", 5.0, None, "test", 100.0)
+    mock_broker.place_stop_order.assert_called_once()
+    call_kwargs = mock_broker.place_stop_order.call_args[1]
+    assert call_kwargs["ticker"] == "AAPL"
+    # Default trailing_stop_pct is 15% → stop at 100 * (1 - 0.15) = 85.0
+    from system.config import settings
+    expected_stop = 100.0 * (1 - settings.risk.trailing_stop_pct / 100)
+    assert call_kwargs["stop_price"] == pytest.approx(expected_stop)
+
+
+def test_open_position_stop_uses_custom_trailing_pct(mock_broker, db):
+    """Stop price respects the injected trailing_stop_pct config."""
+    from system.config import RiskConfig
+    risk_cfg = RiskConfig(trailing_stop_pct=10.0)
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+    mock_broker.get_positions.return_value = []
+    portfolio.open_position("MSFT", 4.0, None, "test", 200.0)
+    call_kwargs = mock_broker.place_stop_order.call_args[1]
+    expected_stop = 200.0 * (1 - 10.0 / 100)  # 180.0
+    assert call_kwargs["stop_price"] == pytest.approx(expected_stop)
+
+
+def test_enforce_stop_losses_trails_stop_upward(mock_broker, db):
+    """When price rises, enforce_stop_losses should raise the resting stop."""
+    from system.config import RiskConfig
+    risk_cfg = RiskConfig(trailing_stop_pct=15.0)
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+
+    # Broker has no existing stop → get_stop_orders returns {}
+    mock_broker.get_stop_orders.return_value = {}
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0,
+        "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "trail-001", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("trail-001", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    # New stop should be 120 * 0.85 = 102.0, which is higher than 0.0 (no prior stop)
+    mock_broker.place_stop_order.assert_called_once()
+    call_kwargs = mock_broker.place_stop_order.call_args[1]
+    assert call_kwargs["ticker"] == "AAPL"
+    assert call_kwargs["stop_price"] == pytest.approx(120.0 * 0.85)
+
+
+def test_enforce_stop_losses_does_not_trail_stop_downward(mock_broker, db):
+    """When current price is below an existing stop level, the stop must not be lowered."""
+    from system.config import RiskConfig
+    risk_cfg = RiskConfig(trailing_stop_pct=15.0)
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+
+    # Existing stop is already at 110 * 0.85 = 93.5 (set when price was 110)
+    mock_broker.get_stop_orders.return_value = {"AAPL": (93.5, 10.0)}
+    # Price has dropped back to 100 — new candidate stop = 100 * 0.85 = 85.0 < 93.5
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0,
+        "current_price": 100.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "no-lower-001", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("no-lower-001", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+    # Peak stored at 110 so stop-loss of 15% does NOT trigger from 100
+    db.update_position_peak("AAPL", 100.0)  # peak = 100; drop = 0% < 15%
+
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    # place_stop_order should NOT be called (new candidate 85.0 < existing 93.5)
+    mock_broker.place_stop_order.assert_not_called()
+
+
+def test_open_position_rejected_order_does_not_place_stop(mock_broker, db):
+    """If the order is rejected, no stop should be registered."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    rejected_order = Order(
+        ticker="AAPL", side=OrderSide.BUY, qty=10.0, order_type=OrderType.MARKET,
+    )
+    rejected_order.status = OrderStatus.REJECTED
+    rejected_order.reject_reason = "insufficient buying power"
+    mock_broker.place_order.return_value = rejected_order
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.open_position("AAPL", 5.0, None, "test", 100.0)
+
+    assert result is False
+    mock_broker.place_stop_order.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# Untracked position handling (Task 2.2)
+# ------------------------------------------------------------------
+
+def test_reconcile_auto_flatten_untracked_calls_sell(mock_broker, db, mocker):
+    """When auto_flatten_untracked=True, reconcile_with_broker must place a sell order
+    for each broker position that is not in SQLite."""
+    from system.config import RiskConfig
+    # Broker has one untracked position not in SQLite
+    mock_broker.get_positions.return_value = [
+        {"ticker": "UNTRK", "qty": 15.0, "current_price": 50.0, "avg_entry_price": 45.0}
+    ]
+    mocker.patch("monitoring.logger.fire_alert")  # suppress webhook calls
+
+    risk_cfg = RiskConfig(auto_flatten_untracked=True)
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+    result = portfolio.reconcile_with_broker()
+
+    # untracked position must appear in the return dict
+    assert "UNTRK" in result["untracked_positions"]
+    # broker.place_order must have been called with side="sell"
+    mock_broker.place_order.assert_called_once_with(ticker="UNTRK", side="sell", qty=15.0)
+
+
+def test_reconcile_no_flatten_emits_critical_alert(mock_broker, db, mocker):
+    """When auto_flatten_untracked=False (default), reconcile_with_broker must emit
+    a CRITICAL alert but NOT place any sell order."""
+    from system.config import RiskConfig
+    mock_broker.get_positions.return_value = [
+        {"ticker": "UNTRK2", "qty": 10.0, "current_price": 60.0, "avg_entry_price": 55.0}
+    ]
+    # fire_alert is imported into monitoring.logger; patch at that binding
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    risk_cfg = RiskConfig(auto_flatten_untracked=False)
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+    result = portfolio.reconcile_with_broker()
+
+    assert "UNTRK2" in result["untracked_positions"]
+    # No sell order should have been placed
+    mock_broker.place_order.assert_not_called()
+    # But an alert must have been fired
+    mock_fire_alert.assert_called_once()

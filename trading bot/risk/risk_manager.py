@@ -65,6 +65,7 @@ class RiskManager:
         self._day_start_nav: float = 0.0
         self._current_week_start: str = self._get_week_start()
         self._current_day: str = date.today().isoformat()
+        self._stale_data: bool = False
 
     # ------------------------------------------------------------------
     # Daily / weekly refresh
@@ -200,6 +201,22 @@ class RiskManager:
     # Trade veto interface
     # ------------------------------------------------------------------
 
+    def set_stale_data(self, stale: bool) -> None:
+        """Signal whether market data is stale (older than RiskConfig.max_data_staleness_days).
+
+        When stale=True, validate_order returns a STALE_DATA veto blocking all new entries.
+        Call with stale=False each morning when fresh data is confirmed.
+        """
+        self._stale_data = stale
+
+    def _check_stale_data(self) -> RiskVeto | None:
+        if self._stale_data:
+            return RiskVeto(
+                allowed=False,
+                reason="STALE_DATA: market data too old — new entries blocked",
+            )
+        return None
+
     def veto_new_entry(self, ticker: str, proposed_pct: float) -> RiskVeto:
         """Return whether a new entry is allowed and at what size."""
         # Lock file takes absolute precedence
@@ -230,6 +247,11 @@ class RiskManager:
         adv_usd: float | None,
     ) -> RiskVeto:
         """Validate a proposed order against all position-level risk rules."""
+        # Stale-data kill-switch takes precedence over all other checks
+        stale_veto = self._check_stale_data()
+        if stale_veto is not None:
+            return stale_veto
+
         veto = self.veto_new_entry(ticker, position_pct)
         if not veto.allowed:
             return veto

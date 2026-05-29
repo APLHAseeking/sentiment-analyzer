@@ -132,3 +132,23 @@ def test_run_scraper_returns_empty_on_persistent_fetch_failure(mocker, db):
     mocker.patch("bot.scraper.time.sleep")
     result = run_scraper(max_pages=1)
     assert result == []
+
+
+def test_run_scraper_emits_dead_feed_alert_on_empty_page1(mocker, db):
+    """run_scraper must fire a dead-feed alert when page 1 returns 0 trades."""
+    # Return a valid HTTP response but with empty HTML (no table rows)
+    mock_resp = mocker.MagicMock()
+    mock_resp.text = "<html><body><table class='q-table'><tbody></tbody></table></body></html>"
+    mock_resp.raise_for_status = mocker.MagicMock()
+    mocker.patch("bot.scraper.requests.get", return_value=mock_resp)
+    # fire_alert is imported into monitoring.logger and called from emit_event there
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    result = run_scraper(max_pages=1)
+
+    assert result == []
+    mock_fire_alert.assert_called_once()
+    # emit_event calls fire_alert(event=..., message=..., data=...) with keyword args
+    call = mock_fire_alert.call_args
+    event_value = call.kwargs.get("event") or (call.args[0] if call.args else None)
+    assert event_value == "dead_feed"

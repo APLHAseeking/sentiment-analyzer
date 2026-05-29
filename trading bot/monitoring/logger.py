@@ -37,6 +37,7 @@ class EventType(str, Enum):
     HEDGE_ENTRY = "hedge_entry"
     HEDGE_EXIT = "hedge_exit"
     HEDGE_STOP_LOSS = "hedge_stop_loss"
+    DEAD_FEED = "dead_feed"
 
 
 class StructuredFormatter(logging.Formatter):

@@ -43,7 +43,7 @@ from bot.scraper import run_scraper
 from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days, get_cluster_count, clear_sector_cache
 from bot.committee import get_committees_for_politician
 from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore
-from bot.db import get_open_positions, insert_signal, log_regime
+from bot.db import get_open_positions, insert_signal, log_regime, get_nav_history
 from bot.universe import refresh_universe, get_universe
 from bot.portfolio import Portfolio
 
@@ -111,6 +111,10 @@ class RegimeAwareOrchestrator:
 
         # Pre-fetched screener data (populated at 13:00, consumed at 14:00 morning pipeline)
         self._screener_prefetch: dict | None = None
+
+        # Portfolio vol gate multiplier (updated each morning; scales new entry sizes down
+        # when realized portfolio vol exceeds SizingConfig.target_portfolio_vol_pct)
+        self._port_vol_mult: float = 1.0
 
     # ------------------------------------------------------------------
     # Startup
@@ -330,6 +334,26 @@ class RegimeAwareOrchestrator:
         self._maybe_rolling_refit()
         self._update_market_data()
         self._update_regime()
+
+        # Stale-data kill-switch: block new entries if market data is too old
+        try:
+            latest_bar_date = (
+                self._market_data.index[-1].date()
+                if self._market_data is not None and not self._market_data.empty
+                else None
+            )
+            if latest_bar_date is not None:
+                staleness_days = (date.today() - latest_bar_date).days
+                if staleness_days > self._cfg.risk.max_data_staleness_days:
+                    self._risk.set_stale_data(True)
+                    emit_event(log, EventType.DATA_STALE,
+                               f"Market data is {staleness_days} days old — new entries blocked",
+                               alert=True)
+                else:
+                    self._risk.set_stale_data(False)
+        except Exception:
+            pass
+
         self._update_dashboard()
 
         # ── Hedge regime gate ────────────────────────────────────────────
@@ -361,6 +385,26 @@ class RegimeAwareOrchestrator:
             self._risk.check_circuit_breakers(equity)
         except Exception as exc:
             log.warning("Risk manager update failed: %s", exc)
+
+        # --- Portfolio vol gate — scale down new entries if realized vol > target ---
+        self._port_vol_mult = 1.0
+        try:
+            import pandas as pd
+            _nav_series = get_nav_history()
+            if len(_nav_series) >= 20:
+                _realized_vol = float(
+                    pd.Series(_nav_series).pct_change().dropna().std()
+                    * np.sqrt(252) * 100
+                )
+                _target_vol = self._cfg.sizing.target_portfolio_vol_pct
+                if _realized_vol > _target_vol and _target_vol > 0:
+                    self._port_vol_mult = _target_vol / _realized_vol
+                    log.info(
+                        "Portfolio vol %.1f%% > target %.1f%% — scaling new entries by %.2f",
+                        _realized_vol, _target_vol, self._port_vol_mult,
+                    )
+        except Exception:
+            pass
 
         # --- Invested-pct capacity check --------------------------------
         _position_list = self._broker.get_positions()
@@ -527,7 +571,9 @@ class RegimeAwareOrchestrator:
         except Exception:
             entry_price = 0.0
         if not entry_price:
-            log.warning("No price for %s — skipping", ticker)
+            emit_event(log, EventType.DEAD_FEED,
+                       f"No price available for {ticker} — yfinance returned None",
+                       alert=True)
             return False
 
         # ATR-based deterministic position sizing
@@ -584,6 +630,9 @@ class RegimeAwareOrchestrator:
             emit_event(log, EventType.SIGNAL_REJECTED,
                        f"{ticker} reduced to zero by correlation filter (mult={corr_mult:.2f})")
             return False
+
+        # Portfolio vol gate: scale down if realized portfolio vol exceeds target
+        final_pct *= self._port_vol_mult
 
         _positions_now = self._broker.get_positions()
         _nav = self._broker.get_cash() + sum(
@@ -669,7 +718,9 @@ class RegimeAwareOrchestrator:
         except Exception:
             entry_price = 0.0
         if not entry_price:
-            log.warning("No price for %s — skipping", ticker)
+            emit_event(log, EventType.DEAD_FEED,
+                       f"No price available for {ticker} — yfinance returned None",
+                       alert=True)
             return False
 
         # ATR-based deterministic position sizing
@@ -727,6 +778,9 @@ class RegimeAwareOrchestrator:
                 f"(mult={corr_mult:.2f})",
             )
             return False
+
+        # Portfolio vol gate: scale down if realized portfolio vol exceeds target
+        final_pct *= self._port_vol_mult
 
         _positions_now = self._broker.get_positions()
         _nav = self._broker.get_cash() + sum(

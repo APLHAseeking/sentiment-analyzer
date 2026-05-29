@@ -211,6 +211,11 @@ class RiskConfig:
     max_invested_pct: float = 80.0        # max % of NAV deployed in positions
     enable_inverse_hedging: bool = True   # set False to disable all inverse ETF hedging
 
+    # Dead-feed / data-staleness controls
+    auto_flatten_untracked: bool = False  # when True, flatten broker positions not in SQLite;
+                                          # when False, emit CRITICAL alert and add to watchlist
+    max_data_staleness_days: int = 3      # halt new entries if market data is older than this
+
 
 # ---------------------------------------------------------------------------
 # Paper execution
