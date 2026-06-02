@@ -403,8 +403,8 @@ class RegimeAwareOrchestrator:
                         "Portfolio vol %.1f%% > target %.1f%% — scaling new entries by %.2f",
                         _realized_vol, _target_vol, self._port_vol_mult,
                     )
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("Portfolio vol gate failed — using mult=1.0: %s", exc)
 
         # --- Invested-pct capacity check --------------------------------
         _position_list = self._broker.get_positions()

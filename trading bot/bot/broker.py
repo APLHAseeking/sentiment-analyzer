@@ -110,7 +110,42 @@ class AlpacaBroker(BrokerInterface):
         return []
 
     def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
-        # No-op: Alpaca paper mode does not use resting stop orders in this integration.
-        # The polled enforce_stop_losses() in Portfolio is the primary stop mechanism.
-        # Override with a real implementation when switching to live trading.
-        return None
+        """Submit a GTC stop-sell order to Alpaca. Returns order ID or None on failure."""
+        from alpaca.trading.requests import StopOrderRequest
+        req = StopOrderRequest(
+            symbol=ticker.upper(),
+            qty=qty,
+            side=AlpacaSide.SELL,
+            time_in_force=TimeInForce.GTC,
+            stop_price=round(stop_price, 2),
+        )
+        try:
+            submitted = self._api.submit_order(req)
+            log.info("Stop order placed %s qty=%.4f @ $%.2f id=%s",
+                     ticker, qty, stop_price, submitted.id)
+            return str(submitted.id)
+        except Exception as exc:
+            log.warning("Failed to place stop order for %s: %s", ticker, exc)
+            return None
+
+    def cancel_stop_order(self, ticker: str) -> None:
+        """Cancel any open stop orders for ticker."""
+        try:
+            for o in self._api.get_orders():
+                if (o.symbol == ticker.upper()
+                        and str(o.order_type) == "stop"
+                        and str(o.status) in ("new", "accepted")):
+                    self._api.cancel_order_by_id(str(o.id))
+        except Exception as exc:
+            log.warning("cancel_stop_order failed for %s: %s", ticker, exc)
+
+    def get_stop_orders(self) -> dict[str, tuple[float, float]]:
+        """Return {ticker: (stop_price, qty)} for open stop orders."""
+        result: dict[str, tuple[float, float]] = {}
+        try:
+            for o in self._api.get_orders():
+                if str(o.order_type) == "stop" and str(o.status) in ("new", "accepted"):
+                    result[o.symbol] = (float(o.stop_price or 0), float(o.qty))
+        except Exception as exc:
+            log.warning("get_stop_orders failed: %s", exc)
+        return result

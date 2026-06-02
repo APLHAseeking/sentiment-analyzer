@@ -139,13 +139,17 @@ def _fetch_committees_from_yaml(name: str) -> tuple[str, ...]:
     committees = committee_map.get(key, [])
     if committees:
         return tuple(committees)
-    # Fallback: partial name match (last name, first name prefix)
+    # Fallback: strict full first + last name match
+    name_lower = name.strip().lower()
+    name_parts = name_lower.split()
     for map_name, map_committees in committee_map.items():
-        parts = name.strip().lower().split()
-        if parts and parts[-1] in map_name:
-            # Check first name initial matches too if multiple parts
-            if len(parts) > 1 and map_name.startswith(parts[0][:1].lower()):
-                return tuple(map_committees)
+        if map_name.lower() == name_lower:
+            return tuple(map_committees)
+        map_parts = map_name.lower().split()
+        if (len(name_parts) >= 2 and len(map_parts) >= 2
+                and name_parts[-1] == map_parts[-1]
+                and name_parts[0] == map_parts[0]):
+            return tuple(map_committees)
     return ()
 
 
