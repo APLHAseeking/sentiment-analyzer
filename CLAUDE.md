@@ -8,3 +8,10 @@ Project root for Thomas Vromen's finance thesis tooling. Two active sub-projects
 Miscellaneous analysis scripts (headline filter, STOXX600 extraction) live at the root.
 
 Global preferences (communication style, git workflow) are in `~/.claude/CLAUDE.md`.
+
+## Worktrees
+
+Two active git worktrees under `.worktrees/`:
+
+- `.worktrees/trading-bot-fixes/` — branch `trading-bot-fixes`
+- `.worktrees/congressional-bot/` — branch `feature/congressional-bot`
