@@ -1,12 +1,10 @@
 # CLAUDE.md
 
-> **⚠️ ACTIVE IMPLEMENTATION PLAN — READ FIRST**
-> A reviewed, phased implementation plan lives at `../TRADING_BOT_REVIEW_PLAN.md`
-> (i.e. `Claude code test/TRADING_BOT_REVIEW_PLAN.md`, one level up from this repo).
-> It is the source of truth for current work: risk-adjusted metrics & factor attribution,
-> a point-in-time/survivorship-free backtest, deterministic (non-LLM) position sizing,
-> realistic backtest costs, broker stop orders, and dead-feed alerts. Start there before
-> making changes. **Phase 0 has a hard gate** — measure factor-adjusted alpha before adding complexity.
+> **⚠️ IMPLEMENTATION PLAN & PHASE STATUS — READ FIRST**
+> Full plan: `../TRADING_BOT_REVIEW_PLAN.md`. Phase 0 gate: **BLOCKED ON DATA** — real point-in-time
+> data not yet acquired; all historical performance numbers are look-ahead biased until then.
+> See `docs/PHASE0_FINDINGS.md` for gate decision rules and required datasets.
+> Phases 1–3 are fully implemented; paper trading is operational.
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -69,6 +67,20 @@ Secrets come from environment / `.env` (see `.env.example`): `ANTHROPIC_API_KEY`
 
 **Monitoring (`monitoring/`):** structured JSON logging with an `EventType` enum (`emit_event`) and pluggable alert senders (`fire_alert`, webhook/log).
 
+**Feature engineering (`features/feature_pipeline.py`):** `FeatureConfig` dataclass + causal feature computation (vol, trend, momentum, drawdown, VIX) consumed by the regime engine. All features strictly forward-only — no look-ahead.
+
+**Market data (`market_data/market_feed.py`):** fetches daily SPY/VIX bars via yfinance for the regime engine. Separate from individual-stock data in `bot/researcher.py`.
+
+**Performance tracking (`performance/tracker.py`):** `PerformanceTracker` reads live `trading.db` and computes the same metrics as `backtesting.metrics.compute_all` — enabling direct live vs backtest comparison.
+
+## Key documents (`docs/`)
+
+- `PHASE0_FINDINGS.md` — Phase 0 gate status (BLOCKED ON DATA); required datasets and pass/fail rules
+- `DATA_SOURCES.md` — all external data sources, current status, and fallback behaviour
+- `PIT_DATA_REQUIREMENTS.md` — schemas for point-in-time data needed to unblock Phase 0
+- `CONGRESSIONAL_EDGE.md` — congressional trading edge analysis
+- `HEDGE_ANALYSIS.md` — inverse-ETF hedge analysis
+
 ## Scheduler (Amsterdam time, NYSE-session guarded)
 
 Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread executor** so the pipeline and exit review never touch the DB/portfolio concurrently.
@@ -94,8 +106,8 @@ pytest tests/test_simulation.py -q    # example: a single module
 
 ## Known data-source caveats (important)
 
-- **Capitol Trades is a JavaScript SPA.** The static-HTML scraper in `bot/scraper.py` likely returns **0 rows** in production — the congressional feed can be silently empty. `run_1year_backtest.py` therefore reads a cached JSON snapshot (`capitol_trades_merged.json`, Oct 2025→May 2026 only).
-- **The ProPublica Congress API used by `bot/committee.py` is discontinued.** Committee lookups may fail and fall back to a stale `propublica_committee_cache` shelve.
+- **Capitol Trades is a JavaScript SPA.** `bot/scraper.py` tries the JSON API endpoint first (`_fetch_page_json`); HTML scraper is the fallback. If both fail, a `DEAD_FEED` alert fires and the congressional pipeline receives zero inputs for that run. `run_1year_backtest.py` reads a cached JSON snapshot (`capitol_trades_merged.json`, Oct 2025→May 2026 only). See `docs/DATA_SOURCES.md`.
+- **ProPublica Congress API is discontinued.** `bot/committee.py` now uses the `unitedstates/congress-legislators` GitHub YAML files (no API key). A 30-day shelve disk cache insulates against transient GitHub outages.
 - **`bot/universe.py` uses the *current* S&P 500 + Russell 1000.** Backtests over this set are survivorship-biased; the factor screener reads *current* `yfinance .info` fundamentals (look-ahead) and so is **not** historically reconstructable from yfinance. See `../TRADING_BOT_REVIEW_PLAN.md` Phase 0.
 - **`yfinance` is a single point of failure** (prices, fundamentals, regime data); many call sites fall back to `0.0`/skip silently. Treat missing data as a first-class failure when you touch these paths.
 
