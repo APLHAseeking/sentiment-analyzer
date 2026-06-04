@@ -14,6 +14,8 @@ result above max_position_pct.
 """
 from __future__ import annotations
 
+import numpy as np
+
 
 def vol_target_size_pct(
     atr_pct: float,
@@ -87,3 +89,33 @@ def apply_conviction_tilt(
     tilt = base_pct * tilt_band * normalised
     tilted = base_pct + tilt
     return float(min(max(tilted, 0.0), max_position_pct))
+
+
+def atr_pct_from_ohlc(
+    high,
+    low,
+    close,
+    window: int = 14,
+    fallback: float = 1.0,
+) -> float:
+    """Average True Range as a percentage of the latest close.
+
+    Parameters
+    ----------
+    high, low, close : array-likes of equal length (oldest → newest).
+    window : ATR lookback in bars.
+    fallback : returned when there is insufficient history or a non-positive
+        last price (keeps sizing conservative rather than crashing).
+    """
+    high = np.asarray(high, dtype=float)
+    low = np.asarray(low, dtype=float)
+    close = np.asarray(close, dtype=float)
+    if len(close) < window + 1:
+        return fallback
+    tr = np.maximum(
+        high[1:] - low[1:],
+        np.maximum(np.abs(high[1:] - close[:-1]), np.abs(low[1:] - close[:-1])),
+    )
+    atr = float(tr[-window:].mean())
+    last = close[-1]
+    return atr / last * 100.0 if last > 0 else fallback

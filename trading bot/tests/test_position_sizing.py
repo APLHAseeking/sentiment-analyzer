@@ -95,3 +95,29 @@ class TestApplyConvictionTilt:
         up = apply_conviction_tilt(base, 10, 8.0, tilt_band=0.20)
         down = apply_conviction_tilt(base, 5, 8.0, tilt_band=0.20)
         assert abs((up - base) + (down - base)) < 1e-9
+
+
+import numpy as np
+from risk.position_sizing import atr_pct_from_ohlc
+
+
+class TestAtrPctFromOhlc:
+    def test_constant_range_gives_expected_atr_pct(self):
+        # Each bar has a true range of 2.0 around a ~100 close → ATR=2, atr_pct≈2%
+        n = 20
+        close = np.full(n, 100.0)
+        high = close + 1.0
+        low = close - 1.0
+        result = atr_pct_from_ohlc(high, low, close, window=14)
+        assert result == pytest.approx(2.0, abs=0.1)
+
+    def test_insufficient_history_returns_fallback(self):
+        close = np.array([100.0, 101.0, 102.0])  # < window+1
+        assert atr_pct_from_ohlc(close + 1, close - 1, close, window=14) == pytest.approx(1.0)
+
+    def test_zero_last_price_returns_fallback(self):
+        n = 20
+        close = np.concatenate([np.full(n - 1, 100.0), [0.0]])
+        high = close + 1.0
+        low = close - 1.0
+        assert atr_pct_from_ohlc(high, low, close, window=14, fallback=1.0) == pytest.approx(1.0)
