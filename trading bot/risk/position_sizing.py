@@ -22,34 +22,37 @@ def vol_target_size_pct(
 ) -> float:
     """Return position size as % of NAV using volatility targeting.
 
+    Both ``atr_pct`` and ``per_trade_risk_pct`` are percentages. Risking
+    ``per_trade_risk_pct`` of NAV with a stop ≈ 1 ATR away implies a position of
+    ``per_trade_risk_pct / atr_pct`` of NAV — a *fraction*, so we multiply by 100
+    to return a percentage. Smaller size for more volatile names.
+
     Parameters
     ----------
     atr_pct:
-        14-bar Average True Range expressed as a percentage of entry price
-        (e.g. 2.0 means the ATR is 2% of price). Must be positive; if
-        zero or negative, falls back to 1.0 to avoid division-by-zero.
+        14-bar ATR as a percentage of price (e.g. 2.0 means 2%). Must be
+        positive; zero/negative falls back to 1.0 to avoid division by zero.
     per_trade_risk_pct:
-        Maximum % of NAV we are willing to risk on this trade (e.g. 0.5).
+        % of NAV risked per trade (e.g. 0.15).
     max_position_pct:
         Hard ceiling on position size as % of NAV (e.g. 8.0).
 
     Returns
     -------
-    float
-        Position size in [0, max_position_pct].
+    float : position size in [0, max_position_pct].
 
     Examples
     --------
-    >>> vol_target_size_pct(2.0, 0.5, 8.0)   # 0.5/2.0 = 0.25  → 0.25%
-    0.25
-    >>> vol_target_size_pct(0.1, 0.5, 8.0)   # 0.5/0.1 = 5.0   → 5.0%
-    5.0
-    >>> vol_target_size_pct(0.05, 0.5, 8.0)  # 0.5/0.05 = 10.0 → capped at 8.0%
+    >>> vol_target_size_pct(2.0, 0.15, 8.0)   # 0.15/2.0*100 = 7.5%
+    7.5
+    >>> vol_target_size_pct(1.0, 0.15, 8.0)   # 0.15/1.0*100 = 15% → capped
     8.0
+    >>> vol_target_size_pct(20.0, 0.15, 8.0)  # 0.15/20.0*100 = 0.75%
+    0.75
     """
     if atr_pct <= 0:
-        atr_pct = 1.0  # safe fallback — 1% ATR means full per_trade_risk_pct
-    raw = per_trade_risk_pct / atr_pct
+        atr_pct = 1.0  # safe fallback
+    raw = per_trade_risk_pct / atr_pct * 100.0
     return float(min(max(raw, 0.0), max_position_pct))
 
 

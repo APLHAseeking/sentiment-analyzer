@@ -4,58 +4,52 @@ from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt
 
 
 class TestVolTargetSizePct:
-    """vol_target_size_pct(atr_pct, per_trade_risk_pct, max_position_pct)."""
+    """vol_target_size_pct(atr_pct, per_trade_risk_pct, max_position_pct).
 
-    def test_normal_calculation(self):
-        # 0.5 / 2.0 = 0.25%
-        assert vol_target_size_pct(2.0, 0.5, 8.0) == pytest.approx(0.25)
+    Position % of NAV = per_trade_risk_pct / atr_pct * 100, clamped to max.
+    Both inputs are percentages (e.g. atr_pct=2.0 means 2%).
+    """
+
+    def test_two_pct_atr_is_a_real_position_not_microscopic(self):
+        # Regression for the units bug: 0.15 / 2.0 * 100 = 7.5% (NOT 0.075%)
+        assert vol_target_size_pct(2.0, 0.15, 8.0) == pytest.approx(7.5)
+
+    def test_three_pct_atr_below_ceiling(self):
+        # 0.15 / 3.0 * 100 = 5.0%
+        assert vol_target_size_pct(3.0, 0.15, 8.0) == pytest.approx(5.0)
 
     def test_higher_atr_gives_smaller_size(self):
-        """More volatile name → smaller position."""
-        low_vol = vol_target_size_pct(1.0, 0.5, 8.0)   # 0.5 / 1.0 = 0.5%
-        high_vol = vol_target_size_pct(2.0, 0.5, 8.0)  # 0.5 / 2.0 = 0.25%
+        low_vol = vol_target_size_pct(3.0, 0.15, 8.0)   # 5.0%
+        high_vol = vol_target_size_pct(6.0, 0.15, 8.0)  # 2.5%
         assert low_vol > high_vol
 
-    def test_respects_max_ceiling(self):
-        """Low ATR should not exceed max_position_pct."""
-        # 0.5 / 0.05 = 10.0, capped at 8.0
-        result = vol_target_size_pct(0.05, 0.5, 8.0)
-        assert result == pytest.approx(8.0)
+    def test_low_vol_name_caps_at_ceiling(self):
+        # 0.15 / 1.0 * 100 = 15% → capped at 8.0
+        assert vol_target_size_pct(1.0, 0.15, 8.0) == pytest.approx(8.0)
 
-    def test_ceiling_at_exact_boundary(self):
-        # 0.5 / 0.0625 = 8.0 exactly
-        result = vol_target_size_pct(0.0625, 0.5, 8.0)
-        assert result == pytest.approx(8.0)
+    def test_respects_custom_ceiling(self):
+        # 0.15 / 1.0 * 100 = 15% → capped at 5.0
+        assert vol_target_size_pct(1.0, 0.15, 5.0) == pytest.approx(5.0)
 
-    def test_normal_case_below_ceiling(self):
-        # 0.5 / 0.1 = 5.0 — well under 8%
-        result = vol_target_size_pct(0.1, 0.5, 8.0)
-        assert result == pytest.approx(5.0)
-
-    def test_zero_atr_uses_fallback(self):
-        """Zero ATR should not raise ZeroDivisionError; uses 1.0 fallback."""
-        result = vol_target_size_pct(0.0, 0.5, 8.0)
-        assert result == pytest.approx(0.5)  # 0.5 / 1.0 = 0.5
+    def test_zero_atr_uses_fallback_not_crash(self):
+        # atr<=0 → fallback 1.0 → 0.05 / 1.0 * 100 = 5.0% (no ZeroDivisionError)
+        assert vol_target_size_pct(0.0, 0.05, 8.0) == pytest.approx(5.0)
 
     def test_negative_atr_uses_fallback(self):
-        result = vol_target_size_pct(-1.0, 0.5, 8.0)
-        assert result == pytest.approx(0.5)
+        assert vol_target_size_pct(-1.0, 0.05, 8.0) == pytest.approx(5.0)
 
     def test_result_is_always_non_negative(self):
         for atr in [0.01, 0.5, 1.0, 5.0, 10.0]:
-            assert vol_target_size_pct(atr, 0.5, 8.0) >= 0.0
+            assert vol_target_size_pct(atr, 0.15, 8.0) >= 0.0
 
-    def test_different_per_trade_risk(self):
-        # 1.0 / 2.0 = 0.5%
-        assert vol_target_size_pct(2.0, 1.0, 8.0) == pytest.approx(0.5)
+    def test_higher_risk_budget_gives_bigger_size(self):
+        # 0.30 / 6.0 * 100 = 5.0% vs 0.15 / 6.0 * 100 = 2.5%
+        assert vol_target_size_pct(6.0, 0.30, 8.0) == pytest.approx(5.0)
+        assert vol_target_size_pct(6.0, 0.15, 8.0) == pytest.approx(2.5)
 
-    def test_different_ceiling(self):
-        # 0.5 / 0.01 = 50% but ceiling is 5%
-        assert vol_target_size_pct(0.01, 0.5, 5.0) == pytest.approx(5.0)
-
-    def test_very_high_atr_gives_tiny_size(self):
-        # 0.5 / 10.0 = 0.05%
-        assert vol_target_size_pct(10.0, 0.5, 8.0) == pytest.approx(0.05)
+    def test_very_high_atr_gives_small_but_nonzero_size(self):
+        # 0.15 / 20.0 * 100 = 0.75%
+        assert vol_target_size_pct(20.0, 0.15, 8.0) == pytest.approx(0.75)
 
 
 class TestApplyConvictionTilt:

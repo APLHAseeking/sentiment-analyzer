@@ -178,7 +178,10 @@ class SizingConfig:
     where atr_pct is the 14-bar ATR expressed as % of entry price.
     """
     target_portfolio_vol_pct: float = 15.0   # target annualised portfolio vol (informational)
-    per_trade_risk_pct: float = 0.5          # risk budget per trade as % of NAV
+    # Risk budget per trade as % of NAV. With the corrected vol-target formula a
+    # 2%-ATR name → 7.5%, a 3%-ATR name → 5%, low-vol names cap at max_position_pct.
+    # Tune this to your target gross exposure; keep it ≤ max_position_pct (validated).
+    per_trade_risk_pct: float = 0.15
     atr_window: int = 14                     # ATR lookback in bars
 
 
