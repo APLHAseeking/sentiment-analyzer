@@ -119,3 +119,18 @@ def atr_pct_from_ohlc(
     atr = float(tr[-window:].mean())
     last = close[-1]
     return atr / last * 100.0 if last > 0 else fallback
+
+
+def vol_pct_from_close(close, window: int = 14, fallback: float = 1.0) -> float:
+    """Close-only volatility proxy: mean absolute daily return (%) over ``window``.
+
+    Stand-in for ATR% where intraday OHLC is unavailable (backtests). ATR% and
+    mean-abs daily return are comparable in magnitude, so the same
+    vol_target_size_pct() can be used for both live and backtest sizing.
+    """
+    close = np.asarray(close, dtype=float)
+    if len(close) < window + 1:
+        return fallback
+    tail = close[-(window + 1):]
+    rets = np.abs(np.diff(tail) / tail[:-1])
+    return float(rets.mean() * 100.0)

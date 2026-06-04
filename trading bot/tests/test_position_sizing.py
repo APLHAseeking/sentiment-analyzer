@@ -121,3 +121,23 @@ class TestAtrPctFromOhlc:
         high = close + 1.0
         low = close - 1.0
         assert atr_pct_from_ohlc(high, low, close, window=14, fallback=1.0) == pytest.approx(1.0)
+
+
+from risk.position_sizing import vol_pct_from_close
+
+
+class TestVolPctFromClose:
+    def test_flat_prices_have_zero_vol(self):
+        close = np.full(30, 100.0)
+        assert vol_pct_from_close(close, window=14) == pytest.approx(0.0)
+
+    def test_one_pct_daily_moves_give_one_pct_vol(self):
+        # Alternating +1% / -1% closes → mean abs daily return ≈ 1%
+        close = [100.0]
+        for i in range(30):
+            close.append(close[-1] * (1.01 if i % 2 == 0 else 1 / 1.01))
+        result = vol_pct_from_close(np.array(close), window=14)
+        assert result == pytest.approx(1.0, abs=0.1)
+
+    def test_insufficient_history_returns_fallback(self):
+        assert vol_pct_from_close(np.array([100.0, 101.0]), window=14) == pytest.approx(1.0)
