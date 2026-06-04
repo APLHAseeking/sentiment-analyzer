@@ -477,3 +477,30 @@ def test_bic_param_count_values():
     assert correct == 32
     assert wrong == 33
     assert correct != wrong
+
+
+from sklearn.preprocessing import StandardScaler
+from regime.hmm_engine import _pad_features_to_scaler
+
+
+def test_pad_features_uses_training_mean_so_missing_scales_to_zero():
+    # Train a scaler on 4 features with distinct means
+    scaler = StandardScaler().fit(np.array([
+        [1.0, 2.0, 10.0, 20.0],
+        [3.0, 4.0, 30.0, 40.0],
+    ]))
+    # Caller only has the first 2 features available this bar
+    row = np.array([[2.0, 3.0]])
+    padded = _pad_features_to_scaler(row, scaler)
+    assert padded.shape == (1, 4)
+    scaled = scaler.transform(padded)[0]
+    # The two padded features were set to their training mean → scale to ~0
+    assert scaled[2] == pytest.approx(0.0, abs=1e-9)
+    assert scaled[3] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_pad_features_truncates_when_too_many_columns():
+    scaler = StandardScaler().fit(np.array([[1.0, 2.0], [3.0, 4.0]]))
+    row = np.array([[2.0, 3.0, 99.0]])  # one extra column
+    padded = _pad_features_to_scaler(row, scaler)
+    assert padded.shape == (1, 2)

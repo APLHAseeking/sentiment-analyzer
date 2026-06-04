@@ -548,3 +548,96 @@ def test_reconcile_no_flatten_emits_critical_alert(mock_broker, db, mocker):
     mock_broker.place_order.assert_not_called()
     # But an alert must have been fired
     mock_fire_alert.assert_called_once()
+
+
+def test_close_position_rejected_sell_does_not_log_or_delete(mock_broker, db, mocker):
+    """A rejected sell must leave the DB position intact and book no closed_position."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    rejected = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    portfolio.close_position(
+        "AAPL", 10.0, exit_price=110.0, exit_reason="ai_exit",
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    # Position still in DB, nothing booked as closed
+    assert any(p["ticker"] == "AAPL" for p in db.get_open_positions())
+    assert db.get_closed_positions() == []
+
+
+def test_reduce_position_rejected_sell_does_not_change_shares(mock_broker, db):
+    """A rejected partial sell must not change DB shares or book a trade."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    rejected = Order(ticker="AAPL", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    portfolio.reduce_position(
+        "AAPL", 10.0, exit_price=110.0,
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    pos = [p for p in db.get_open_positions() if p["ticker"] == "AAPL"][0]
+    assert pos["shares"] == pytest.approx(10.0)  # unchanged
+    assert db.get_closed_positions() == []
+
+
+def test_trailing_up_cancels_old_stop_before_placing_new(mock_broker, db):
+    """On a trail-up the old resting stop must be cancelled before the new one is placed."""
+    from system.config import RiskConfig
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    mock_broker.get_stop_orders.return_value = {}  # no existing stop → will place
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    mock_broker.cancel_stop_order.assert_called_once_with("AAPL")
+    mock_broker.place_stop_order.assert_called_once()
+
+
+def test_close_position_cancels_resting_stop(mock_broker, db):
+    """Closing a position must cancel its resting stop so it can't fire later."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    filled = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    filled.status = OrderStatus.FILLED
+    filled.filled_qty = 10.0
+    mock_broker.place_order.return_value = filled
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    portfolio.close_position(
+        "AAPL", 10.0, exit_price=110.0, exit_reason="ai_exit",
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    mock_broker.cancel_stop_order.assert_called_once_with("AAPL")
+
+
+def test_hedge_stop_pass_does_not_retrail_long_positions(mock_broker, db):
+    """enforce_stop_losses(source_include='hedge') must not touch a long position's stop."""
+    from system.config import RiskConfig
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    mock_broker.get_stop_orders.return_value = {}
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    # AAPL is a long (congressional) position
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test", "congressional")
+
+    portfolio.enforce_stop_losses(stop_loss_pct=10.0, source_include="hedge")
+
+    mock_broker.place_stop_order.assert_not_called()
+    mock_broker.cancel_stop_order.assert_not_called()

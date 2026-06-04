@@ -431,3 +431,17 @@ def test_flat_slippage_model_unchanged_behavior():
     assert sim_no_adv.trades[0].entry_price == pytest.approx(
         sim_with_adv.trades[0].entry_price
     ), "Flat model must not be affected by presence of adv_usd"
+
+
+def test_fill_delay_one_enters_on_next_bar():
+    """With fill_delay_bars=1 a signal dated day 0 must fill at day 1's price."""
+    idx = pd.to_datetime(["2026-01-02", "2026-01-05", "2026-01-06"])
+    prices = {"AAA": pd.Series([100.0, 110.0, 120.0], index=idx)}
+    signals = [{"date": "2026-01-02", "ticker": "AAA", "conviction": 7, "position_pct": 10.0}]
+
+    sim = simulate_portfolio(
+        signals=signals, price_data=prices, initial_cash=100_000.0,
+        slippage_bps=0.0, commission_pct=0.0, fill_delay_bars=1,
+    )
+    # Entry should be at the 2026-01-05 price (110), not 2026-01-02 (100)
+    assert sim.trades[0].entry_price == pytest.approx(110.0)

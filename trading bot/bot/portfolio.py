@@ -89,10 +89,15 @@ class Portfolio:
                        entry_date: str, signal_source: str = "congressional") -> None:
         order = self._place_sell_with_retry(ticker, shares)
         if order.status == OrderStatus.REJECTED:
-            log.error(
-                "Sell order failed for %s after retries: %s — manual close may be required",
-                ticker, order.reject_reason,
+            emit_event(
+                log, EventType.ORDER_REJECTED,
+                f"Sell for {ticker} REJECTED after retries ({order.reject_reason}) — "
+                "position left intact for next reconcile/poll",
+                data={"ticker": ticker, "reason": order.reject_reason},
+                level=logging.ERROR,
+                alert=True,
             )
+            return
         exit_commission = order.filled_qty * self.broker.get_commission_per_share()
         entry_commission = 0.0
         for pos in db.get_open_positions():
@@ -113,6 +118,8 @@ class Portfolio:
             entry_commission=entry_commission,
         )
         db.delete_position(ticker)
+        if hasattr(self.broker, "cancel_stop_order"):
+            self.broker.cancel_stop_order(ticker)
 
     def _place_sell_with_retry(self, ticker: str, qty: float, max_retries: int = 3):
         import time
@@ -134,10 +141,15 @@ class Portfolio:
         sell_qty = shares / 2
         order = self._place_sell_with_retry(ticker, sell_qty)
         if order.status == OrderStatus.REJECTED:
-            log.error(
-                "Reduce sell failed for %s after retries: %s — manual close may be required",
-                ticker, order.reject_reason,
+            emit_event(
+                log, EventType.ORDER_REJECTED,
+                f"Reduce sell for {ticker} REJECTED after retries ({order.reject_reason}) — "
+                "shares left unchanged",
+                data={"ticker": ticker, "reason": order.reject_reason},
+                level=logging.ERROR,
+                alert=True,
             )
+            return
         exit_commission = order.filled_qty * self.broker.get_commission_per_share()
         entry_commission = 0.0
         for pos in db.get_open_positions():
@@ -159,6 +171,10 @@ class Portfolio:
             entry_commission=entry_commission,
         )
         db.update_position_shares(ticker, shares - sell_qty)
+        # Cancel the stale full-qty stop; the next enforce_stop_losses poll re-places
+        # a fresh trailing stop for the reduced share count.
+        if hasattr(self.broker, "cancel_stop_order"):
+            self.broker.cancel_stop_order(ticker)
 
     def reconcile_with_broker(self) -> dict:
         """Compare broker positions vs SQLite. Log and resolve discrepancies.
@@ -169,10 +185,10 @@ class Portfolio:
         **Untracked position handling** (controlled by ``RiskConfig.auto_flatten_untracked``):
 
         * ``auto_flatten_untracked=False`` (default, safe): emit a CRITICAL alert for every
-          untracked broker position and add it to a stop-loss watchlist by inserting a
-          synthetic DB record.  A human must review before the next pipeline run.
-          Trade-off: the position is visible to stop-loss enforcement but the entry price /
-          sizing metadata are unknown, so stops are set off the current price.
+          untracked broker position so a human can review before the next pipeline run. The
+          position is **not** added to the DB and therefore is **not** covered by
+          ``enforce_stop_losses`` until reconciled manually. Trade-off: no automatic exposure
+          change, but no automatic stop coverage either.
 
         * ``auto_flatten_untracked=True`` (aggressive): immediately issue a market sell order
           for each untracked position and emit an alert.  This eliminates exposure quickly but
@@ -245,13 +261,22 @@ class Portfolio:
 
         for pos in self.broker.get_positions():
             ticker = pos["ticker"]
-            current = pos["current_price"]
             meta = open_positions.get(ticker, {})
+            source = meta.get("signal_source", "congressional")
+
+            # Scope filter FIRST: a hedge-only call must not touch long stops (and
+            # vice versa), so each position's resting stop uses its own call's pct.
+            if source_include is not None and source != source_include:
+                continue
+            if source_exclude is not None and source == source_exclude:
+                continue
+
+            current = pos["current_price"]
             peak = meta.get("peak_price") or pos["avg_entry_price"]
             db.update_position_peak(ticker, current)
 
-            # Trail the resting stop upward if the price has risen above the last stop level.
-            # Only move the stop up, never down (trailing semantics).
+            # Trail the resting stop upward (only-up). Cancel the old stop before
+            # placing the new one so brokers (Alpaca) don't accumulate duplicates.
             new_stop = current * (1 - pct / 100)
             existing_stop = 0.0
             try:
@@ -262,14 +287,10 @@ class Portfolio:
             except Exception:
                 pass
             if new_stop > existing_stop:
+                if hasattr(self.broker, "cancel_stop_order"):
+                    self.broker.cancel_stop_order(ticker)
                 self.broker.place_stop_order(ticker=ticker, qty=pos["qty"], stop_price=new_stop)
 
-            source = meta.get("signal_source", "congressional")
-
-            if source_include is not None and source != source_include:
-                continue
-            if source_exclude is not None and source == source_exclude:
-                continue
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:
                 self.close_position(

@@ -86,3 +86,25 @@ def test_exposure_by_regime_sums_to_one():
 def test_exposure_by_regime_empty_returns_empty():
     from backtesting.analysis import exposure_by_regime
     assert exposure_by_regime([]) == {}
+
+
+import numpy as np
+import pandas as pd
+from backtesting.simulation import simulate_portfolio
+from risk.position_sizing import vol_pct_from_close, vol_target_size_pct
+
+
+def test_backtest_sizes_smaller_for_higher_vol():
+    """A high-vol name should receive a smaller position_pct than a low-vol name
+    under the shared vol-target sizing used by the backtest runners."""
+    low_vol_close = np.full(30, 100.0)
+    low_vol_close = low_vol_close + np.linspace(0, 0.3, 30)  # ~flat
+    high_vol_close = [100.0]
+    for i in range(29):
+        high_vol_close.append(high_vol_close[-1] * (1.05 if i % 2 == 0 else 1 / 1.05))
+
+    low_size = vol_target_size_pct(vol_pct_from_close(low_vol_close), 0.15, 8.0)
+    high_size = vol_target_size_pct(vol_pct_from_close(np.array(high_vol_close)), 0.15, 8.0)
+
+    assert low_size > high_size
+    assert high_size > 0.0

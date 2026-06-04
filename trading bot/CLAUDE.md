@@ -113,9 +113,9 @@ pytest tests/test_simulation.py -q    # example: a single module
 
 ## Gotchas
 
-- **NAV vs cash sizing:** live `Portfolio.open_position` sizes off NAV, but `backtesting/simulation.py` currently sizes off *remaining cash* — they disagree (a Phase 1 fix in the plan).
-- **Stops are soft/polled**, not resting broker orders — overnight and between-check gaps are unprotected (Phase 2 fix).
-- **Position size is currently driven by the LLM's `conviction`/`position_pct`** — non-deterministic and unvalidated (Phase 1 replaces this with volatility targeting).
+- **NAV-based sizing everywhere:** live `Portfolio.open_position`, `backtesting/simulation.py`, the walk-forward and PIT runners all size off NAV via `risk.position_sizing.vol_target_size_pct` (deterministic ATR/vol targeting). Position size is **not** LLM-driven; the LLM only gates buy/skip + a bounded conviction tilt. `per_trade_risk_pct` (in `SizingConfig`) is the gross-exposure knob.
+- **Stops are resting broker orders (Alpaca) plus a polled backstop.** `enforce_stop_losses` trails the resting stop up (cancel-before-replace) and only touches positions in its source scope. Resting stops are cancelled on close/reduce. `SimulatedBroker` only enforces stops via the poll.
+- **Rejected sells are no-ops at the DB layer:** `close_position`/`reduce_position` book nothing and mutate nothing on a REJECTED order — they alert and leave the position for the next reconcile/poll.
 - The regime lock file (`RISK_LOCKOUT`) is **not** auto-cleared; trading stays halted until a human deletes it.
 - Dates are ISO `YYYY-MM-DD` strings throughout; regime/DB joins assume this.
 

@@ -55,7 +55,7 @@ from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
 from risk.risk_manager import RiskManager, RiskState
-from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt
+from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt, atr_pct_from_ohlc
 from screener.factor_scorer import run_factor_screen, prefetch_screener_data, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
 from dashboard.data_store import DashboardStore
@@ -579,18 +579,10 @@ class RegimeAwareOrchestrator:
         # ATR-based deterministic position sizing
         try:
             hist = _t.history(period="30d")
-            if len(hist) >= self._cfg.sizing.atr_window:
-                hi = hist["High"].values
-                lo = hist["Low"].values
-                cl = hist["Close"].values
-                tr = np.maximum(
-                    hi[1:] - lo[1:],
-                    np.maximum(abs(hi[1:] - cl[:-1]), abs(lo[1:] - cl[:-1])),
-                )
-                atr = float(tr[-self._cfg.sizing.atr_window:].mean())
-                atr_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
-            else:
-                atr_pct = 1.0  # fallback: 1% ATR → full per_trade_risk_pct used
+            atr_pct = atr_pct_from_ohlc(
+                hist["High"].values, hist["Low"].values, hist["Close"].values,
+                window=self._cfg.sizing.atr_window,
+            )
         except Exception:
             atr_pct = 1.0
 
@@ -635,15 +627,16 @@ class RegimeAwareOrchestrator:
         final_pct *= self._port_vol_mult
 
         _positions_now = self._broker.get_positions()
-        _nav = self._broker.get_cash() + sum(
-            p["qty"] * p["current_price"] for p in _positions_now
-        )
+        _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
+        _nav = self._broker.get_cash() + _invested_usd
+        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
         position_size_usd = _nav * final_pct / 100
         adv_usd = research.avg_daily_volume_usd if research else None
         veto = self._risk.validate_order(
             ticker=ticker, position_pct=final_pct, sector=sector,
             sector_allocation=sector_allocation,
             position_size_usd=position_size_usd, adv_usd=adv_usd,
+            current_invested_pct=_current_invested_pct,
         )
 
         if not veto.allowed:
@@ -726,18 +719,10 @@ class RegimeAwareOrchestrator:
         # ATR-based deterministic position sizing
         try:
             hist = _t.history(period="30d")
-            if len(hist) >= self._cfg.sizing.atr_window:
-                hi = hist["High"].values
-                lo = hist["Low"].values
-                cl = hist["Close"].values
-                tr = np.maximum(
-                    hi[1:] - lo[1:],
-                    np.maximum(abs(hi[1:] - cl[:-1]), abs(lo[1:] - cl[:-1])),
-                )
-                atr = float(tr[-self._cfg.sizing.atr_window:].mean())
-                atr_pct = atr / entry_price * 100 if entry_price > 0 else 1.0
-            else:
-                atr_pct = 1.0  # fallback: 1% ATR → full per_trade_risk_pct used
+            atr_pct = atr_pct_from_ohlc(
+                hist["High"].values, hist["Low"].values, hist["Close"].values,
+                window=self._cfg.sizing.atr_window,
+            )
         except Exception:
             atr_pct = 1.0
 
@@ -783,9 +768,9 @@ class RegimeAwareOrchestrator:
         final_pct *= self._port_vol_mult
 
         _positions_now = self._broker.get_positions()
-        _nav = self._broker.get_cash() + sum(
-            p["qty"] * p["current_price"] for p in _positions_now
-        )
+        _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
+        _nav = self._broker.get_cash() + _invested_usd
+        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
         position_size_usd = _nav * final_pct / 100
         adv_usd = candidate.research.avg_daily_volume_usd if candidate.research else None
         veto = self._risk.validate_order(
@@ -795,6 +780,7 @@ class RegimeAwareOrchestrator:
             sector_allocation=sector_allocation,
             position_size_usd=position_size_usd,
             adv_usd=adv_usd,
+            current_invested_pct=_current_invested_pct,
         )
 
         if not veto.allowed:

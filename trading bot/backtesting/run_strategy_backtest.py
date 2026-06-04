@@ -37,6 +37,8 @@ from backtesting.pit_data import PITDataProvider
 from backtesting.metrics import compute_all
 from backtesting.simulation import equity_series, simulate_portfolio, trade_returns
 from screener.factor_scorer import _build_factor_df, _compute_composite
+from risk.position_sizing import vol_pct_from_close, vol_target_size_pct
+from system.config import settings as _settings
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +80,8 @@ def run_pit_backtest(
     commission_pct: float = 0.05,
     factor_csv_path: str | None = None,
     spy_prices: pd.Series | None = None,
+    per_trade_risk_pct: float | None = None,
+    max_position_pct: float | None = None,
 ) -> dict:
     """Run a full PIT backtest across the given rebalance dates.
 
@@ -103,6 +107,8 @@ def run_pit_backtest(
         n_signals   : total signals
         windows     : per-rebalance-date details
     """
+    risk_budget = per_trade_risk_pct if per_trade_risk_pct is not None else _settings.sizing.per_trade_risk_pct
+    pos_ceiling = max_position_pct if max_position_pct is not None else _settings.risk.max_position_pct
     all_signals: list[dict] = []
     all_prices: dict[str, pd.Series] = {}
     windows: list[dict] = []
@@ -145,11 +151,17 @@ def run_pit_backtest(
 
         window_tickers = top.index.tolist()
         for ticker in window_tickers:
+            # Vol-target sizing from the trailing close window (matches live)
+            vol_window = provider.prices(
+                ticker, rebal_date - timedelta(days=40), rebal_date
+            )
+            atr_pct = vol_pct_from_close(vol_window.values, window=14) if not vol_window.empty else 1.0
+            size_pct = vol_target_size_pct(atr_pct, risk_budget, pos_ceiling)
             all_signals.append({
                 "date": rebal_str,
                 "ticker": ticker,
                 "conviction": int(top.loc[ticker, "composite_score"]),
-                "position_pct": position_pct,
+                "position_pct": size_pct,
             })
             # Collect prices for the holding period
             if ticker not in all_prices:
@@ -187,6 +199,7 @@ def run_pit_backtest(
         initial_cash=initial_cash,
         slippage_bps=slippage_bps,
         commission_pct=commission_pct,
+        fill_delay_bars=1,
     )
     eq = equity_series(sim)
     tr = trade_returns(sim)

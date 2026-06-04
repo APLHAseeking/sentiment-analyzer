@@ -31,6 +31,7 @@ from backtesting.simulation import (
     equity_series, simulate_portfolio, trade_returns
 )
 from features.feature_pipeline import FeatureConfig
+from risk.position_sizing import vol_pct_from_close, vol_target_size_pct
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from backtesting.analysis import (
     regime_performance, confidence_bucket_performance, exposure_by_regime,
@@ -99,6 +100,10 @@ def run_walk_forward(
     """
     if feature_cfg is None:
         feature_cfg = FeatureConfig()
+
+    from system.config import settings as _settings
+    _risk_budget = _settings.sizing.per_trade_risk_pct
+    _pos_ceiling = _settings.risk.max_position_pct
 
     scenarios = stress_scenarios if stress_scenarios is not None else []
     if scenarios:
@@ -176,7 +181,14 @@ def run_walk_forward(
                     continue  # would be filtered in production
 
             # Apply regime size multiplier + optional confidence scaling
-            base_pct = float(sig.get("position_pct", 5.0))
+            # Vol-target base size from the trailing close window (matches live).
+            series_for_vol = price_data.get(sig["ticker"])
+            atr_pct = 1.0
+            if series_for_vol is not None and not series_for_vol.empty:
+                upto = series_for_vol.loc[series_for_vol.index <= pd.Timestamp(sig_date)]
+                if len(upto) >= 15:
+                    atr_pct = vol_pct_from_close(upto.values, window=14)
+            base_pct = vol_target_size_pct(atr_pct, _risk_budget, _pos_ceiling)
             mult = (
                 alloc_cfg.regime_size_multiplier.get(regime.regime_label, 1.0)
                 if alloc_cfg is not None
@@ -209,6 +221,7 @@ def run_walk_forward(
             initial_cash=initial_cash,
             slippage_bps=backtest_cfg.slippage_bps,
             commission_pct=backtest_cfg.commission_pct,
+            fill_delay_bars=1,
         )
 
         eq = equity_series(sim)
