@@ -89,10 +89,15 @@ class Portfolio:
                        entry_date: str, signal_source: str = "congressional") -> None:
         order = self._place_sell_with_retry(ticker, shares)
         if order.status == OrderStatus.REJECTED:
-            log.error(
-                "Sell order failed for %s after retries: %s — manual close may be required",
-                ticker, order.reject_reason,
+            emit_event(
+                log, EventType.ORDER_REJECTED,
+                f"Sell for {ticker} REJECTED after retries ({order.reject_reason}) — "
+                "position left intact for next reconcile/poll",
+                data={"ticker": ticker, "reason": order.reject_reason},
+                level=logging.ERROR,
+                alert=True,
             )
+            return
         exit_commission = order.filled_qty * self.broker.get_commission_per_share()
         entry_commission = 0.0
         for pos in db.get_open_positions():
@@ -134,10 +139,15 @@ class Portfolio:
         sell_qty = shares / 2
         order = self._place_sell_with_retry(ticker, sell_qty)
         if order.status == OrderStatus.REJECTED:
-            log.error(
-                "Reduce sell failed for %s after retries: %s — manual close may be required",
-                ticker, order.reject_reason,
+            emit_event(
+                log, EventType.ORDER_REJECTED,
+                f"Reduce sell for {ticker} REJECTED after retries ({order.reject_reason}) — "
+                "shares left unchanged",
+                data={"ticker": ticker, "reason": order.reject_reason},
+                level=logging.ERROR,
+                alert=True,
             )
+            return
         exit_commission = order.filled_qty * self.broker.get_commission_per_share()
         entry_commission = 0.0
         for pos in db.get_open_positions():

@@ -548,3 +548,45 @@ def test_reconcile_no_flatten_emits_critical_alert(mock_broker, db, mocker):
     mock_broker.place_order.assert_not_called()
     # But an alert must have been fired
     mock_fire_alert.assert_called_once()
+
+
+def test_close_position_rejected_sell_does_not_log_or_delete(mock_broker, db, mocker):
+    """A rejected sell must leave the DB position intact and book no closed_position."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    rejected = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    portfolio.close_position(
+        "AAPL", 10.0, exit_price=110.0, exit_reason="ai_exit",
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    # Position still in DB, nothing booked as closed
+    assert any(p["ticker"] == "AAPL" for p in db.get_open_positions())
+    assert db.get_closed_positions() == []
+
+
+def test_reduce_position_rejected_sell_does_not_change_shares(mock_broker, db):
+    """A rejected partial sell must not change DB shares or book a trade."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    rejected = Order(ticker="AAPL", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    portfolio.reduce_position(
+        "AAPL", 10.0, exit_price=110.0,
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    pos = [p for p in db.get_open_positions() if p["ticker"] == "AAPL"][0]
+    assert pos["shares"] == pytest.approx(10.0)  # unchanged
+    assert db.get_closed_positions() == []
