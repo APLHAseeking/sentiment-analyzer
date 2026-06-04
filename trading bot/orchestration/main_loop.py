@@ -627,15 +627,16 @@ class RegimeAwareOrchestrator:
         final_pct *= self._port_vol_mult
 
         _positions_now = self._broker.get_positions()
-        _nav = self._broker.get_cash() + sum(
-            p["qty"] * p["current_price"] for p in _positions_now
-        )
+        _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
+        _nav = self._broker.get_cash() + _invested_usd
+        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
         position_size_usd = _nav * final_pct / 100
         adv_usd = research.avg_daily_volume_usd if research else None
         veto = self._risk.validate_order(
             ticker=ticker, position_pct=final_pct, sector=sector,
             sector_allocation=sector_allocation,
             position_size_usd=position_size_usd, adv_usd=adv_usd,
+            current_invested_pct=_current_invested_pct,
         )
 
         if not veto.allowed:
@@ -767,9 +768,9 @@ class RegimeAwareOrchestrator:
         final_pct *= self._port_vol_mult
 
         _positions_now = self._broker.get_positions()
-        _nav = self._broker.get_cash() + sum(
-            p["qty"] * p["current_price"] for p in _positions_now
-        )
+        _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
+        _nav = self._broker.get_cash() + _invested_usd
+        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
         position_size_usd = _nav * final_pct / 100
         adv_usd = candidate.research.avg_daily_volume_usd if candidate.research else None
         veto = self._risk.validate_order(
@@ -779,6 +780,7 @@ class RegimeAwareOrchestrator:
             sector_allocation=sector_allocation,
             position_size_usd=position_size_usd,
             adv_usd=adv_usd,
+            current_invested_pct=_current_invested_pct,
         )
 
         if not veto.allowed:

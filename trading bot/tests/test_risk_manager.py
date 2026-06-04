@@ -214,3 +214,26 @@ def test_stale_data_cleared_allows_entries(tmp_path):
         adv_usd=None,
     )
     assert veto.allowed
+
+
+def test_validate_order_vetoes_when_invested_cap_would_be_breached(tmp_path):
+    mgr = _make_manager(tmp_path, max_invested_pct=80.0, max_position_pct=8.0)
+    mgr.start_of_day(100_000)
+    veto = mgr.validate_order(
+        ticker="AAPL", position_pct=5.0, sector="Tech",
+        sector_allocation={}, position_size_usd=5_000, adv_usd=1e9,
+        current_invested_pct=78.0,  # 78 + 5 = 83 > 80
+    )
+    assert veto.allowed is False
+    assert "invested" in veto.reason.lower()
+
+
+def test_validate_order_allows_when_under_invested_cap(tmp_path):
+    mgr = _make_manager(tmp_path, max_invested_pct=80.0, max_position_pct=8.0)
+    mgr.start_of_day(100_000)
+    veto = mgr.validate_order(
+        ticker="AAPL", position_pct=5.0, sector="Tech",
+        sector_allocation={}, position_size_usd=5_000, adv_usd=1e9,
+        current_invested_pct=50.0,  # 50 + 5 = 55 < 80
+    )
+    assert veto.allowed is True

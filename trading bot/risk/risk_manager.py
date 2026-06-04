@@ -245,6 +245,7 @@ class RiskManager:
         sector_allocation: dict[str, float],
         position_size_usd: float,
         adv_usd: float | None,
+        current_invested_pct: float = 0.0,
     ) -> RiskVeto:
         """Validate a proposed order against all position-level risk rules."""
         # Stale-data kill-switch takes precedence over all other checks
@@ -267,11 +268,20 @@ class RiskManager:
             )
 
         # Sector concentration
-        from system.config import settings
         if sector_allocation.get(sector, 0.0) >= self._risk.max_sector_pct:
             return RiskVeto(
                 allowed=False,
                 reason=f"Sector cap: {sector} at {sector_allocation.get(sector, 0):.1f}%",
+            )
+
+        # Aggregate invested-capital cap (checked per entry, not once per pipeline)
+        if current_invested_pct + position_pct > self._risk.max_invested_pct:
+            return RiskVeto(
+                allowed=False,
+                reason=(
+                    f"Invested cap: {current_invested_pct + position_pct:.1f}% would exceed "
+                    f"max_invested_pct {self._risk.max_invested_pct:.1f}%"
+                ),
             )
 
         # Liquidity
