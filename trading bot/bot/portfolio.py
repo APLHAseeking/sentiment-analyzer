@@ -118,6 +118,8 @@ class Portfolio:
             entry_commission=entry_commission,
         )
         db.delete_position(ticker)
+        if hasattr(self.broker, "cancel_stop_order"):
+            self.broker.cancel_stop_order(ticker)
 
     def _place_sell_with_retry(self, ticker: str, qty: float, max_retries: int = 3):
         import time
@@ -169,6 +171,10 @@ class Portfolio:
             entry_commission=entry_commission,
         )
         db.update_position_shares(ticker, shares - sell_qty)
+        # Cancel the stale full-qty stop; the next enforce_stop_losses poll re-places
+        # a fresh trailing stop for the reduced share count.
+        if hasattr(self.broker, "cancel_stop_order"):
+            self.broker.cancel_stop_order(ticker)
 
     def reconcile_with_broker(self) -> dict:
         """Compare broker positions vs SQLite. Log and resolve discrepancies.
@@ -255,13 +261,22 @@ class Portfolio:
 
         for pos in self.broker.get_positions():
             ticker = pos["ticker"]
-            current = pos["current_price"]
             meta = open_positions.get(ticker, {})
+            source = meta.get("signal_source", "congressional")
+
+            # Scope filter FIRST: a hedge-only call must not touch long stops (and
+            # vice versa), so each position's resting stop uses its own call's pct.
+            if source_include is not None and source != source_include:
+                continue
+            if source_exclude is not None and source == source_exclude:
+                continue
+
+            current = pos["current_price"]
             peak = meta.get("peak_price") or pos["avg_entry_price"]
             db.update_position_peak(ticker, current)
 
-            # Trail the resting stop upward if the price has risen above the last stop level.
-            # Only move the stop up, never down (trailing semantics).
+            # Trail the resting stop upward (only-up). Cancel the old stop before
+            # placing the new one so brokers (Alpaca) don't accumulate duplicates.
             new_stop = current * (1 - pct / 100)
             existing_stop = 0.0
             try:
@@ -272,14 +287,10 @@ class Portfolio:
             except Exception:
                 pass
             if new_stop > existing_stop:
+                if hasattr(self.broker, "cancel_stop_order"):
+                    self.broker.cancel_stop_order(ticker)
                 self.broker.place_stop_order(ticker=ticker, qty=pos["qty"], stop_price=new_stop)
 
-            source = meta.get("signal_source", "congressional")
-
-            if source_include is not None and source != source_include:
-                continue
-            if source_exclude is not None and source == source_exclude:
-                continue
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:
                 self.close_position(
