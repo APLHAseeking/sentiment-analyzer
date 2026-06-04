@@ -35,7 +35,6 @@ Global preferences (communication style, git workflow) are in `~/.claude/CLAUDE.
 
 ## Worktrees
 
-Two active git worktrees under `.worktrees/`:
+One active git worktree under `.worktrees/`:
 
-- `.worktrees/trading-bot-fixes/` — branch `trading-bot-fixes`
 - `.worktrees/congressional-bot/` — branch `feature/congressional-bot`
