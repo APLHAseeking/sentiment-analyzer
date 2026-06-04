@@ -221,6 +221,7 @@ def run_walk_forward(
             initial_cash=initial_cash,
             slippage_bps=backtest_cfg.slippage_bps,
             commission_pct=backtest_cfg.commission_pct,
+            fill_delay_bars=1,
         )
 
         eq = equity_series(sim)

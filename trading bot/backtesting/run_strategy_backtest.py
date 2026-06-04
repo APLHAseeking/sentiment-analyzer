@@ -199,6 +199,7 @@ def run_pit_backtest(
         initial_cash=initial_cash,
         slippage_bps=slippage_bps,
         commission_pct=commission_pct,
+        fill_delay_bars=1,
     )
     eq = equity_series(sim)
     tr = trade_returns(sim)
