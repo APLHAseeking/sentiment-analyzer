@@ -36,6 +36,23 @@ from features.feature_pipeline import (
 log = logging.getLogger(__name__)
 
 
+def _pad_features_to_scaler(last_row: np.ndarray, scaler) -> np.ndarray:
+    """Align a feature row to the scaler's expected width.
+
+    Missing (trailing) features are padded with the scaler's training mean so
+    they standardise to ~0 (neutral) rather than a large spurious z-score; extra
+    columns are truncated.
+    """
+    n_expected = scaler.n_features_in_
+    n_have = last_row.shape[1]
+    if n_have < n_expected:
+        means = np.asarray(scaler.mean_)[n_have:n_expected].reshape(1, -1)
+        last_row = np.hstack([last_row, means])
+    elif n_have > n_expected:
+        last_row = last_row[:, :n_expected]
+    return last_row
+
+
 @dataclass
 class FitResult:
     model: GaussianHMM
@@ -391,13 +408,16 @@ class HMMRegimeEngine:
         if last_row.shape[0] == 0:
             raise RuntimeError("New bar produced all-NaN features — tail too short")
 
-        # Align to scaler's expected feature count
+        # Align to the scaler's expected feature count. Pad missing features with the
+        # training mean (→ scales to ~0) instead of zero (→ spurious extreme z-score).
+        n_have = last_row.shape[1]
         n_expected = self._result.scaler.n_features_in_
-        if last_row.shape[1] < n_expected:
-            pad = np.zeros((1, n_expected - last_row.shape[1]))
-            last_row = np.hstack([last_row, pad])
-        else:
-            last_row = last_row[:, :n_expected]
+        if n_have != n_expected:
+            log.warning(
+                "update_single: feature width %d != expected %d — padding/truncating",
+                n_have, n_expected,
+            )
+        last_row = _pad_features_to_scaler(last_row, self._result.scaler)
         obs_scaled = self._result.scaler.transform(last_row)[0]  # (D,)
 
         # One causal forward step
