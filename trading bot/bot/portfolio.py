@@ -185,10 +185,10 @@ class Portfolio:
         **Untracked position handling** (controlled by ``RiskConfig.auto_flatten_untracked``):
 
         * ``auto_flatten_untracked=False`` (default, safe): emit a CRITICAL alert for every
-          untracked broker position and add it to a stop-loss watchlist by inserting a
-          synthetic DB record.  A human must review before the next pipeline run.
-          Trade-off: the position is visible to stop-loss enforcement but the entry price /
-          sizing metadata are unknown, so stops are set off the current price.
+          untracked broker position so a human can review before the next pipeline run. The
+          position is **not** added to the DB and therefore is **not** covered by
+          ``enforce_stop_losses`` until reconciled manually. Trade-off: no automatic exposure
+          change, but no automatic stop coverage either.
 
         * ``auto_flatten_untracked=True`` (aggressive): immediately issue a market sell order
           for each untracked position and emit an alert.  This eliminates exposure quickly but
