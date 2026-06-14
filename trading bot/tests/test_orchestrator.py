@@ -494,3 +494,47 @@ def test_process_signal_uses_port_vol_mult(mocker, orch):
     pct_halved = orch._portfolio.open_position.call_args[1]["position_pct"]
 
     assert pct_halved == pytest.approx(pct_full * 0.5, rel=1e-3)
+
+
+def test_hedge_pass_calls_validate_order(mocker, orch):
+    """_run_hedge_pass must validate each hedge order through the risk manager."""
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+
+    orch._run_hedge_pass()
+
+    orch._risk.validate_order.assert_called_once()
+    orch._portfolio.open_position.assert_called_once()
+
+
+def test_hedge_pass_skips_order_vetoed_by_risk_manager(mocker, orch):
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=False, reason="STALE_DATA: market data too old — new entries blocked",
+    )
+
+    orch._run_hedge_pass()
+
+    orch._portfolio.open_position.assert_not_called()

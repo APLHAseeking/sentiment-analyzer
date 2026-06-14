@@ -882,6 +882,21 @@ class RegimeAwareOrchestrator:
                     if not entry_price:
                         log.warning("No price for hedge ETF %s — skipping", order.ticker)
                         continue
+
+                    position_size_usd = nav * order.position_pct / 100
+                    veto = self._risk.validate_order(
+                        ticker=order.ticker,
+                        position_pct=order.position_pct,
+                        sector="Hedge",
+                        sector_allocation={},
+                        position_size_usd=position_size_usd,
+                        adv_usd=None,
+                    )
+                    if not veto.allowed:
+                        emit_event(log, EventType.RISK_VETO,
+                                   f"Hedge {order.ticker} vetoed: {veto.reason}")
+                        continue
+
                     self._portfolio.open_position(
                         ticker=order.ticker,
                         position_pct=order.position_pct,
