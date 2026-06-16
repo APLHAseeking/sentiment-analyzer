@@ -1040,7 +1040,7 @@ class RegimeAwareOrchestrator:
             # Check if forced deleveraging is needed
             if self._risk.state == RiskState.DELEVERAGE:
                 log.warning("Intraday: DELEVERAGE state — closing all positions")
-                self._close_all_positions(reason="intraday_deleverage")
+                self._close_all_positions(reason="intraday_deleverage", source_exclude="hedge")
 
             # Run stop-losses on live prices (long positions)
             self._portfolio.enforce_stop_losses(source_exclude="hedge")
@@ -1054,10 +1054,20 @@ class RegimeAwareOrchestrator:
         except Exception as exc:
             log.warning("Intraday check failed: %s", exc)
 
-    def _close_all_positions(self, reason: str = "forced") -> None:
-        """Close all open positions immediately. Used by deleverage circuit breaker."""
+    def _close_all_positions(self, reason: str = "forced", source_exclude: str | None = None) -> None:
+        """Close all open positions immediately. Used by deleverage circuit breaker.
+
+        Args:
+            reason: exit_reason string stored on the closed position record.
+            source_exclude: if set, skip positions whose signal_source matches this value.
+                Pass ``"hedge"`` during forced deleveraging so inverse-ETF hedges are
+                preserved — they are paying off in the very downturn that triggered
+                the circuit breaker.
+        """
         open_pos = get_open_positions()
         for pos in open_pos:
+            if source_exclude is not None and pos.get("signal_source") == source_exclude:
+                continue
             try:
                 try:
                     price = yf.Ticker(pos["ticker"]).fast_info.last_price or 0.0

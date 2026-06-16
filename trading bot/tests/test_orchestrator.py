@@ -568,3 +568,33 @@ def test_hedge_pass_skips_order_vetoed_by_risk_manager(mocker, orch):
     orch._run_hedge_pass()
 
     orch._portfolio.open_position.assert_not_called()
+
+
+def test_close_all_positions_excludes_hedge_by_default_param(mocker, orch):
+    """_close_all_positions(source_exclude='hedge') must skip hedge positions."""
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[
+        {"ticker": "AAPL", "shares": 10, "entry_price": 100.0, "entry_date": "2026-01-01",
+         "signal_id": 1, "signal_source": "fundamental"},
+        {"ticker": "SH", "shares": 5, "entry_price": 20.0, "entry_date": "2026-01-01",
+         "signal_id": None, "signal_source": "hedge"},
+    ])
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=50.0))
+
+    orch._close_all_positions(reason="intraday_deleverage", source_exclude="hedge")
+
+    assert orch._portfolio.close_position.call_count == 1
+    call_kwargs = orch._portfolio.close_position.call_args
+    assert call_kwargs[0][0] == "AAPL"
+
+
+def test_intraday_check_deleverage_excludes_hedges(mocker, orch):
+    from risk.risk_manager import RiskState
+    orch._risk = mocker.MagicMock()
+    orch._risk.state = RiskState.DELEVERAGE
+    orch._broker = _mock_broker(cash=50_000, position_value=50_000)
+    close_all_spy = mocker.patch.object(orch, "_close_all_positions")
+
+    orch.run_intraday_check()
+
+    close_all_spy.assert_called_once_with(reason="intraday_deleverage", source_exclude="hedge")
