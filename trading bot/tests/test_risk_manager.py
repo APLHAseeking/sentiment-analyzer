@@ -240,3 +240,17 @@ def test_validate_order_logs_warning_when_adv_missing(tmp_path, caplog):
     assert veto.allowed  # missing ADV data does not block the order
     assert any("ADV" in rec.message or "liquidity" in rec.message.lower()
                for rec in caplog.records)
+
+
+def test_validate_order_logs_warning_when_adv_zero(tmp_path, caplog):
+    import logging
+    mgr = _make_manager(tmp_path, max_adv_pct=10.0)
+    mgr.start_of_day(100_000)
+    with caplog.at_level(logging.WARNING, logger="risk.risk_manager"):
+        veto = mgr.validate_order(
+            ticker="AAPL", position_pct=5.0, sector="Technology",
+            sector_allocation={}, position_size_usd=5_000, adv_usd=0,
+        )
+    assert veto.allowed
+    assert any("ADV" in rec.message or "liquidity" in rec.message.lower()
+               for rec in caplog.records)
