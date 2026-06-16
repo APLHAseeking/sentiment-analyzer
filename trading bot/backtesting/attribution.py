@@ -44,6 +44,31 @@ def load_factor_returns(path: str) -> pd.DataFrame:
     return df
 
 
+def _hac_standard_errors(
+    X: np.ndarray, resid: np.ndarray, XtX_inv: np.ndarray, bandwidth: int
+) -> np.ndarray:
+    """Newey-West (Bartlett kernel) HAC standard errors for OLS coefficients.
+
+    Daily strategy returns are typically autocorrelated (overlapping
+    holding periods, slow-moving regime state), which understates
+    plain-OLS standard errors. The HAC sandwich estimator corrects for
+    this:
+
+        Var(beta) = (X'X)^-1 * S * (X'X)^-1
+
+    where S is the Bartlett-weighted sum of lagged score autocovariances,
+    score_t = resid_t * X_t (one k-vector per observation).
+    """
+    scores = X * resid[:, None]  # (n, k) per-observation score contributions
+    S = scores.T @ scores  # lag 0
+    for lag in range(1, bandwidth + 1):
+        weight = 1.0 - lag / (bandwidth + 1)
+        gamma = scores[lag:].T @ scores[:-lag]
+        S += weight * (gamma + gamma.T)
+    cov = XtX_inv @ S @ XtX_inv
+    return np.sqrt(np.maximum(np.diag(cov), 0.0))
+
+
 def attribute_returns(
     strategy_daily_returns: pd.Series,
     factor_returns: pd.DataFrame,
@@ -102,8 +127,6 @@ def attribute_returns(
         log.warning("Insufficient degrees of freedom (%d) for t-statistics", dof)
         return _empty_result(factor_returns.columns.tolist())
 
-    sigma2 = float(np.dot(resid, resid) / dof)
-
     # (X'X)^{-1} for standard errors
     XtX = X.T @ X
     try:
@@ -112,7 +135,12 @@ def attribute_returns(
         log.warning("Singular X'X matrix — cannot compute t-statistics")
         return _empty_result(factor_returns.columns.tolist())
 
-    se = np.sqrt(np.maximum(np.diag(XtX_inv) * sigma2, 0.0))
+    # HAC (Newey-West) standard errors — daily strategy returns are
+    # autocorrelated (overlapping holding periods, slow-moving regime
+    # state), so plain-OLS SEs understate the true uncertainty. Bartlett
+    # kernel with automatic bandwidth L = floor(4*(T/100)^(2/9)).
+    bandwidth = max(1, int(np.floor(4 * (n / 100) ** (2 / 9))))
+    se = _hac_standard_errors(X, resid, XtX_inv, bandwidth)
     tstats = coeffs / np.where(se > 0, se, np.inf)
 
     # R²
@@ -123,6 +151,7 @@ def attribute_returns(
     alpha_daily = float(coeffs[0])
     alpha_ann = alpha_daily * 252
     alpha_tstat = float(tstats[0])
+    alpha_se_ann = float(se[0]) * 252
 
     factor_results = {}
     for i, col in enumerate(factor_returns.columns):
@@ -135,6 +164,7 @@ def attribute_returns(
         "alpha": round(alpha_ann, 6),
         "alpha_pct": round(alpha_ann * 100, 4),
         "alpha_tstat": round(alpha_tstat, 3),
+        "alpha_se": round(alpha_se_ann, 6),
         "r_squared": round(r2, 4),
         "factors": factor_results,
         "n_obs": n,
@@ -146,6 +176,7 @@ def _empty_result(factor_names: list[str]) -> dict:
         "alpha": 0.0,
         "alpha_pct": 0.0,
         "alpha_tstat": 0.0,
+        "alpha_se": 0.0,
         "r_squared": 0.0,
         "factors": {f: {"beta": 0.0, "tstat": 0.0} for f in factor_names},
         "n_obs": 0,

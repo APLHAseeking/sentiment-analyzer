@@ -169,3 +169,46 @@ def test_empty_result_on_insufficient_data():
     result = attribute_returns(strat, factors)
     assert result["alpha"] == 0.0
     assert result["n_obs"] == 0
+
+
+def test_attribute_returns_hac_se_exceeds_naive_ols_se_for_autocorrelated_residuals():
+    """Strategy residuals with strong positive AR(1) autocorrelation must
+    produce a larger (HAC/Newey-West) alpha_se than the naive (homoskedastic,
+    serially-uncorrelated) OLS se — HAC corrects for the fact that
+    autocorrelated daily returns understate the true sampling uncertainty."""
+    rng = np.random.default_rng(42)
+    n = 400
+    dates = pd.date_range("2020-01-02", periods=n, freq="B")
+    mkt = rng.normal(0.0003, 0.01, n)
+
+    # AR(1) residuals with rho=0.7
+    eps = rng.normal(0.0, 0.005, n)
+    resid_ar1 = np.zeros(n)
+    for t in range(1, n):
+        resid_ar1[t] = 0.7 * resid_ar1[t - 1] + eps[t]
+
+    strat = 0.0002 + 0.8 * mkt + resid_ar1
+    factors = pd.DataFrame({"MKT_RF": mkt}, index=dates)
+    strat_series = pd.Series(strat, index=dates)
+
+    result = attribute_returns(strat_series, factors)
+    assert "alpha_se" in result
+    assert result["alpha_se"] > 0
+
+    # Naive (non-HAC) OLS se for comparison — the old code's formula
+    combined = pd.concat([strat_series.rename("_strat"), factors], axis=1).dropna()
+    X = np.column_stack([np.ones(len(combined)), combined["MKT_RF"].values])
+    y = combined["_strat"].values
+    coeffs_naive, *_ = np.linalg.lstsq(X, y, rcond=None)
+    resid_naive = y - X @ coeffs_naive
+    dof = len(y) - X.shape[1]
+    sigma2 = np.dot(resid_naive, resid_naive) / dof
+    naive_alpha_se_ann = np.sqrt(np.linalg.inv(X.T @ X)[0, 0] * sigma2) * 252
+
+    assert result["alpha_se"] > naive_alpha_se_ann
+
+
+def test_empty_result_includes_alpha_se():
+    from backtesting.attribution import _empty_result
+    result = _empty_result(["MKT_RF"])
+    assert result["alpha_se"] == 0.0
