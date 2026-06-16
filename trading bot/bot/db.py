@@ -133,7 +133,8 @@ CREATE TABLE IF NOT EXISTS schema_version (
 """
 
 def _db_path() -> str:
-    return os.environ.get("DB_PATH", "trading.db")
+    from system.paths import resolve
+    return resolve(os.environ.get("DB_PATH", "trading.db"))
 
 @contextmanager
 def get_conn():

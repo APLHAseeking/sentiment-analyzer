@@ -237,3 +237,43 @@ def test_validate_order_allows_when_under_invested_cap(tmp_path):
         current_invested_pct=50.0,  # 50 + 5 = 55 < 80
     )
     assert veto.allowed is True
+
+
+def test_validate_order_allows_sector_exactly_at_cap(tmp_path):
+    """A sector sitting exactly at max_sector_pct must not be rejected."""
+    mgr = _make_manager(tmp_path, max_sector_pct=30.0)
+    mgr.start_of_day(100_000)
+    veto = mgr.validate_order(
+        ticker="AAPL", position_pct=5.0, sector="Technology",
+        sector_allocation={"Technology": 30.0},  # exactly at cap
+        position_size_usd=5_000, adv_usd=None,
+    )
+    assert veto.allowed
+
+
+def test_validate_order_logs_warning_when_adv_missing(tmp_path, caplog):
+    import logging
+    mgr = _make_manager(tmp_path, max_adv_pct=10.0)
+    mgr.start_of_day(100_000)
+    with caplog.at_level(logging.WARNING, logger="risk.risk_manager"):
+        veto = mgr.validate_order(
+            ticker="AAPL", position_pct=5.0, sector="Technology",
+            sector_allocation={}, position_size_usd=5_000, adv_usd=None,
+        )
+    assert veto.allowed  # missing ADV data does not block the order
+    assert any("ADV" in rec.message or "liquidity" in rec.message.lower()
+               for rec in caplog.records)
+
+
+def test_validate_order_logs_warning_when_adv_zero(tmp_path, caplog):
+    import logging
+    mgr = _make_manager(tmp_path, max_adv_pct=10.0)
+    mgr.start_of_day(100_000)
+    with caplog.at_level(logging.WARNING, logger="risk.risk_manager"):
+        veto = mgr.validate_order(
+            ticker="AAPL", position_pct=5.0, sector="Technology",
+            sector_allocation={}, position_size_usd=5_000, adv_usd=0,
+        )
+    assert veto.allowed
+    assert any("ADV" in rec.message or "liquidity" in rec.message.lower()
+               for rec in caplog.records)

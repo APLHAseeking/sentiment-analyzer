@@ -10,6 +10,8 @@ import os
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
+from system.paths import resolve
+
 load_dotenv()
 
 
@@ -99,7 +101,7 @@ class RegimeConfig:
         6: ["crash", "bear", "neutral", "bull", "euphoria", "melt-up"],
         7: ["crash", "deep-bear", "bear", "neutral", "bull", "euphoria", "melt-up"],
     })
-    model_path: str = "regime_model.joblib"  # persisted model file
+    model_path: str = field(default_factory=lambda: resolve("regime_model.joblib"))  # persisted model file
     refit_interval_days: int = 30    # refit HMM every N days; 0 = disabled
 
 
@@ -210,7 +212,7 @@ class RiskConfig:
     weekly_loss_halt_pct: float = 8.0     # stop new entries for rest of week
     max_drawdown_lockout_pct: float = 15.0  # lock file created; manual unlock required
 
-    lock_file_path: str = "RISK_LOCKOUT"  # path to lock file
+    lock_file_path: str = field(default_factory=lambda: resolve("RISK_LOCKOUT"))  # path to lock file
     max_invested_pct: float = 80.0        # max % of NAV deployed in positions
     enable_inverse_hedging: bool = True   # set False to disable all inverse ETF hedging
 
@@ -264,7 +266,7 @@ class MonitoringConfig:
 
 @dataclass(frozen=True)
 class DashboardConfig:
-    data_store_path: str = "dashboard_state.json"
+    data_store_path: str = field(default_factory=lambda: resolve("dashboard_state.json"))
     refresh_interval_seconds: int = 300  # 5-minute dashboard refresh
     port: int = 8501                     # Streamlit default port
 
@@ -275,7 +277,7 @@ class DashboardConfig:
 
 @dataclass(frozen=True)
 class Settings:
-    db_path: str = field(default_factory=lambda: _env("DB_PATH", "trading.db"))
+    db_path: str = field(default_factory=lambda: resolve(_env("DB_PATH", "trading.db")))
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))
     timezone: str = "Europe/Amsterdam"
 

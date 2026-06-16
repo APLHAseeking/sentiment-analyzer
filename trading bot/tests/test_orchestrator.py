@@ -85,9 +85,9 @@ def orch_fitted(mocker):
     o._engine = MagicMock()
     o._engine.is_fitted = True
     o._broker = _mock_broker(cash=100_000, position_value=0)
-    mocker.patch.object(o, "_update_regime")          # prevent DB writes on daily update path
-    mocker.patch.object(o, "_log_and_set_regime_state")  # prevent DB writes from initialize/refit path
-    mocker.patch.object(o, "_update_dashboard")       # prevent file writes
+    mocker.patch.object(o, "_update_regime")              # prevent DB writes
+    mocker.patch.object(o, "_log_and_set_regime_state")   # prevent DB writes from new helper
+    mocker.patch.object(o, "_update_dashboard")           # prevent file writes
     return o
 
 
@@ -495,6 +495,306 @@ def test_process_signal_uses_port_vol_mult(mocker, orch):
     pct_halved = orch._portfolio.open_position.call_args[1]["position_pct"]
 
     assert pct_halved == pytest.approx(pct_full * 0.5, rel=1e-3)
+
+
+def test_hedge_pass_calls_validate_order(mocker, orch):
+    """_run_hedge_pass must validate each hedge order through the risk manager."""
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+
+    orch._run_hedge_pass()
+
+    orch._risk.validate_order.assert_called_once_with(
+        ticker="SH",
+        position_pct=10.0,
+        sector="Hedge",
+        sector_allocation={},
+        position_size_usd=10_000.0,
+        adv_usd=None,
+    )
+    orch._portfolio.open_position.assert_called_once()
+
+
+def test_hedge_pass_applies_size_multiplier(mocker, orch):
+    """veto.size_multiplier must scale the hedge position pct."""
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=0.5,
+    )
+
+    orch._run_hedge_pass()
+
+    call_kwargs = orch._portfolio.open_position.call_args
+    assert call_kwargs.kwargs["position_pct"] == pytest.approx(5.0)
+
+
+def test_hedge_pass_skips_order_vetoed_by_risk_manager(mocker, orch):
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=False, reason="STALE_DATA: market data too old — new entries blocked",
+    )
+
+    orch._run_hedge_pass()
+
+    orch._portfolio.open_position.assert_not_called()
+
+
+def test_close_all_positions_excludes_hedge_by_default_param(mocker, orch):
+    """_close_all_positions(source_exclude='hedge') must skip hedge positions."""
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[
+        {"ticker": "AAPL", "shares": 10, "entry_price": 100.0, "entry_date": "2026-01-01",
+         "signal_id": 1, "signal_source": "fundamental"},
+        {"ticker": "SH", "shares": 5, "entry_price": 20.0, "entry_date": "2026-01-01",
+         "signal_id": None, "signal_source": "hedge"},
+    ])
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=50.0))
+
+    orch._close_all_positions(reason="intraday_deleverage", source_exclude="hedge")
+
+    assert orch._portfolio.close_position.call_count == 1
+    call_kwargs = orch._portfolio.close_position.call_args
+    assert call_kwargs[0][0] == "AAPL"
+
+
+def test_intraday_check_deleverage_excludes_hedges(mocker, orch):
+    from risk.risk_manager import RiskState
+    orch._risk = mocker.MagicMock()
+    orch._risk.state = RiskState.DELEVERAGE
+    orch._broker = _mock_broker(cash=50_000, position_value=50_000)
+    close_all_spy = mocker.patch.object(orch, "_close_all_positions")
+
+    orch.run_intraday_check()
+
+    close_all_spy.assert_called_once_with(reason="intraday_deleverage", source_exclude="hedge")
+
+
+# ------------------------------------------------------------------
+# Economic floor re-checks after multiplier stack (Task A6)
+# ------------------------------------------------------------------
+
+def test_process_signal_rejects_when_port_vol_mult_drives_below_floor(mocker, orch):
+    """final_pct *= self._port_vol_mult shrinking below 0.1% must reject, not open a dust position."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 0.01  # extreme vol-gate cut
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician",
+                 return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=5.0,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "d3", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    result = orch._process_signal(disc, {})
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
+def test_process_signal_rejects_when_risk_size_multiplier_drives_below_floor(mocker, orch):
+    """final_pct *= veto.size_multiplier shrinking below 0.1% must reject, not open a dust position."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 1.0
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician",
+                 return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=0.5,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=0.01,
+    )
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "d4", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    result = orch._process_signal(disc, {})
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _process_fundamental_candidate floor-check tests (A6 gap)
+# ---------------------------------------------------------------------------
+
+def test_process_fundamental_candidate_rejects_when_port_vol_mult_drives_below_floor(mocker, orch):
+    """_port_vol_mult=0.01 drives final_pct below 0.1% — must return False, not open position."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 0.01  # extreme vol-gate cut
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=5.0,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    candidate = FactorCandidate(
+        ticker="MSFT", composite_score=80, value_score=25,
+        momentum_score=28, quality_score=27, research=None,
+    )
+    result = orch._process_fundamental_candidate(candidate, {}, set())
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
+def test_process_fundamental_candidate_rejects_when_risk_size_multiplier_drives_below_floor(mocker, orch):
+    """size_multiplier=0.01 from risk veto drives final_pct below 0.1% — must return False, not open position."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 1.0
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=0.5,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=0.01,
+    )
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    candidate = FactorCandidate(
+        ticker="MSFT", composite_score=80, value_score=25,
+        momentum_score=28, quality_score=27, research=None,
+    )
+    result = orch._process_fundamental_candidate(candidate, {}, set())
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# EOD deleverage tests (A8)
+# ---------------------------------------------------------------------------
+
+def test_run_eod_closes_positions_on_deleverage(mocker, orch):
+    from risk.risk_manager import RiskState
+
+    orch._broker = _mock_broker(cash=50_000, position_value=50_000)
+    orch._risk = mocker.MagicMock()
+    orch._risk.state = RiskState.DELEVERAGE
+    orch._portfolio.log_snapshot = mocker.MagicMock()
+    close_all_spy = mocker.patch.object(orch, "_close_all_positions")
+    mocker.patch.object(orch, "_update_dashboard")
+
+    orch.run_eod()
+
+    close_all_spy.assert_called_once_with(reason="eod_deleverage", source_exclude="hedge")
+
+
+def test_run_eod_does_not_close_positions_when_normal(mocker, orch):
+    from risk.risk_manager import RiskState
+
+    orch._broker = _mock_broker(cash=50_000, position_value=50_000)
+    orch._risk = mocker.MagicMock()
+    orch._risk.state = RiskState.NORMAL
+    orch._portfolio.log_snapshot = mocker.MagicMock()
+    close_all_spy = mocker.patch.object(orch, "_close_all_positions")
+    mocker.patch.object(orch, "_update_dashboard")
+
+    orch.run_eod()
+
+    close_all_spy.assert_not_called()
 
 
 import pandas as pd

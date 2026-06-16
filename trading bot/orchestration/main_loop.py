@@ -75,6 +75,7 @@ _CONGRESSIONAL_MAX_PER_DAY = 1    # at most 1 pure congressional-only entry per 
 _ATR_FALLBACK_PCT = 10.0          # conservative (high-vol) ATR fallback when history() fails —
                                    # a smaller position results, the safe direction when
                                    # volatility is unknown (vol_target_size_pct: size ∝ 1/atr_pct)
+_MIN_ECONOMIC_POSITION_PCT = 0.1  # below this, an order is not worth the commission/slippage
 
 
 class RegimeAwareOrchestrator:
@@ -619,7 +620,7 @@ class RegimeAwareOrchestrator:
         if self._regime_state is not None:
             alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
             final_pct = alloc_decision.final_position_pct
-            if final_pct < 0.1:
+            if final_pct < _MIN_ECONOMIC_POSITION_PCT:
                 emit_event(log, EventType.SIGNAL_REJECTED,
                            f"{ticker} blocked by regime allocation ({alloc_decision.rationale})")
                 return False
@@ -632,13 +633,17 @@ class RegimeAwareOrchestrator:
         # Correlation filter
         corr_mult = self._corr_filter.size_multiplier(ticker)
         final_pct *= corr_mult
-        if final_pct < 0.1:
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
             emit_event(log, EventType.SIGNAL_REJECTED,
                        f"{ticker} reduced to zero by correlation filter (mult={corr_mult:.2f})")
             return False
 
         # Portfolio vol gate: scale down if realized portfolio vol exceeds target
         final_pct *= self._port_vol_mult
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(log, EventType.SIGNAL_REJECTED,
+                       f"{ticker} reduced to zero by portfolio-vol gate (mult={self._port_vol_mult:.3f})")
+            return False
 
         _positions_now = self._broker.get_positions()
         _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
@@ -660,6 +665,10 @@ class RegimeAwareOrchestrator:
 
         # Apply size multiplier from risk state (e.g. 0.5× during daily drawdown)
         final_pct *= veto.size_multiplier
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(log, EventType.SIGNAL_REJECTED,
+                       f"{ticker} reduced to zero by risk-state size multiplier (mult={veto.size_multiplier:.3f})")
+            return False
 
         signal_id = insert_signal(
             disc["id"], ticker, score.conviction,
@@ -758,7 +767,7 @@ class RegimeAwareOrchestrator:
         if self._regime_state is not None:
             alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
             final_pct = alloc_decision.final_position_pct
-            if final_pct < 0.1:
+            if final_pct < _MIN_ECONOMIC_POSITION_PCT:
                 emit_event(
                     log, EventType.SIGNAL_REJECTED,
                     f"{ticker} blocked by regime ({alloc_decision.rationale})",
@@ -770,7 +779,7 @@ class RegimeAwareOrchestrator:
         # Correlation filter
         corr_mult = self._corr_filter.size_multiplier(ticker)
         final_pct *= corr_mult
-        if final_pct < 0.1:
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
             emit_event(
                 log, EventType.SIGNAL_REJECTED,
                 f"{ticker} ({signal_type}) reduced to zero by correlation filter "
@@ -780,6 +789,12 @@ class RegimeAwareOrchestrator:
 
         # Portfolio vol gate: scale down if realized portfolio vol exceeds target
         final_pct *= self._port_vol_mult
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(
+                log, EventType.SIGNAL_REJECTED,
+                f"{ticker} reduced to zero by portfolio-vol gate (mult={self._port_vol_mult:.3f})",
+            )
+            return False
 
         _positions_now = self._broker.get_positions()
         _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
@@ -802,6 +817,12 @@ class RegimeAwareOrchestrator:
             return False
 
         final_pct *= veto.size_multiplier
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(
+                log, EventType.SIGNAL_REJECTED,
+                f"{ticker} reduced to zero by risk-state size multiplier (mult={veto.size_multiplier:.3f})",
+            )
+            return False
 
         self._portfolio.open_position(
             ticker=ticker,
@@ -882,9 +903,30 @@ class RegimeAwareOrchestrator:
                     if not entry_price:
                         log.warning("No price for hedge ETF %s — skipping", order.ticker)
                         continue
-                    self._portfolio.open_position(
+
+                    position_size_usd = nav * order.position_pct / 100
+                    # adv_usd=None: ETFs have no ADV constraint; validate_order skips
+                    # liquidity check for sector="Hedge". In DELEVERAGE state,
+                    # veto_new_entry blocks new hedges — that is intentional: existing
+                    # hedges survive via source_exclude on _close_all_positions, and
+                    # new hedges are not opened during an active deleverage event.
+                    veto = self._risk.validate_order(
                         ticker=order.ticker,
                         position_pct=order.position_pct,
+                        sector="Hedge",
+                        sector_allocation={},
+                        position_size_usd=position_size_usd,
+                        adv_usd=None,
+                    )
+                    if not veto.allowed:
+                        emit_event(log, EventType.RISK_VETO,
+                                   f"Hedge {order.ticker} vetoed: {veto.reason}")
+                        continue
+
+                    effective_pct = order.position_pct * veto.size_multiplier
+                    self._portfolio.open_position(
+                        ticker=order.ticker,
+                        position_pct=effective_pct,
                         signal_id=None,
                         rationale=order.rationale,
                         entry_price=entry_price,
@@ -892,10 +934,10 @@ class RegimeAwareOrchestrator:
                     )
                     emit_event(
                         log, EventType.HEDGE_ENTRY,
-                        f"Opened hedge {order.ticker} pct={order.position_pct:.1f}%",
+                        f"Opened hedge {order.ticker} pct={effective_pct:.1f}%",
                         data={
                             "ticker": order.ticker,
-                            "position_pct": order.position_pct,
+                            "position_pct": effective_pct,
                             "regime_label": self._regime_state.regime_label if self._regime_state else "?",
                             "regime_confidence": self._regime_state.confidence if self._regime_state else 0.0,
                             "rationale": order.rationale,
@@ -1025,7 +1067,7 @@ class RegimeAwareOrchestrator:
             # Check if forced deleveraging is needed
             if self._risk.state == RiskState.DELEVERAGE:
                 log.warning("Intraday: DELEVERAGE state — closing all positions")
-                self._close_all_positions(reason="intraday_deleverage")
+                self._close_all_positions(reason="intraday_deleverage", source_exclude="hedge")
 
             # Run stop-losses on live prices (long positions)
             self._portfolio.enforce_stop_losses(source_exclude="hedge")
@@ -1039,10 +1081,20 @@ class RegimeAwareOrchestrator:
         except Exception as exc:
             log.warning("Intraday check failed: %s", exc)
 
-    def _close_all_positions(self, reason: str = "forced") -> None:
-        """Close all open positions immediately. Used by deleverage circuit breaker."""
+    def _close_all_positions(self, reason: str = "forced", source_exclude: str | None = None) -> None:
+        """Close all open positions immediately. Used by deleverage circuit breaker.
+
+        Args:
+            reason: exit_reason string stored on the closed position record.
+            source_exclude: if set, skip positions whose signal_source matches this value.
+                Pass ``"hedge"`` during forced deleveraging so inverse-ETF hedges are
+                preserved — they are paying off in the very downturn that triggered
+                the circuit breaker.
+        """
         open_pos = get_open_positions()
         for pos in open_pos:
+            if source_exclude is not None and pos.get("signal_source") == source_exclude:
+                continue
             try:
                 try:
                     price = yf.Ticker(pos["ticker"]).fast_info.last_price or 0.0
@@ -1070,6 +1122,9 @@ class RegimeAwareOrchestrator:
             equity = self._broker.get_equity() if hasattr(self._broker, "get_equity") \
                 else self._broker.get_cash()
             self._risk.check_circuit_breakers(equity)
+            if self._risk.state == RiskState.DELEVERAGE:
+                log.warning("EOD: DELEVERAGE state — closing all positions")
+                self._close_all_positions(reason="eod_deleverage", source_exclude="hedge")
         except Exception as exc:
             log.warning("EOD risk check failed: %s", exc)
         self._update_dashboard()

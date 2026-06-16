@@ -28,7 +28,14 @@ def _make_broker(simulated: bool):
         )
     else:
         from bot.broker import AlpacaBroker
-        return AlpacaBroker()
+        broker = AlpacaBroker()
+        if not broker.is_paper:
+            raise RuntimeError(
+                "AlpacaBroker is not pointed at the paper API "
+                "(ALPACA_BASE_URL does not contain 'paper') — refusing to "
+                "start live trading. This bot is paper-only."
+            )
+        return broker
 
 
 def run_paper(simulated: bool = False) -> None:
