@@ -161,17 +161,13 @@ See `tests/test_pit_data.py` for the expected formats.
 
 ## Phase 0 Gate Dependency
 
-The Phase 0 gate (TRADING_BOT_REVIEW_PLAN.md) is **blocked on data** until at least
-one of the above PIT data sources is supplied. Document the status in `docs/PHASE0_FINDINGS.md`:
+The Phase 0 gate (`TRADING_BOT_REVIEW_PLAN.md`) is **blocked on data** until at least
+one of the above PIT data sources is supplied.
 
-```markdown
-## Data Status
-
-- [ ] PIT constituent data: NOT YET ACQUIRED (see PIT_DATA_REQUIREMENTS.md §1)
-- [ ] PIT fundamental data: NOT YET ACQUIRED
-- [ ] Delisted price data: NOT YET ACQUIRED
-- [ ] FF factor data: NOT YET ACQUIRED
-```
+**Current acquisition status:** see the "Data Required Before Gate Can Open" table in
+`docs/PHASE0_FINDINGS.md` — that table (not a separate checklist here) is the
+canonical, currently-maintained status for all four datasets (§1-4 above). Update
+that table directly as each dataset is acquired; do not duplicate it here.
 
 The `CSVPITProvider` and `run_pit_backtest()` runner are fully implemented and tested
 with synthetic data. The gate is blocked solely on supplying real vendor data.
