@@ -687,6 +687,82 @@ def test_process_signal_rejects_when_risk_size_multiplier_drives_below_floor(moc
 
 
 # ---------------------------------------------------------------------------
+# _process_fundamental_candidate floor-check tests (A6 gap)
+# ---------------------------------------------------------------------------
+
+def test_process_fundamental_candidate_rejects_when_port_vol_mult_drives_below_floor(mocker, orch):
+    """_port_vol_mult=0.01 drives final_pct below 0.1% — must return False, not open position."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 0.01  # extreme vol-gate cut
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=5.0,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    candidate = FactorCandidate(
+        ticker="MSFT", composite_score=80, value_score=25,
+        momentum_score=28, quality_score=27, research=None,
+    )
+    result = orch._process_fundamental_candidate(candidate, {}, set())
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
+def test_process_fundamental_candidate_rejects_when_risk_size_multiplier_drives_below_floor(mocker, orch):
+    """size_multiplier=0.01 from risk veto drives final_pct below 0.1% — must return False, not open position."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 1.0
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=0.5,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=0.01,
+    )
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    candidate = FactorCandidate(
+        ticker="MSFT", composite_score=80, value_score=25,
+        momentum_score=28, quality_score=27, research=None,
+    )
+    result = orch._process_fundamental_candidate(candidate, {}, set())
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # EOD deleverage tests (A8)
 # ---------------------------------------------------------------------------
 
