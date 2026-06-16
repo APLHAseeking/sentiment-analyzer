@@ -598,3 +598,89 @@ def test_intraday_check_deleverage_excludes_hedges(mocker, orch):
     orch.run_intraday_check()
 
     close_all_spy.assert_called_once_with(reason="intraday_deleverage", source_exclude="hedge")
+
+
+# ------------------------------------------------------------------
+# Economic floor re-checks after multiplier stack (Task A6)
+# ------------------------------------------------------------------
+
+def test_process_signal_rejects_when_port_vol_mult_drives_below_floor(mocker, orch):
+    """final_pct *= self._port_vol_mult shrinking below 0.1% must reject, not open a dust position."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 0.01  # extreme vol-gate cut
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician",
+                 return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=5.0,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "d3", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    result = orch._process_signal(disc, {})
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
+def test_process_signal_rejects_when_risk_size_multiplier_drives_below_floor(mocker, orch):
+    """final_pct *= veto.size_multiplier shrinking below 0.1% must reject, not open a dust position."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 1.0
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician",
+                 return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=0.5,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=0.01,
+    )
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "d4", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    result = orch._process_signal(disc, {})
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()

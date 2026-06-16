@@ -72,6 +72,7 @@ _SCREENER_TOP_N = 12
 # size and frequency so the portfolio isn't overweight on a single signal source.
 _CONGRESSIONAL_MAX_PCT = 3.0      # max position size for congressional-only signals (% NAV)
 _CONGRESSIONAL_MAX_PER_DAY = 1    # at most 1 pure congressional-only entry per morning
+_MIN_ECONOMIC_POSITION_PCT = 0.1  # below this, an order is not worth the commission/slippage
 
 
 class RegimeAwareOrchestrator:
@@ -613,7 +614,7 @@ class RegimeAwareOrchestrator:
         if self._regime_state is not None:
             alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
             final_pct = alloc_decision.final_position_pct
-            if final_pct < 0.1:
+            if final_pct < _MIN_ECONOMIC_POSITION_PCT:
                 emit_event(log, EventType.SIGNAL_REJECTED,
                            f"{ticker} blocked by regime allocation ({alloc_decision.rationale})")
                 return False
@@ -626,13 +627,17 @@ class RegimeAwareOrchestrator:
         # Correlation filter
         corr_mult = self._corr_filter.size_multiplier(ticker)
         final_pct *= corr_mult
-        if final_pct < 0.1:
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
             emit_event(log, EventType.SIGNAL_REJECTED,
                        f"{ticker} reduced to zero by correlation filter (mult={corr_mult:.2f})")
             return False
 
         # Portfolio vol gate: scale down if realized portfolio vol exceeds target
         final_pct *= self._port_vol_mult
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(log, EventType.SIGNAL_REJECTED,
+                       f"{ticker} reduced to zero by portfolio-vol gate (mult={self._port_vol_mult:.3f})")
+            return False
 
         _positions_now = self._broker.get_positions()
         _nav = self._broker.get_cash() + sum(
@@ -653,6 +658,10 @@ class RegimeAwareOrchestrator:
 
         # Apply size multiplier from risk state (e.g. 0.5× during daily drawdown)
         final_pct *= veto.size_multiplier
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(log, EventType.SIGNAL_REJECTED,
+                       f"{ticker} reduced to zero by risk-state size multiplier (mult={veto.size_multiplier:.3f})")
+            return False
 
         signal_id = insert_signal(
             disc["id"], ticker, score.conviction,
@@ -759,7 +768,7 @@ class RegimeAwareOrchestrator:
         if self._regime_state is not None:
             alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
             final_pct = alloc_decision.final_position_pct
-            if final_pct < 0.1:
+            if final_pct < _MIN_ECONOMIC_POSITION_PCT:
                 emit_event(
                     log, EventType.SIGNAL_REJECTED,
                     f"{ticker} blocked by regime ({alloc_decision.rationale})",
@@ -771,7 +780,7 @@ class RegimeAwareOrchestrator:
         # Correlation filter
         corr_mult = self._corr_filter.size_multiplier(ticker)
         final_pct *= corr_mult
-        if final_pct < 0.1:
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
             emit_event(
                 log, EventType.SIGNAL_REJECTED,
                 f"{ticker} ({signal_type}) reduced to zero by correlation filter "
@@ -781,6 +790,12 @@ class RegimeAwareOrchestrator:
 
         # Portfolio vol gate: scale down if realized portfolio vol exceeds target
         final_pct *= self._port_vol_mult
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(
+                log, EventType.SIGNAL_REJECTED,
+                f"{ticker} reduced to zero by portfolio-vol gate (mult={self._port_vol_mult:.3f})",
+            )
+            return False
 
         _positions_now = self._broker.get_positions()
         _nav = self._broker.get_cash() + sum(
@@ -802,6 +817,12 @@ class RegimeAwareOrchestrator:
             return False
 
         final_pct *= veto.size_multiplier
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(
+                log, EventType.SIGNAL_REJECTED,
+                f"{ticker} reduced to zero by risk-state size multiplier (mult={veto.size_multiplier:.3f})",
+            )
+            return False
 
         self._portfolio.open_position(
             ticker=ticker,
