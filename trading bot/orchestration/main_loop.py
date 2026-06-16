@@ -905,6 +905,11 @@ class RegimeAwareOrchestrator:
                         continue
 
                     position_size_usd = nav * order.position_pct / 100
+                    # adv_usd=None: ETFs have no ADV constraint; validate_order skips
+                    # liquidity check for sector="Hedge". In DELEVERAGE state,
+                    # veto_new_entry blocks new hedges — that is intentional: existing
+                    # hedges survive via source_exclude on _close_all_positions, and
+                    # new hedges are not opened during an active deleverage event.
                     veto = self._risk.validate_order(
                         ticker=order.ticker,
                         position_pct=order.position_pct,

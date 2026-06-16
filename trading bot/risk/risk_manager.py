@@ -282,7 +282,8 @@ class RiskManager:
                     allowed=False,
                     reason=f"Illiquid: {adv_pct:.1f}% of ADV (max {self._risk.max_adv_pct}%)",
                 )
-        else:
+        elif sector != "Hedge":
+            # Hedge ETFs have no meaningful ADV constraint; suppress noise for them.
             log.warning(
                 "%s: no ADV data (adv_usd=%r) — liquidity check skipped", ticker, adv_usd,
             )
