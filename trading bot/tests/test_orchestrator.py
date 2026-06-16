@@ -552,3 +552,61 @@ def test_maybe_rolling_refit_does_not_double_step_regime_engine(mocker, orch_fit
     orch_fitted._update_regime.assert_not_called()
     # _log_and_set_regime_state is patched by the fixture; assert it was called with our state
     orch_fitted._log_and_set_regime_state.assert_called_once_with(state)
+
+
+def test_process_signal_uses_conservative_atr_fallback_on_history_failure(mocker, orch):
+    """If yf.Ticker(...).history() raises, atr_pct must fall back to
+    _ATR_FALLBACK_PCT (10.0), not the optimistic 1.0%."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from risk.position_sizing import apply_conviction_tilt, vol_target_size_pct
+    from orchestration.main_loop import _ATR_FALLBACK_PCT
+    from system.config import settings
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 1.0
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician",
+                 return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=5.0,
+                     rationale="good", entry="buy", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+
+    # fast_info works (gives a price) but .history() raises
+    ticker_mock = MagicMock()
+    ticker_mock.fast_info.last_price = 100.0
+    ticker_mock.history.side_effect = Exception("no data")
+    mocker.patch("orchestration.main_loop.yf.Ticker", return_value=ticker_mock)
+
+    disc = {
+        "id": "d5", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    orch._process_signal(disc, {})
+
+    expected_base = vol_target_size_pct(
+        atr_pct=_ATR_FALLBACK_PCT,
+        per_trade_risk_pct=settings.sizing.per_trade_risk_pct,
+        max_position_pct=settings.risk.max_position_pct,
+    )
+    expected_final = apply_conviction_tilt(expected_base, 8, settings.risk.max_position_pct)
+
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    assert call_kwargs["position_pct"] == pytest.approx(expected_final)
+    assert _ATR_FALLBACK_PCT == 10.0

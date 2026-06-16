@@ -72,6 +72,9 @@ _SCREENER_TOP_N = 12
 # size and frequency so the portfolio isn't overweight on a single signal source.
 _CONGRESSIONAL_MAX_PCT = 3.0      # max position size for congressional-only signals (% NAV)
 _CONGRESSIONAL_MAX_PER_DAY = 1    # at most 1 pure congressional-only entry per morning
+_ATR_FALLBACK_PCT = 10.0          # conservative (high-vol) ATR fallback when history() fails —
+                                   # a smaller position results, the safe direction when
+                                   # volatility is unknown (vol_target_size_pct: size ∝ 1/atr_pct)
 
 
 class RegimeAwareOrchestrator:
@@ -595,7 +598,7 @@ class RegimeAwareOrchestrator:
                 window=self._cfg.sizing.atr_window,
             )
         except Exception:
-            atr_pct = 1.0
+            atr_pct = _ATR_FALLBACK_PCT
 
         base_pct = vol_target_size_pct(
             atr_pct=atr_pct,
@@ -735,7 +738,7 @@ class RegimeAwareOrchestrator:
                 window=self._cfg.sizing.atr_window,
             )
         except Exception:
-            atr_pct = 1.0
+            atr_pct = _ATR_FALLBACK_PCT
 
         base_pct = vol_target_size_pct(
             atr_pct=atr_pct,
