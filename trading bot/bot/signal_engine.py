@@ -37,13 +37,13 @@ def is_large_enough_trade(amount_range: str, min_usd: int = MIN_TRADE_USD) -> bo
 
 
 def get_cluster_count(ticker: str, since_date: str) -> int:
-    """Count distinct politicians with purchase disclosures for ticker since since_date."""
+    """Count distinct politicians with "buy" disclosures for ticker since since_date."""
     rows = db.get_recent_disclosures_for_ticker(ticker, since_date)
-    return len({r["politician"] for r in rows if r["transaction_type"] == "purchase"})
+    return len({r["politician"] for r in rows if r["transaction_type"] == "buy"})
 
 
 def is_qualified_signal(disclosure: dict) -> bool:
-    if disclosure["transaction_type"] != "purchase":
+    if disclosure["transaction_type"] != "buy":
         return False
     if not is_large_enough_trade(disclosure.get("amount_range", "")):
         return False

@@ -8,7 +8,7 @@ from bot.signal_engine import (
 def _disc(**kwargs):
     base = {
         "id": "x1", "politician": "Jane Doe", "ticker": "AAPL",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-10", "disclosure_date": "2026-04-15",
         "amount_range": "$15,001 - $50,000",
     }
@@ -18,7 +18,7 @@ def test_compute_lag_days():
     assert compute_lag_days("2026-04-01", "2026-04-10") == 9
 
 def test_sale_disqualifies():
-    assert is_qualified_signal(_disc(transaction_type="sale")) is False
+    assert is_qualified_signal(_disc(transaction_type="sell")) is False
 
 def test_lag_over_45_disqualifies():
     disc = _disc(transaction_date="2026-01-01", disclosure_date="2026-04-22")
@@ -59,7 +59,7 @@ def test_qualified_purchase_passes():
         assert is_qualified_signal(disc) is True
 
 def test_filter_disclosures():
-    discs = [_disc(id="a"), _disc(id="b", transaction_type="sale")]
+    discs = [_disc(id="a"), _disc(id="b", transaction_type="sell")]
     with patch("bot.signal_engine.is_in_universe", return_value=True), \
          patch("bot.signal_engine.get_committees_for_politician", return_value=["Senate Banking"]), \
          patch("bot.signal_engine.get_sector_for_ticker", return_value="Financial Services"), \
@@ -100,16 +100,16 @@ def test_large_trade_qualifies():
 
 def test_get_cluster_count_returns_int(mocker):
     mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
-        {"transaction_type": "purchase", "politician": "Jane Doe"},
-        {"transaction_type": "purchase", "politician": "John Smith"},
+        {"transaction_type": "buy", "politician": "Jane Doe"},
+        {"transaction_type": "buy", "politician": "John Smith"},
     ])
     count = get_cluster_count("AAPL", since_date="2026-03-26")
     assert count == 2
 
 def test_get_cluster_count_excludes_sales(mocker):
     mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
-        {"transaction_type": "purchase", "politician": "Jane Doe"},
-        {"transaction_type": "sale", "politician": "John Smith"},
+        {"transaction_type": "buy", "politician": "Jane Doe"},
+        {"transaction_type": "sell", "politician": "John Smith"},
     ])
     count = get_cluster_count("AAPL", since_date="2026-03-26")
     assert count == 1
@@ -132,8 +132,31 @@ def test_get_sector_is_cached():
 
 def test_get_cluster_count_deduplicates_same_politician(mocker):
     mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
-        {"transaction_type": "purchase", "politician": "Jane Doe"},
-        {"transaction_type": "purchase", "politician": "Jane Doe"},  # same politician twice
+        {"transaction_type": "buy", "politician": "Jane Doe"},
+        {"transaction_type": "buy", "politician": "Jane Doe"},  # same politician twice
     ])
     count = get_cluster_count("AAPL", since_date="2026-03-26")
     assert count == 1  # same person buying twice = 1, not 2
+
+
+def test_qualified_signal_recognizes_real_scraper_buy_value():
+    """bot/scraper.py produces transaction_type='buy' (Capitol Trades' real
+    vocabulary), not 'purchase'. is_qualified_signal must recognize it —
+    otherwise every real disclosure is disqualified at the first check."""
+    disc = _disc(transaction_type="buy")
+    with patch("bot.signal_engine.is_in_universe", return_value=True), \
+         patch("bot.signal_engine.get_committees_for_politician", return_value=["Senate Banking"]), \
+         patch("bot.signal_engine.get_sector_for_ticker", return_value="Financial Services"), \
+         patch("bot.signal_engine.sector_has_committee_overlap", return_value=True):
+        assert is_qualified_signal(disc) is True
+
+
+def test_get_cluster_count_recognizes_real_scraper_buy_value(mocker):
+    """get_cluster_count must count transaction_type='buy' rows (the scraper's
+    real vocabulary), not 'purchase'."""
+    mocker.patch("bot.signal_engine.db.get_recent_disclosures_for_ticker", return_value=[
+        {"transaction_type": "buy", "politician": "Jane Doe"},
+        {"transaction_type": "buy", "politician": "John Smith"},
+    ])
+    count = get_cluster_count("AAPL", since_date="2026-03-26")
+    assert count == 2
