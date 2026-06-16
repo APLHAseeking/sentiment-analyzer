@@ -592,8 +592,9 @@ def test_reduce_position_rejected_sell_does_not_change_shares(mock_broker, db):
     assert db.get_closed_positions() == []
 
 
-def test_trailing_up_cancels_old_stop_before_placing_new(mock_broker, db):
-    """On a trail-up the old resting stop must be cancelled before the new one is placed."""
+def test_trailing_up_replaces_resting_stop(mock_broker, db):
+    """On a trail-up, both the new stop placement and the old stop cancellation
+    must happen (ordering covered by test_enforce_stop_losses_places_new_stop_before_cancelling_old)."""
     from system.config import RiskConfig
     portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
     mock_broker.get_stop_orders.return_value = {}  # no existing stop → will place
@@ -606,6 +607,26 @@ def test_trailing_up_cancels_old_stop_before_placing_new(mock_broker, db):
 
     mock_broker.cancel_stop_order.assert_called_once_with("AAPL")
     mock_broker.place_stop_order.assert_called_once()
+
+
+def test_enforce_stop_losses_places_new_stop_before_cancelling_old(mock_broker, db):
+    """On a trail-up, the new (higher) stop must be placed BEFORE the old one
+    is cancelled, so the position is never left without a resting stop."""
+    from system.config import RiskConfig
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0)}
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    call_order = []
+    mock_broker.place_stop_order.side_effect = lambda **kw: call_order.append("place")
+    mock_broker.cancel_stop_order.side_effect = lambda t: call_order.append("cancel")
+
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    assert call_order == ["place", "cancel"]
 
 
 def test_close_position_cancels_resting_stop(mock_broker, db):

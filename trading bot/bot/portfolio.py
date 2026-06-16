@@ -295,9 +295,11 @@ class Portfolio:
             except Exception:
                 pass
             if new_stop > existing_stop:
+                # Place the new stop BEFORE cancelling the old one so the
+                # position always has a resting stop (no gap between cancel and place).
+                self.broker.place_stop_order(ticker=ticker, qty=pos["qty"], stop_price=new_stop)
                 if hasattr(self.broker, "cancel_stop_order"):
                     self.broker.cancel_stop_order(ticker)
-                self.broker.place_stop_order(ticker=ticker, qty=pos["qty"], stop_price=new_stop)
 
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:
