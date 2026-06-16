@@ -641,3 +641,47 @@ def test_hedge_stop_pass_does_not_retrail_long_positions(mock_broker, db):
 
     mock_broker.place_stop_order.assert_not_called()
     mock_broker.cancel_stop_order.assert_not_called()
+
+
+def test_open_position_uses_broker_fill_data_when_available(mock_broker, db):
+    """If the broker reports a real fill (filled_avg_price > 0), open_position
+    must record the ACTUAL filled shares/price, not the pre-trade NAV estimate."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    from system.config import settings
+
+    filled_order = Order(
+        ticker="AAPL", side=OrderSide.BUY, qty=8.0, order_type=OrderType.MARKET,
+    )
+    filled_order.status = OrderStatus.FILLED
+    filled_order.filled_qty = 7.5
+    filled_order.filled_avg_price = 101.50
+    mock_broker.place_order.return_value = filled_order
+    mock_broker.get_positions.return_value = []
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.open_position("AAPL", 5.0, None, "test", entry_price=100.0)
+
+    assert result is True
+    positions = db.get_open_positions()
+    assert len(positions) == 1
+    assert positions[0]["shares"] == pytest.approx(7.5)
+    assert positions[0]["entry_price"] == pytest.approx(101.50)
+
+    stop_kwargs = mock_broker.place_stop_order.call_args[1]
+    assert stop_kwargs["qty"] == pytest.approx(7.5)
+    expected_stop = 101.50 * (1 - settings.risk.trailing_stop_pct / 100)
+    assert stop_kwargs["stop_price"] == pytest.approx(expected_stop)
+
+
+def test_open_position_falls_back_to_nav_estimate_when_no_fill_price(mock_broker, db):
+    """If filled_avg_price == 0 (default mock_broker fixture), open_position
+    keeps the pre-trade NAV-based shares/entry_price — existing behavior."""
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("AAPL", 5.0, None, "test", entry_price=100.0)
+
+    positions = db.get_open_positions()
+    assert len(positions) == 1
+    # NAV-based: shares = (100_000 * 5/100) / 100.0 = 50.0
+    assert positions[0]["shares"] == pytest.approx(50.0)
+    assert positions[0]["entry_price"] == pytest.approx(100.0)

@@ -53,12 +53,20 @@ class Portfolio:
             log.warning("Order rejected for %s: %s", ticker, order.reject_reason)
             return False
 
-        entry_commission = shares * self.broker.get_commission_per_share()
+        # Use actual fill data when available; fall back to pre-trade NAV estimate
+        # for mock/simulated brokers that leave filled_avg_price at 0.0.
+        actual_shares = shares
+        actual_entry_price = entry_price
+        if order.filled_avg_price > 0 and order.filled_qty > 0:
+            actual_shares = order.filled_qty
+            actual_entry_price = order.filled_avg_price
+
+        entry_commission = actual_shares * self.broker.get_commission_per_share()
         try:
             db.insert_position(
                 ticker=ticker,
-                entry_price=entry_price,
-                shares=shares,
+                entry_price=actual_entry_price,
+                shares=actual_shares,
                 position_pct=position_pct,
                 entry_date=date.today().isoformat(),
                 signal_id=signal_id,
@@ -70,7 +78,7 @@ class Portfolio:
             log.critical(
                 "CRITICAL: broker order for %s was filled but DB insert failed — "
                 "manual close required. Shares=%.4f @ $%.2f",
-                ticker, shares, entry_price,
+                ticker, actual_shares, actual_entry_price,
             )
             raise
 
@@ -79,8 +87,8 @@ class Portfolio:
         # Register a resting stop order at the initial trailing-stop level so that
         # overnight / between-poll gaps are covered. The polled enforce_stop_losses()
         # acts as backstop and updates (trails) the stop upward as the peak rises.
-        stop_price = entry_price * (1 - self._risk.trailing_stop_pct / 100)
-        self.broker.place_stop_order(ticker=ticker, qty=shares, stop_price=stop_price)
+        stop_price = actual_entry_price * (1 - self._risk.trailing_stop_pct / 100)
+        self.broker.place_stop_order(ticker=ticker, qty=actual_shares, stop_price=stop_price)
 
         return True
 
