@@ -897,9 +897,10 @@ class RegimeAwareOrchestrator:
                                    f"Hedge {order.ticker} vetoed: {veto.reason}")
                         continue
 
+                    effective_pct = order.position_pct * veto.size_multiplier
                     self._portfolio.open_position(
                         ticker=order.ticker,
-                        position_pct=order.position_pct,
+                        position_pct=effective_pct,
                         signal_id=None,
                         rationale=order.rationale,
                         entry_price=entry_price,
@@ -907,10 +908,10 @@ class RegimeAwareOrchestrator:
                     )
                     emit_event(
                         log, EventType.HEDGE_ENTRY,
-                        f"Opened hedge {order.ticker} pct={order.position_pct:.1f}%",
+                        f"Opened hedge {order.ticker} pct={effective_pct:.1f}%",
                         data={
                             "ticker": order.ticker,
-                            "position_pct": order.position_pct,
+                            "position_pct": effective_pct,
                             "regime_label": self._regime_state.regime_label if self._regime_state else "?",
                             "regime_confidence": self._regime_state.confidence if self._regime_state else 0.0,
                             "rationale": order.rationale,

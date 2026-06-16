@@ -515,8 +515,38 @@ def test_hedge_pass_calls_validate_order(mocker, orch):
 
     orch._run_hedge_pass()
 
-    orch._risk.validate_order.assert_called_once()
+    orch._risk.validate_order.assert_called_once_with(
+        ticker="SH",
+        position_pct=10.0,
+        sector="Hedge",
+        sector_allocation={},
+        position_size_usd=10_000.0,
+        adv_usd=None,
+    )
     orch._portfolio.open_position.assert_called_once()
+
+
+def test_hedge_pass_applies_size_multiplier(mocker, orch):
+    """veto.size_multiplier must scale the hedge position pct."""
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=0.5,
+    )
+
+    orch._run_hedge_pass()
+
+    call_kwargs = orch._portfolio.open_position.call_args
+    assert call_kwargs.kwargs["position_pct"] == pytest.approx(5.0)
 
 
 def test_hedge_pass_skips_order_vetoed_by_risk_manager(mocker, orch):
