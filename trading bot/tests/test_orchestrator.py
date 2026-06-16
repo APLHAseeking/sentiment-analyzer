@@ -85,8 +85,9 @@ def orch_fitted(mocker):
     o._engine = MagicMock()
     o._engine.is_fitted = True
     o._broker = _mock_broker(cash=100_000, position_value=0)
-    mocker.patch.object(o, "_update_regime")    # prevent DB writes
-    mocker.patch.object(o, "_update_dashboard") # prevent file writes
+    mocker.patch.object(o, "_update_regime")          # prevent DB writes on daily update path
+    mocker.patch.object(o, "_log_and_set_regime_state")  # prevent DB writes from initialize/refit path
+    mocker.patch.object(o, "_update_dashboard")       # prevent file writes
     return o
 
 
@@ -494,3 +495,60 @@ def test_process_signal_uses_port_vol_mult(mocker, orch):
     pct_halved = orch._portfolio.open_position.call_args[1]["position_pct"]
 
     assert pct_halved == pytest.approx(pct_full * 0.5, rel=1e-3)
+
+
+import pandas as pd
+
+
+def test_initialize_does_not_double_step_regime_engine(mocker, orch):
+    """initialize() must consume initialize_incremental()'s own RegimeState
+    directly — it must NOT also call update_single()/current_regime() via
+    _update_regime() on the same bar."""
+    state = _RegimeState(
+        date="2026-06-12", regime_index=2, regime_label="neutral",
+        confidence=0.7, is_stable=True, n_regimes=3,
+        raw_posteriors=[0.1, 0.2, 0.7],
+    )
+    orch._engine = mocker.MagicMock()
+    orch._engine.is_fitted = True
+    orch._engine.initialize_incremental.return_value = state
+
+    market_data = pd.DataFrame(
+        {"close": [100.0, 101.0, 102.0]},
+        index=pd.date_range("2026-06-10", periods=3, freq="B"),
+    )
+    mocker.patch("orchestration.main_loop.get_regime_data", return_value=market_data)
+    mocker.patch("orchestration.main_loop.os.path.exists", return_value=True)
+    mock_portfolio_cls = mocker.patch("orchestration.main_loop.Portfolio")
+    mock_portfolio_cls.return_value.reconcile_with_broker.return_value = {"ghost_positions": []}
+    mocker.patch("orchestration.main_loop.log_regime")
+
+    broker = _mock_broker(cash=100_000, position_value=0)
+
+    orch.initialize(broker)
+
+    orch._engine.initialize_incremental.assert_called_once()
+    orch._engine.update_single.assert_not_called()
+    orch._engine.current_regime.assert_not_called()
+    assert orch._regime_state is state
+
+
+def test_maybe_rolling_refit_does_not_double_step_regime_engine(mocker, orch_fitted):
+    """_maybe_rolling_refit() must consume initialize_incremental()'s own
+    RegimeState directly — same double-processing bug as initialize()."""
+    from datetime import date, timedelta
+
+    state = _RegimeState(
+        date="2026-06-12", regime_index=1, regime_label="bear",
+        confidence=0.8, is_stable=True, n_regimes=3,
+        raw_posteriors=[0.1, 0.8, 0.1],
+    )
+    orch_fitted._engine.initialize_incremental.return_value = state
+    orch_fitted._last_refit_date = date.today() - timedelta(days=31)
+
+    orch_fitted._maybe_rolling_refit()
+
+    orch_fitted._engine.initialize_incremental.assert_called_once()
+    orch_fitted._update_regime.assert_not_called()
+    # _log_and_set_regime_state is patched by the fixture; assert it was called with our state
+    orch_fitted._log_and_set_regime_state.assert_called_once_with(state)

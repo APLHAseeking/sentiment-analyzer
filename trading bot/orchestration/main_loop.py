@@ -146,12 +146,13 @@ class RegimeAwareOrchestrator:
         else:
             self._fit_model()
 
-        # Initialize incremental inference state (O(K²) per bar going forward)
-        self._engine.initialize_incremental(self._market_data, self._feature_cfg)
+        # Initialize incremental inference state (O(K²) per bar going forward).
+        # initialize_incremental() already classifies the latest bar and returns
+        # its RegimeState — record it directly instead of calling _update_regime(),
+        # which would re-process the same bar via update_single()/current_regime().
+        regime_state = self._engine.initialize_incremental(self._market_data, self._feature_cfg)
         log.info("Incremental inference initialized")
-
-        # Update to today's regime
-        self._update_regime()
+        self._log_and_set_regime_state(regime_state)
 
         self._broker = broker
         self._portfolio = Portfolio(broker=broker, risk_cfg=self._cfg.risk)
@@ -208,8 +209,8 @@ class RegimeAwareOrchestrator:
             )
             self._last_refit_date = today
             self._engine.save(self._cfg.regime.model_path)
-            self._engine.initialize_incremental(self._market_data, self._feature_cfg)
-            self._update_regime()
+            regime_state = self._engine.initialize_incremental(self._market_data, self._feature_cfg)
+            self._log_and_set_regime_state(regime_state)
             new_label = self._regime_state.regime_label if self._regime_state else "unknown"
             emit_event(log, EventType.MODEL_FIT,
                        f"Rolling refit complete: {prev_label} → {new_label}")
@@ -235,6 +236,34 @@ class RegimeAwareOrchestrator:
         except Exception as exc:
             log.warning("Failed to update market data: %s", exc)
 
+    def _log_and_set_regime_state(self, regime_state) -> None:
+        """Record a freshly computed RegimeState: set self._regime_state, log
+        it to the DB, and emit a REGIME_UNSTABLE alert (or info log).
+
+        Shared by _update_regime() and initialize()/_maybe_rolling_refit(),
+        which get a RegimeState directly from initialize_incremental() and
+        must not re-process the same bar via _update_regime().
+        """
+        self._regime_state = regime_state
+        today = date.today().isoformat()
+        log_regime(
+            date=today,
+            regime_label=self._regime_state.regime_label,
+            regime_index=self._regime_state.regime_index,
+            confidence=self._regime_state.confidence,
+            is_stable=self._regime_state.is_stable,
+            n_regimes=self._regime_state.n_regimes,
+        )
+        if not self._regime_state.is_stable:
+            emit_event(log, EventType.REGIME_UNSTABLE,
+                       f"Unstable regime: {self._regime_state.regime_label} "
+                       f"(conf={self._regime_state.confidence:.2f})")
+        else:
+            log.info("Regime: %s | conf=%.2f | stable=%s",
+                     self._regime_state.regime_label,
+                     self._regime_state.confidence,
+                     self._regime_state.is_stable)
+
     def _update_regime(self) -> None:
         """Classify today's regime using the fitted model (causal, incremental)."""
         if self._market_data is None or not self._engine.is_fitted:
@@ -252,25 +281,7 @@ class RegimeAwareOrchestrator:
                 # Fallback: full classify (first run or after refit before initialize_incremental)
                 regime_state = self._engine.current_regime(self._market_data, self._feature_cfg)
 
-            self._regime_state = regime_state
-            today = date.today().isoformat()
-            log_regime(
-                date=today,
-                regime_label=self._regime_state.regime_label,
-                regime_index=self._regime_state.regime_index,
-                confidence=self._regime_state.confidence,
-                is_stable=self._regime_state.is_stable,
-                n_regimes=self._regime_state.n_regimes,
-            )
-            if not self._regime_state.is_stable:
-                emit_event(log, EventType.REGIME_UNSTABLE,
-                           f"Unstable regime: {self._regime_state.regime_label} "
-                           f"(conf={self._regime_state.confidence:.2f})")
-            else:
-                log.info("Regime: %s | conf=%.2f | stable=%s",
-                         self._regime_state.regime_label,
-                         self._regime_state.confidence,
-                         self._regime_state.is_stable)
+            self._log_and_set_regime_state(regime_state)
         except Exception as exc:
             log.warning("Regime update failed: %s — falling back to full classify", exc)
             try:
