@@ -39,6 +39,7 @@ from backtesting.analysis import (
 from backtesting.benchmarks import buy_and_hold, trend_following, random_allocation
 from backtesting.metrics import total_return as _total_return
 from backtesting.stress_test import DEFAULT_STRESS_SCENARIOS, apply_stress_scenario
+from backtesting.attribution import attribute_returns
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ class WalkForwardWindow:
 class WalkForwardResult:
     windows: list[WalkForwardWindow]
     aggregated_metrics: dict = field(default_factory=dict)
+    pooled_attribution: dict = field(default_factory=dict)
 
 
 def run_walk_forward(
@@ -121,6 +123,11 @@ def run_walk_forward(
              backtest_cfg.test_months, backtest_cfg.step_months)
 
     all_results: list[WalkForwardWindow] = []
+    # Pooled OOS daily returns across all windows for HAC attribution.
+    # Keyed by ISO date string; overlapping windows keep the earliest window's
+    # value for a given date (setdefault).
+    _pooled_strat_returns: dict[str, float] = {}
+    _pooled_spy_returns: dict[str, float] = {}
 
     for i, (train_start, train_end, test_start, test_end) in enumerate(windows):
         log.info("Window %d/%d: train %s→%s | test %s→%s",
@@ -259,6 +266,13 @@ def run_walk_forward(
         except Exception as exc:
             log.warning("Benchmark computation failed for window %d: %s", i + 1, exc)
 
+        # Accumulate pooled OOS returns for HAC attribution
+        for ts, val in eq.pct_change().dropna().items():
+            _pooled_strat_returns.setdefault(str(ts.date()), float(val))
+        if spy_benchmark_returns is not None:
+            for ts, val in spy_benchmark_returns.items():
+                _pooled_spy_returns.setdefault(str(ts.date()), float(val))
+
         metrics = compute_all(
             eq, tr,
             trades=sim.trades,
@@ -340,10 +354,25 @@ def run_walk_forward(
                 },
             )
 
+    pooled_attribution: dict = {}
+    common_dates = sorted(set(_pooled_strat_returns) & set(_pooled_spy_returns))
+    if len(common_dates) >= 10:
+        idx = pd.to_datetime(common_dates)
+        pooled_strat = pd.Series([_pooled_strat_returns[d] for d in common_dates], index=idx)
+        pooled_spy = pd.Series([_pooled_spy_returns[d] for d in common_dates], index=idx)
+        pooled_attribution = attribute_returns(
+            pooled_strat, pd.DataFrame({"SPY": pooled_spy}, index=idx)
+        )
+    else:
+        log.info("Pooled attribution skipped: only %d overlapping OOS dates (need >= 10)",
+                 len(common_dates))
+
     aggregated = _aggregate(all_results)
     log.info("Walk-forward complete. Avg Sharpe: %.2f | Avg MaxDD: %.1f%%",
              aggregated.get("avg_sharpe", 0), aggregated.get("avg_max_drawdown_pct", 0))
-    return WalkForwardResult(windows=all_results, aggregated_metrics=aggregated)
+    return WalkForwardResult(
+        windows=all_results, aggregated_metrics=aggregated, pooled_attribution=pooled_attribution,
+    )
 
 
 def _build_windows(

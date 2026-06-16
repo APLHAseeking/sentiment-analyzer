@@ -275,10 +275,15 @@ def _make_wf_result(stress_scenarios=None):
         "vix": np.clip(15 + rng.normal(0, 3, n), 10, 50),
     }, index=dates)
 
+    # Provide price data so simulate_portfolio builds an equity curve (all_dates
+    # is derived from price_data; with {} the equity curve stays empty and
+    # pooled_attribution would always be skipped).
+    price_data = {"SPY": pd.Series(close, index=dates)}
+
     return run_walk_forward(
         market_data=market_data,
         signal_data=[],
-        price_data={},
+        price_data=price_data,
         regime_cfg=_RCfg(),
         backtest_cfg=_BCfg(),
         feature_cfg=FeatureConfig(vol_window=20, trend_window=50,
@@ -311,6 +316,18 @@ def test_walk_forward_empty_stress_list_produces_no_stress_results():
     w = result.windows[0]
     assert hasattr(w, "stress_results")
     assert w.stress_results == {}
+
+
+def test_walk_forward_result_has_pooled_attribution():
+    """run_walk_forward must compute one pooled (HAC) factor attribution of
+    out-of-sample strategy returns vs SPY, across all windows."""
+    result = _make_wf_result(stress_scenarios=[])
+    assert result.windows, "Expected at least one window"
+    assert result.pooled_attribution, "pooled_attribution must be non-empty"
+    assert "alpha_se" in result.pooled_attribution
+    assert result.pooled_attribution["alpha_se"] >= 0
+    assert "SPY" in result.pooled_attribution["factors"]
+    assert result.pooled_attribution["n_obs"] >= 10
 
 
 # ---------------------------------------------------------------------------

@@ -136,6 +136,13 @@ def run_backtest() -> None:
     log.info("=== Backtest Results ===")
     for k, v in result.aggregated_metrics.items():
         log.info("  %s: %s", k, v)
+    if result.pooled_attribution:
+        pa = result.pooled_attribution
+        log.info("=== Pooled OOS Factor Attribution (HAC/Newey-West, vs SPY) ===")
+        log.info("  alpha_annualized=%.2f%% (se=%.4f, tstat=%.2f, n_obs=%d)",
+                 pa["alpha_pct"], pa["alpha_se"], pa["alpha_tstat"], pa["n_obs"])
+        for fname, fstats in pa["factors"].items():
+            log.info("  %s: beta=%.3f tstat=%.2f", fname, fstats["beta"], fstats["tstat"])
     log.info("Detailed results saved to trading.db (backtest_results table)")
 
 
