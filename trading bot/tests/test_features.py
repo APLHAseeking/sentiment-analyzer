@@ -110,3 +110,32 @@ def test_missing_vix_handled_gracefully():
     cfg = FeatureConfig(use_vix=True, vol_window=20, trend_window=50)
     feat = compute_features(data, cfg)
     assert "ret_1d" in feat.columns  # core features still computed
+
+
+def test_build_feature_matrix_with_scaler_mean_pads_missing_columns():
+    """When the scaler expects more columns than this FeatureConfig produces,
+    the missing columns must be padded with the scaler's training mean so
+    they standardise to ~0 (neutral), not a spurious z-score."""
+    data = _make_price_data(300)
+
+    # Fit a scaler on a wide config (more columns)
+    wide_cfg = FeatureConfig(
+        vol_window=20, trend_window=50, min_history_bars=10,
+        use_vix=False, use_momentum=True, use_drawdown=True,
+    )
+    _, _, scaler = build_feature_matrix(data.iloc[:200], wide_cfg)
+
+    # Apply via a narrower config (fewer columns) — triggers padding
+    narrow_cfg = FeatureConfig(
+        vol_window=20, trend_window=50, min_history_bars=10,
+        use_vix=False, use_momentum=False, use_drawdown=False,
+    )
+    X, _ = build_feature_matrix_with_scaler(data.iloc[200:], scaler, narrow_cfg)
+
+    n_expected = scaler.n_features_in_
+    n_have = 4  # ret_1d, vol_20d, trend_z, vol_z (no vix/momentum/drawdown)
+    assert n_expected > n_have
+
+    # After scaler.transform(), mean-padded columns standardise to ~0
+    padded_cols = X[:, n_have:n_expected]
+    assert np.allclose(padded_cols, 0.0, atol=1e-8)

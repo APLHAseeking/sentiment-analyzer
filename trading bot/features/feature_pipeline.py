@@ -168,11 +168,14 @@ def build_feature_matrix_with_scaler(
     X_df = feat_df[available].dropna()
     index = X_df.index
 
-    # Pad missing columns with zeros so scaler doesn't break
+    # Pad missing columns with the scaler's training mean (matches
+    # regime/hmm_engine.py::_pad_features_to_scaler) so padded columns
+    # standardise to ~0 (neutral) instead of a spurious z-score.
     n_expected = scaler.n_features_in_
-    if X_df.shape[1] < n_expected:
-        pad = np.zeros((len(X_df), n_expected - X_df.shape[1]))
-        X_raw = np.hstack([X_df.values, pad])
+    n_have = X_df.shape[1]
+    if n_have < n_expected:
+        means = np.tile(np.asarray(scaler.mean_)[n_have:n_expected], (len(X_df), 1))
+        X_raw = np.hstack([X_df.values, means])
     else:
         X_raw = X_df.values[:, :n_expected]
 
