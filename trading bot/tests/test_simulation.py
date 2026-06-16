@@ -330,6 +330,73 @@ def test_walk_forward_result_has_pooled_attribution():
     assert result.pooled_attribution["n_obs"] >= 10
 
 
+def test_build_enriched_signal_applies_conviction_tilt_and_instability_penalty():
+    import numpy as np
+    from backtesting.walk_forward import _build_enriched_signal
+    from regime.hmm_engine import RegimeState
+    from system.config import AllocationConfig
+
+    alloc_cfg = AllocationConfig()
+    price_data = {
+        "AAPL": pd.Series(
+            100 * np.cumprod(1 + np.full(30, 0.001)),
+            index=pd.date_range("2026-02-15", periods=30, freq="B"),
+        )
+    }
+    base_sig = {"date": "2026-04-01", "ticker": "AAPL", "position_pct": 0.0}
+
+    stable_regime = RegimeState(
+        date="2026-04-01", regime_index=2, regime_label="neutral",
+        confidence=0.9, is_stable=True, n_regimes=3,
+        raw_posteriors=[0.05, 0.05, 0.9],
+    )
+    unstable_regime = RegimeState(
+        date="2026-04-01", regime_index=2, regime_label="neutral",
+        confidence=0.9, is_stable=False, n_regimes=3,
+        raw_posteriors=[0.05, 0.05, 0.9],
+    )
+
+    high_conviction = _build_enriched_signal(
+        {**base_sig, "conviction": 10}, stable_regime, alloc_cfg, price_data, 0.15, 8.0,
+    )
+    low_conviction = _build_enriched_signal(
+        {**base_sig, "conviction": 5}, stable_regime, alloc_cfg, price_data, 0.15, 8.0,
+    )
+    assert high_conviction["position_pct"] > low_conviction["position_pct"]
+
+    stable_enriched = _build_enriched_signal(
+        {**base_sig, "conviction": 8}, stable_regime, alloc_cfg, price_data, 0.15, 8.0,
+    )
+    unstable_enriched = _build_enriched_signal(
+        {**base_sig, "conviction": 8}, unstable_regime, alloc_cfg, price_data, 0.15, 8.0,
+    )
+    assert unstable_enriched["position_pct"] == pytest.approx(
+        stable_enriched["position_pct"] * alloc_cfg.instability_penalty, rel=1e-6
+    )
+    assert unstable_enriched["regime_label"] == "neutral"
+    assert unstable_enriched["regime_confidence"] == pytest.approx(0.9)
+
+
+def test_build_enriched_signal_preserves_signal_fields():
+    from backtesting.walk_forward import _build_enriched_signal
+    from regime.hmm_engine import RegimeState
+    from system.config import AllocationConfig
+
+    alloc_cfg = AllocationConfig()
+    price_data: dict = {}
+    sig = {"date": "2026-04-01", "ticker": "AAPL", "conviction": 7,
+           "position_pct": 0.0, "extra_field": "keep-me"}
+    regime = RegimeState(
+        date="2026-04-01", regime_index=2, regime_label="neutral",
+        confidence=0.9, is_stable=True, n_regimes=3,
+        raw_posteriors=[0.05, 0.05, 0.9],
+    )
+    enriched = _build_enriched_signal(sig, regime, alloc_cfg, price_data, 0.15, 8.0)
+    assert enriched["extra_field"] == "keep-me"
+    assert enriched["ticker"] == "AAPL"
+    assert 0.0 <= enriched["position_pct"] <= 8.0
+
+
 # ---------------------------------------------------------------------------
 # Task 1.2 — NAV-based sizing
 # ---------------------------------------------------------------------------

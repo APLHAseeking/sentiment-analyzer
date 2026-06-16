@@ -31,7 +31,7 @@ from backtesting.simulation import (
     equity_series, simulate_portfolio, trade_returns
 )
 from features.feature_pipeline import FeatureConfig
-from risk.position_sizing import vol_pct_from_close, vol_target_size_pct
+from risk.position_sizing import apply_conviction_tilt, vol_pct_from_close, vol_target_size_pct
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from backtesting.analysis import (
     regime_performance, confidence_bucket_performance, exposure_by_regime,
@@ -66,6 +66,55 @@ class WalkForwardResult:
     windows: list[WalkForwardWindow]
     aggregated_metrics: dict = field(default_factory=dict)
     pooled_attribution: dict = field(default_factory=dict)
+
+
+def _build_enriched_signal(
+    sig: dict,
+    regime: RegimeState,
+    alloc_cfg: Any,
+    price_data: dict[str, pd.Series],
+    risk_budget: float,
+    pos_ceiling: float,
+) -> dict:
+    """Apply the full live sizing stack to a single walk-forward signal.
+
+    Mirrors regime/allocation_engine.py: vol-target base size, regime multiplier,
+    confidence scaling, instability penalty, and conviction tilt.
+    """
+    sig_date = sig["date"]
+    series_for_vol = price_data.get(sig["ticker"])
+    atr_pct = 1.0
+    if series_for_vol is not None and not series_for_vol.empty:
+        upto = series_for_vol.loc[series_for_vol.index <= pd.Timestamp(sig_date)]
+        if len(upto) >= 15:
+            atr_pct = vol_pct_from_close(upto.values, window=14)
+    base_pct = vol_target_size_pct(atr_pct, risk_budget, pos_ceiling)
+
+    mult = (
+        alloc_cfg.regime_size_multiplier.get(regime.regime_label, 1.0)
+        if alloc_cfg is not None and hasattr(alloc_cfg, "regime_size_multiplier")
+        else 1.0
+    )
+    if alloc_cfg is not None and getattr(alloc_cfg, "confidence_scale", False):
+        lo = getattr(alloc_cfg, "min_confidence_to_trade", 0.0)
+        conf_mult = 0.5 + 0.5 * (regime.confidence - lo) / max(1.0 - lo, 1e-6)
+        mult *= min(conf_mult, 1.0)
+
+    if alloc_cfg is not None and not regime.is_stable:
+        mult *= getattr(alloc_cfg, "instability_penalty", 1.0)
+
+    sized_pct = base_pct * mult
+
+    conviction = sig.get("conviction")
+    if conviction is not None:
+        sized_pct = apply_conviction_tilt(sized_pct, int(conviction), pos_ceiling)
+
+    return {
+        **sig,
+        "position_pct": sized_pct,
+        "regime_label": regime.regime_label,
+        "regime_confidence": regime.confidence,
+    }
 
 
 def run_walk_forward(
@@ -155,7 +204,7 @@ def run_walk_forward(
         full_mask = (market_data.index >= train_start) & (market_data.index <= test_end)
         full_data = market_data.loc[full_mask]
         try:
-            all_states = engine.classify(full_data, feature_cfg)
+            all_states = engine.classify(full_data, feature_cfg, update_recent_labels=True)
         except Exception as exc:
             log.warning("Window %d: classification failed: %s — skipping", i + 1, exc)
             continue
@@ -187,32 +236,9 @@ def run_walk_forward(
                 if regime.confidence < min_conf:
                     continue  # would be filtered in production
 
-            # Apply regime size multiplier + optional confidence scaling
-            # Vol-target base size from the trailing close window (matches live).
-            series_for_vol = price_data.get(sig["ticker"])
-            atr_pct = 1.0
-            if series_for_vol is not None and not series_for_vol.empty:
-                upto = series_for_vol.loc[series_for_vol.index <= pd.Timestamp(sig_date)]
-                if len(upto) >= 15:
-                    atr_pct = vol_pct_from_close(upto.values, window=14)
-            base_pct = vol_target_size_pct(atr_pct, _risk_budget, _pos_ceiling)
-            mult = (
-                alloc_cfg.regime_size_multiplier.get(regime.regime_label, 1.0)
-                if alloc_cfg is not None
-                and hasattr(alloc_cfg, "regime_size_multiplier")
-                else 1.0
+            enriched_signals.append(
+                _build_enriched_signal(sig, regime, alloc_cfg, price_data, _risk_budget, _pos_ceiling)
             )
-            if alloc_cfg is not None and getattr(alloc_cfg, "confidence_scale", False):
-                lo = getattr(alloc_cfg, "min_confidence_to_trade", 0.0)
-                conf_mult = 0.5 + 0.5 * (regime.confidence - lo) / max(1.0 - lo, 1e-6)
-                mult *= min(conf_mult, 1.0)
-
-            enriched_signals.append({
-                **sig,
-                "position_pct": base_pct * mult,
-                "regime_label": regime.regime_label,
-                "regime_confidence": regime.confidence,
-            })
 
         # --- Simulate portfolio ---
         test_price_data = {
