@@ -504,3 +504,63 @@ def test_pad_features_truncates_when_too_many_columns():
     row = np.array([[2.0, 3.0, 99.0]])  # one extra column
     padded = _pad_features_to_scaler(row, scaler)
     assert padded.shape == (1, 2)
+
+
+def test_compute_stability_metrics_accepts_explicit_recent_labels():
+    """An explicit recent_labels argument overrides self._recent_labels and
+    does not mutate it."""
+    cfg = _MockRegimeCfg(min_stable_bars=3)
+    engine = HMMRegimeEngine(cfg)
+    # self._recent_labels is empty -> default (no arg) would be "not stable"
+    is_stable, tr, score = engine._compute_stability_metrics(0, recent_labels=[0, 0, 0])
+    assert is_stable
+    assert tr == pytest.approx(0.0)
+    assert score == pytest.approx(0.0)
+    assert engine._recent_labels == []
+
+
+def test_compute_stability_metrics_default_arg_unchanged():
+    """No recent_labels argument falls back to self._recent_labels (existing behavior)."""
+    cfg = _MockRegimeCfg(min_stable_bars=3)
+    engine = HMMRegimeEngine(cfg)
+    engine._recent_labels = [0, 0, 0]
+    is_stable, tr, score = engine._compute_stability_metrics(0)
+    assert is_stable
+    assert tr == pytest.approx(0.0)
+
+
+def test_classify_default_does_not_touch_recent_labels(fitted_engine):
+    """classify() with update_recent_labels=False (the default) must not
+    mutate _recent_labels — current_regime()/update_single() rely on this."""
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    count_before = len(engine._recent_labels)
+    engine.classify(data.iloc[:500], feature_cfg)
+    assert len(engine._recent_labels) == count_before
+
+
+def test_classify_update_recent_labels_advances_history(fitted_engine):
+    """classify(update_recent_labels=True) rolls _recent_labels forward
+    bar-by-bar, trimmed to min_stable_bars * 3."""
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    states = engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=True)
+    window = engine._cfg.min_stable_bars * 3
+    assert len(states) > window
+    assert len(engine._recent_labels) == window
+    assert engine._recent_labels == [s.regime_index for s in states[-window:]]
+
+
+def test_classify_update_recent_labels_seeds_from_existing_history(fitted_engine):
+    """A second update_recent_labels=True call continues from the history left
+    by the first (rather than recomputing from scratch each time)."""
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=True)
+    history_after_first = list(engine._recent_labels)
+
+    # Pass enough context for feature computation (min_history_bars=100)
+    states_second = engine.classify(data.iloc[400:520], feature_cfg, update_recent_labels=True)
+    window = engine._cfg.min_stable_bars * 3
+    expected_tail = (history_after_first + [s.regime_index for s in states_second])[-window:]
+    assert engine._recent_labels == expected_tail

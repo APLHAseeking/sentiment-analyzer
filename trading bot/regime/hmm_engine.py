@@ -240,7 +240,10 @@ class HMMRegimeEngine:
     # ------------------------------------------------------------------
 
     def classify(
-        self, data: pd.DataFrame, feature_cfg: FeatureConfig | None = None
+        self,
+        data: pd.DataFrame,
+        feature_cfg: FeatureConfig | None = None,
+        update_recent_labels: bool = False,
     ) -> list[RegimeState]:
         """Classify regimes for the given data using the fitted model.
 
@@ -248,6 +251,17 @@ class HMMRegimeEngine:
         model.predict_proba_filtered() which produces forward-only filtered
         posteriors (causal). Each row t depends only on observations 1..t,
         so there is no look-ahead bias.
+
+        Parameters
+        ----------
+        update_recent_labels:
+            If True, roll ``self._recent_labels`` forward bar-by-bar as this
+            call processes ``data`` — each bar's stability metrics are computed
+            against the history *as of that bar* and the final history (trimmed
+            to ``min_stable_bars * 3``) is written back to
+            ``self._recent_labels``. Used by the walk-forward backtest so
+            per-window stability tracking mirrors live bar-by-bar inference.
+            Default False leaves ``self._recent_labels`` untouched.
         """
         if self._result is None:
             raise RuntimeError("Call fit() before classify()")
@@ -266,6 +280,11 @@ class HMMRegimeEngine:
         state_to_rank = self._result.state_to_rank
         label_options = self._result.label_options
 
+        window = self._cfg.min_stable_bars * 3
+        rolling_labels: list[int] | None = None
+        if update_recent_labels:
+            rolling_labels = list(self._recent_labels)
+
         states: list[RegimeState] = []
         for i, ts in enumerate(index):
             # Remap raw posteriors to rank order
@@ -279,7 +298,9 @@ class HMMRegimeEngine:
             rank = int(np.argmax(ranked_posteriors))
             label = label_options[rank] if rank < len(label_options) else str(rank)
             confidence = ranked_posteriors[rank]
-            is_stable, transition_rate, instability_score = self._compute_stability_metrics(rank)
+            is_stable, transition_rate, instability_score = self._compute_stability_metrics(
+                rank, rolling_labels
+            )
             states.append(RegimeState(
                 date=str(ts.date()),
                 regime_index=rank,
@@ -291,6 +312,15 @@ class HMMRegimeEngine:
                 transition_rate=transition_rate,
                 instability_score=instability_score,
             ))
+
+            if update_recent_labels:
+                rolling_labels.append(rank)
+                if len(rolling_labels) > window:
+                    rolling_labels = rolling_labels[-window:]
+
+        if update_recent_labels:
+            self._recent_labels = rolling_labels
+
         return states
 
     def current_regime(
@@ -497,8 +527,18 @@ class HMMRegimeEngine:
         self._data_tail = None
         return result
 
-    def _compute_stability_metrics(self, current_rank: int) -> tuple[bool, float, float]:
+    def _compute_stability_metrics(
+        self, current_rank: int, recent_labels: list[int] | None = None
+    ) -> tuple[bool, float, float]:
         """Compute stability state for the current regime rank.
+
+        Parameters
+        ----------
+        current_rank : the regime rank just computed for the current bar.
+        recent_labels : history of prior bars' ranks to evaluate against.
+            Defaults to ``self._recent_labels``. Passing an explicit list lets
+            ``classify(update_recent_labels=True)`` evaluate each bar against
+            a rolling history without mutating ``self._recent_labels`` mid-call.
 
         Returns
         -------
@@ -506,11 +546,14 @@ class HMMRegimeEngine:
         transition_rate : fraction of consecutive bar-pairs in the window where regime changed
         instability_score : same as transition_rate (0.0 = stable, 1.0 = every bar switches)
         """
+        if recent_labels is None:
+            recent_labels = self._recent_labels
+
         window = self._cfg.min_stable_bars
-        if len(self._recent_labels) < window:
+        if len(recent_labels) < window:
             return False, 1.0, 1.0
 
-        recent = self._recent_labels[-window:]
+        recent = recent_labels[-window:]
         is_stable = all(r == current_rank for r in recent)
 
         if len(recent) < 2:
