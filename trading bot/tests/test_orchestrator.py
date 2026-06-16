@@ -684,3 +684,37 @@ def test_process_signal_rejects_when_risk_size_multiplier_drives_below_floor(moc
 
     assert result is False
     orch._portfolio.open_position.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# EOD deleverage tests (A8)
+# ---------------------------------------------------------------------------
+
+def test_run_eod_closes_positions_on_deleverage(mocker, orch):
+    from risk.risk_manager import RiskState
+
+    orch._broker = _mock_broker(cash=50_000, position_value=50_000)
+    orch._risk = mocker.MagicMock()
+    orch._risk.state = RiskState.DELEVERAGE
+    orch._portfolio.log_snapshot = mocker.MagicMock()
+    close_all_spy = mocker.patch.object(orch, "_close_all_positions")
+    mocker.patch.object(orch, "_update_dashboard")
+
+    orch.run_eod()
+
+    close_all_spy.assert_called_once_with(reason="eod_deleverage", source_exclude="hedge")
+
+
+def test_run_eod_does_not_close_positions_when_normal(mocker, orch):
+    from risk.risk_manager import RiskState
+
+    orch._broker = _mock_broker(cash=50_000, position_value=50_000)
+    orch._risk = mocker.MagicMock()
+    orch._risk.state = RiskState.NORMAL
+    orch._portfolio.log_snapshot = mocker.MagicMock()
+    close_all_spy = mocker.patch.object(orch, "_close_all_positions")
+    mocker.patch.object(orch, "_update_dashboard")
+
+    orch.run_eod()
+
+    close_all_spy.assert_not_called()

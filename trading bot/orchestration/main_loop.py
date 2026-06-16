@@ -1116,6 +1116,9 @@ class RegimeAwareOrchestrator:
             equity = self._broker.get_equity() if hasattr(self._broker, "get_equity") \
                 else self._broker.get_cash()
             self._risk.check_circuit_breakers(equity)
+            if self._risk.state == RiskState.DELEVERAGE:
+                log.warning("EOD: DELEVERAGE state — closing all positions")
+                self._close_all_positions(reason="eod_deleverage", source_exclude="hedge")
         except Exception as exc:
             log.warning("EOD risk check failed: %s", exc)
         self._update_dashboard()
