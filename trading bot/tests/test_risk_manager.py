@@ -214,3 +214,15 @@ def test_stale_data_cleared_allows_entries(tmp_path):
         adv_usd=None,
     )
     assert veto.allowed
+
+
+def test_validate_order_allows_sector_exactly_at_cap(tmp_path):
+    """A sector sitting exactly at max_sector_pct must not be rejected."""
+    mgr = _make_manager(tmp_path, max_sector_pct=30.0)
+    mgr.start_of_day(100_000)
+    veto = mgr.validate_order(
+        ticker="AAPL", position_pct=5.0, sector="Technology",
+        sector_allocation={"Technology": 30.0},  # exactly at cap
+        position_size_usd=5_000, adv_usd=None,
+    )
+    assert veto.allowed

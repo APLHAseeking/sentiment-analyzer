@@ -268,7 +268,7 @@ class RiskManager:
 
         # Sector concentration
         from system.config import settings
-        if sector_allocation.get(sector, 0.0) >= self._risk.max_sector_pct:
+        if sector_allocation.get(sector, 0.0) > self._risk.max_sector_pct:
             return RiskVeto(
                 allowed=False,
                 reason=f"Sector cap: {sector} at {sector_allocation.get(sector, 0):.1f}%",
