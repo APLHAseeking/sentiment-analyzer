@@ -72,6 +72,26 @@ class AlpacaBroker(BrokerInterface):
         except Exception as exc:
             raise RuntimeError(f"Alpaca get_positions failed: {exc}") from exc
 
+    def _poll_order_fill(self, order_id: str, attempts: int = 3, delay: float = 0.2):
+        """Poll Alpaca for a terminal order status after submission.
+
+        Returns the API order object once it reaches filled/cancelled/rejected,
+        or None if still open after `attempts` polls or the API call fails.
+        """
+        import time
+        for i in range(attempts):
+            try:
+                resp = self._api.get_order_by_id(order_id)
+            except Exception as exc:
+                log.warning("get_order_by_id(%s) failed: %s", order_id, exc)
+                return None
+            status_str = str(getattr(resp, "status", "")).lower()
+            if "filled" in status_str or "cancel" in status_str or "reject" in status_str:
+                return resp
+            if i < attempts - 1:
+                time.sleep(delay)
+        return None
+
     def place_order(self, ticker: str, side: str, qty: float) -> Order:
         if side not in ("buy", "sell"):
             order = Order(ticker=ticker.upper(), side=OrderSide("buy"), qty=qty, order_type=OrderType.MARKET)
@@ -91,12 +111,36 @@ class AlpacaBroker(BrokerInterface):
             order_type=OrderType.MARKET,
         )
         try:
-            self._api.submit_order(req)
-            order.status = OrderStatus.SUBMITTED  # Alpaca accepted it
+            submitted = self._api.submit_order(req)
+            order.status = OrderStatus.SUBMITTED
+            order.order_id = str(submitted.id)
         except Exception as exc:
             order.status = OrderStatus.REJECTED
             order.reject_reason = str(exc)
             log.warning("Order rejected for %s %s %.4f: %s", side, ticker, qty, exc)
+            return order
+
+        filled = self._poll_order_fill(order.order_id)
+        if filled is not None:
+            status_str = str(getattr(filled, "status", "")).lower()
+            if "filled" in status_str:
+                order.status = OrderStatus.FILLED
+                try:
+                    order.filled_qty = float(filled.filled_qty or 0)
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    order.filled_avg_price = float(filled.filled_avg_price or 0)
+                except (TypeError, ValueError):
+                    pass
+                filled_at = getattr(filled, "filled_at", None)
+                if filled_at:
+                    order.filled_at = str(filled_at)
+            elif "cancel" in status_str:
+                order.status = OrderStatus.CANCELLED
+            elif "reject" in status_str:
+                order.status = OrderStatus.REJECTED
+                order.reject_reason = str(getattr(filled, "reject_reason", "") or "rejected by broker")
         return order
 
     def cancel_order(self, order_id: str) -> bool:
@@ -107,7 +151,43 @@ class AlpacaBroker(BrokerInterface):
             return False
 
     def get_order_history(self) -> list[Order]:
-        return []
+        try:
+            api_orders = self._api.get_orders()
+        except Exception as exc:
+            log.warning("get_order_history failed: %s", exc)
+            return []
+
+        history: list[Order] = []
+        for o in api_orders:
+            try:
+                side = OrderSide.BUY if "buy" in str(o.side).lower() else OrderSide.SELL
+                order_type = (
+                    OrderType.LIMIT if "limit" in str(o.order_type).lower() else OrderType.MARKET
+                )
+                order = Order(
+                    ticker=o.symbol,
+                    side=side,
+                    qty=float(o.qty),
+                    order_type=order_type,
+                    order_id=str(o.id),
+                )
+                status_str = str(o.status).lower()
+                if "filled" in status_str:
+                    order.status = OrderStatus.FILLED
+                elif "cancel" in status_str:
+                    order.status = OrderStatus.CANCELLED
+                elif "reject" in status_str:
+                    order.status = OrderStatus.REJECTED
+                else:
+                    order.status = OrderStatus.SUBMITTED
+                order.filled_qty = float(o.filled_qty or 0)
+                order.filled_avg_price = float(o.filled_avg_price or 0)
+                filled_at = getattr(o, "filled_at", None)
+                order.filled_at = str(filled_at) if filled_at else None
+                history.append(order)
+            except Exception as exc:
+                log.warning("Skipping unparseable order in get_order_history: %s", exc)
+        return history
 
     def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
         """Submit a GTC stop-sell order to Alpaca. Returns order ID or None on failure."""
