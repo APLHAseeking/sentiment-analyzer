@@ -282,6 +282,10 @@ class RiskManager:
                     allowed=False,
                     reason=f"Illiquid: {adv_pct:.1f}% of ADV (max {self._risk.max_adv_pct}%)",
                 )
+        else:
+            log.warning(
+                "%s: no ADV data (adv_usd=%r) — liquidity check skipped", ticker, adv_usd,
+            )
 
         return RiskVeto(
             allowed=True,
