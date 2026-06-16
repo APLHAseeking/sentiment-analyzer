@@ -554,6 +554,30 @@ def test_maybe_rolling_refit_does_not_double_step_regime_engine(mocker, orch_fit
     orch_fitted._log_and_set_regime_state.assert_called_once_with(state)
 
 
+def test_run_exit_review_reduce_marks_take_profit_taken(mocker, orch):
+    """When review_exit returns action='reduce', run_exit_review must call
+    mark_take_profit_taken so a later enforce_take_profits doesn't
+    reduce the (now smaller) position again."""
+    from bot.ai_analyst import ExitDecision
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
+        "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
+        "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+    }])
+    mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=MagicMock(info={"regularMarketPrice": 120.0}))
+    mocker.patch("orchestration.main_loop.review_exit",
+                 return_value=ExitDecision(action="reduce", rationale="partial profit-take"))
+    mark_spy = mocker.patch("orchestration.main_loop.mark_take_profit_taken")
+
+    orch.run_exit_review()
+
+    mark_spy.assert_called_once_with("AAPL")
+    orch._portfolio.reduce_position.assert_called_once()
+
+
 def test_process_signal_uses_conservative_atr_fallback_on_history_failure(mocker, orch):
     """If yf.Ticker(...).history() raises, atr_pct must fall back to
     _ATR_FALLBACK_PCT (10.0), not the optimistic 1.0%."""

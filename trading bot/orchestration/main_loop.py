@@ -43,7 +43,7 @@ from bot.scraper import run_scraper
 from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days, get_cluster_count, clear_sector_cache
 from bot.committee import get_committees_for_politician
 from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore
-from bot.db import get_open_positions, insert_signal, log_regime, get_nav_history
+from bot.db import get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken
 from bot.universe import refresh_universe, get_universe
 from bot.portfolio import Portfolio
 
@@ -1002,6 +1002,7 @@ class RegimeAwareOrchestrator:
                         signal_id=pos["signal_id"] or 0, entry_price=pos["entry_price"],
                         entry_date=pos["entry_date"],
                     )
+                    mark_take_profit_taken(pos["ticker"])
                     log.info("Reduced %s: %s", pos["ticker"], decision.rationale)
             except Exception:
                 log.exception("Exit review failed for %s", pos.get("ticker", "?"))
