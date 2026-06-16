@@ -124,7 +124,7 @@ def scrape_history(max_pages: int = MAX_PAGES) -> list[dict]:
 def filter_signals(trades: list[dict]) -> list[dict]:
     signals = []
     for t in trades:
-        if t["transaction_type"] != "purchase":
+        if t["transaction_type"] != "buy":
             continue
         if _parse_amount(t.get("amount_range", "")) < MIN_TRADE_USD:
             continue
