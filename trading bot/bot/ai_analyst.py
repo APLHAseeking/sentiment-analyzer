@@ -56,6 +56,64 @@ _BOTH_BONUS = """
 ## Combined Signal Bonus
 A congressional member recently purchased this ticker (disclosure details not shown here) AND the fundamental factor screen flags it: +1 conviction bonus. Apply this bonus regardless of whether you see congressional details in the prompt."""
 
+_TECHNICAL_SCHEMA = """You are a technical analyst gating a trade candidate on timing and risk geometry.
+Respond with ONLY valid JSON matching this exact schema:
+{"conviction": <int 1-10>, "entry": <"buy"|"skip">, "setup_type": <str>,
+ "trend_alignment": <str>, "momentum_state": <str>, "volume_confirmation": <str>,
+ "relative_strength": <str>, "entry_trigger": <str>, "invalidation_price": <float>,
+ "target_price": <float>, "reward_risk": <float>, "key_levels": <str>,
+ "conflicts": [<str>], "rationale": <str>, "risk_flags": [<str>]}
+
+## Risk-First Discipline
+- This is a timing/risk-geometry filter, not a fresh source of alpha. The fundamental or
+  congressional signal has already cleared the entry bar — your job is to judge whether
+  RIGHT NOW is a structurally sound place to enter, and where the trade is proven wrong.
+- invalidation_price MUST be below the current price (the structural stop — where the
+  setup is invalidated, e.g. below the nearest support or below a key moving average).
+- target_price MUST be above the current price (a realistic level — e.g. the next
+  resistance, prior swing high, or measured move).
+- reward_risk MUST equal (target_price - last_close) / (last_close - invalidation_price),
+  computed from the same two prices you return. Do not round it independently.
+
+## Confluence Rules
+- Count confirming factors: trend alignment (price above rising SMAs), momentum
+  (RSI/MACD agreeing with trend direction), volume confirmation (move backed by
+  above-average volume), relative strength (outperforming SPY/sector), and a clean
+  entry trigger (pullback to support, breakout, reclaim of a moving average).
+- A conflict (e.g. RSI divergence against the move, price into resistance, momentum
+  fading, weak relative strength) subtracts from confluence and must be listed in
+  `conflicts`.
+
+## Setup Classification
+- setup_type must be one of: "breakout", "pullback_to_support", "trend_continuation",
+  "reversal", "range_bound", "no_clean_setup".
+
+## Regime Overlay
+- In "bear"/"crash"/"deep-bear" regimes: require stronger confluence (more confirming
+  factors, tighter invalidation) before buy — momentum/breakout setups are riskier when
+  the tape is weak.
+- In "bull"/"euphoria"/"melt-up" regimes: pullback and trend-continuation setups are
+  favored; breakouts chasing an extended move need volume confirmation.
+
+## Decision Rule — set entry="buy" ONLY if ALL of the following hold:
+1. reward_risk >= 2.0
+2. at least 3 confirming factors support the setup (see Confluence Rules)
+3. the setup type suits the current regime (see Regime Overlay)
+4. the entry is not being taken directly into nearby resistance
+5. there is no disqualifying conflict (e.g. active bearish RSI divergence on a long entry)
+Otherwise set entry="skip". False negatives are cheaper than false positives — when in
+doubt, skip."""
+
+_TECHNICAL_BOTH_BONUS = """
+## Combined Signal Note
+This candidate already carries a fundamental and/or congressional signal that passed the
+entry bar. Do not let that bias your timing judgment — score the chart on its own merits.
+A strong fundamental/congressional signal with poor risk geometry right now should still
+be scored "skip" (the position can be revisited later at a better entry)."""
+
+
+_REWARD_RISK_TOLERANCE = 0.05  # 5% relative tolerance on the model's self-reported reward:risk
+
 _RESEARCH_ADJUSTMENTS = """
 ## Fundamental Adjustment (if research provided)
 - Cyclical company at peak earnings (high ROE, high margins, late-cycle sector like Materials/Energy): mentally normalize earnings — do NOT take headline P/E at face value
@@ -171,6 +229,25 @@ class ExitDecision:
     rationale: str
 
 
+@dataclass(frozen=True)
+class TechnicalScore:
+    conviction: int
+    entry: str
+    setup_type: str
+    trend_alignment: str
+    momentum_state: str
+    volume_confirmation: str
+    relative_strength: str
+    entry_trigger: str
+    invalidation_price: float
+    target_price: float
+    reward_risk: float
+    key_levels: str
+    conflicts: tuple[str, ...]
+    rationale: str
+    risk_flags: tuple[str, ...]
+
+
 def parse_entry_response(text: str) -> EntryScore:
     try:
         data = json.loads(text)
@@ -200,6 +277,58 @@ def parse_exit_response(text: str) -> ExitDecision:
     if action not in _VALID_ACTION_VALUES:
         raise ValueError(f"action {action!r} not in {_VALID_ACTION_VALUES}")
     return ExitDecision(action=action, rationale=data["rationale"])
+
+
+def parse_technical_response(text: str, last_close: float) -> TechnicalScore:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"LLM returned invalid JSON for technical score: {text!r}") from exc
+
+    conviction = int(data["conviction"])
+    if not (1 <= conviction <= 10):
+        raise ValueError(f"conviction {conviction} out of range 1-10")
+    entry = data["entry"]
+    if entry not in _VALID_ENTRY_VALUES:
+        raise ValueError(f"entry {entry!r} not in {_VALID_ENTRY_VALUES}")
+
+    invalidation_price = float(data["invalidation_price"])
+    target_price = float(data["target_price"])
+    reported_reward_risk = float(data["reward_risk"])
+
+    valid_geometry = 0 < invalidation_price < last_close < target_price
+    if valid_geometry:
+        recomputed_reward_risk = (target_price - last_close) / (last_close - invalidation_price)
+        matches = abs(recomputed_reward_risk - reported_reward_risk) <= (
+            _REWARD_RISK_TOLERANCE * max(abs(recomputed_reward_risk), 1e-9)
+        )
+    else:
+        recomputed_reward_risk = 0.0
+        matches = False
+
+    if entry == "buy" and (not valid_geometry or not matches):
+        entry = "skip"
+        reward_risk = 0.0
+    else:
+        reward_risk = recomputed_reward_risk if valid_geometry else 0.0
+
+    return TechnicalScore(
+        conviction=conviction,
+        entry=entry,
+        setup_type=data.get("setup_type", ""),
+        trend_alignment=data.get("trend_alignment", ""),
+        momentum_state=data.get("momentum_state", ""),
+        volume_confirmation=data.get("volume_confirmation", ""),
+        relative_strength=data.get("relative_strength", ""),
+        entry_trigger=data.get("entry_trigger", ""),
+        invalidation_price=invalidation_price,
+        target_price=target_price,
+        reward_risk=reward_risk,
+        key_levels=data.get("key_levels", ""),
+        conflicts=tuple(data.get("conflicts", [])),
+        rationale=data["rationale"],
+        risk_flags=tuple(data.get("risk_flags", [])),
+    )
 
 
 def _build_entry_prompt(
