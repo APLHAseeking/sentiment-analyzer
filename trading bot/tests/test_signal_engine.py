@@ -3,6 +3,7 @@ from bot.signal_engine import (
     compute_lag_days, is_qualified_signal, filter_disclosures,
     parse_amount_min_usd, is_large_enough_trade, get_cluster_count,
     get_sector_for_ticker, clear_sector_cache,
+    get_etf_close_history, clear_etf_cache,
 )
 
 def _disc(**kwargs):
@@ -160,3 +161,20 @@ def test_get_cluster_count_recognizes_real_scraper_buy_value(mocker):
     ])
     count = get_cluster_count("AAPL", since_date="2026-03-26")
     assert count == 2
+
+
+import pandas as pd
+
+
+def test_get_etf_close_history_is_cached():
+    """get_etf_close_history should call yf.Ticker only once for repeated lookups."""
+    clear_etf_cache()
+    mock_ticker = MagicMock()
+    mock_hist = pd.DataFrame({"Close": [400.0, 401.0, 402.0]})
+    mock_ticker.history.return_value = mock_hist
+    with patch("bot.signal_engine.yf.Ticker", return_value=mock_ticker) as mock_yf:
+        result1 = get_etf_close_history("SPY")
+        result2 = get_etf_close_history("SPY")
+    assert result1 is result2
+    mock_yf.assert_called_once_with("SPY")
+    clear_etf_cache()  # cleanup
