@@ -211,3 +211,36 @@ def rsi_divergence_from_pivots(
         if price_higher_high and rsi_lower_high:
             return "bearish"
     return "none"
+
+
+def support_resistance_from_pivots(
+    pivot_highs: list[int], pivot_lows: list[int],
+    high: pd.Series, low: pd.Series, last_close: float,
+) -> tuple[float, float]:
+    """Nearest support (highest pivot low below price) and resistance (lowest pivot
+    high above price); falls back to series extremes if no pivot qualifies."""
+    low_values = [float(low.iloc[i]) for i in pivot_lows if low.iloc[i] < last_close]
+    high_values = [float(high.iloc[i]) for i in pivot_highs if high.iloc[i] > last_close]
+    support = max(low_values) if low_values else float(low.min())
+    resistance = min(high_values) if high_values else float(high.max())
+    return support, resistance
+
+
+def fib_levels_from_swing(swing_high: float, swing_low: float) -> dict[str, float]:
+    diff = swing_high - swing_low
+    return {
+        "38.2": swing_high - 0.382 * diff,
+        "50.0": swing_high - 0.500 * diff,
+        "61.8": swing_high - 0.618 * diff,
+    }
+
+
+def anchored_vwap(
+    high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series, anchor_idx: int,
+) -> float:
+    typical = (high.iloc[anchor_idx:] + low.iloc[anchor_idx:] + close.iloc[anchor_idx:]) / 3.0
+    vol = volume.iloc[anchor_idx:]
+    total_vol = vol.sum()
+    if total_vol == 0:
+        return float(close.iloc[-1])
+    return float((typical * vol).sum() / total_vol)

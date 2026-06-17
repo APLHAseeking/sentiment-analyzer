@@ -321,3 +321,56 @@ class TestRsiDivergenceFromPivots:
             pivot_highs=[], pivot_lows=[1, 3], high=high, low=low, rsi=rsi
         )
         assert result == "none"
+
+
+from technical.indicators import support_resistance_from_pivots, fib_levels_from_swing, anchored_vwap
+
+
+class TestSupportResistanceFromPivots:
+    def test_picks_nearest_pivot_below_and_above_price(self):
+        high = pd.Series([110.0, 120.0, 130.0])
+        low = pd.Series([90.0, 80.0, 70.0])
+        support, resistance = support_resistance_from_pivots(
+            pivot_highs=[0, 1, 2], pivot_lows=[0, 1, 2],
+            high=high, low=low, last_close=100.0,
+        )
+        assert support == pytest.approx(90.0)
+        assert resistance == pytest.approx(110.0)
+
+    def test_falls_back_to_series_extremes_when_no_pivot_qualifies(self):
+        high = pd.Series([50.0, 60.0])     # all below last_close -> no resistance pivot
+        low = pd.Series([200.0, 210.0])    # all above last_close -> no support pivot
+        support, resistance = support_resistance_from_pivots(
+            pivot_highs=[0, 1], pivot_lows=[0, 1],
+            high=high, low=low, last_close=100.0,
+        )
+        assert support == pytest.approx(200.0)   # low.min()
+        assert resistance == pytest.approx(60.0)  # high.max()
+
+
+class TestFibLevelsFromSwing:
+    def test_levels_between_high_and_low(self):
+        levels = fib_levels_from_swing(swing_high=200.0, swing_low=100.0)
+        assert levels["38.2"] == pytest.approx(161.8)
+        assert levels["50.0"] == pytest.approx(150.0)
+        assert levels["61.8"] == pytest.approx(138.2)
+
+
+class TestAnchoredVwap:
+    def test_constant_price_gives_same_vwap(self):
+        n = 10
+        high = pd.Series(np.full(n, 101.0))
+        low = pd.Series(np.full(n, 99.0))
+        close = pd.Series(np.full(n, 100.0))
+        volume = pd.Series(np.full(n, 1000.0))
+        result = anchored_vwap(high, low, close, volume, anchor_idx=0)
+        assert result == pytest.approx(100.0)
+
+    def test_zero_volume_falls_back_to_last_close(self):
+        n = 5
+        high = pd.Series(np.full(n, 101.0))
+        low = pd.Series(np.full(n, 99.0))
+        close = pd.Series(np.full(n, 100.0))
+        volume = pd.Series(np.zeros(n))
+        result = anchored_vwap(high, low, close, volume, anchor_idx=0)
+        assert result == pytest.approx(100.0)
