@@ -36,3 +36,29 @@ def price_vs_sma_pct(price: float, sma_value: float) -> float:
     if sma_value == 0:
         return 0.0
     return float((price - sma_value) / sma_value * 100.0)
+
+
+def pct_return(close: pd.Series, bars_back: int) -> float:
+    if len(close) <= bars_back:
+        return 0.0
+    past = close.iloc[-1 - bars_back]
+    now = close.iloc[-1]
+    if past == 0:
+        return 0.0
+    return float((now - past) / past * 100.0)
+
+
+def momentum_12m_1m(close: pd.Series) -> float:
+    """Classic 12-month-minus-1-month momentum: return from 253 bars ago to 22 bars ago."""
+    if len(close) < 253:
+        return 0.0
+    past = close.iloc[-253]
+    recent = close.iloc[-22]
+    if past == 0:
+        return 0.0
+    return float((recent - past) / past * 100.0)
+
+
+def tsmom_composite(ret_1m_pct: float, ret_3m_pct: float, ret_12m_1m_pct: float) -> float:
+    raw = (ret_1m_pct + ret_3m_pct + ret_12m_1m_pct) / 300.0
+    return float(np.clip(raw, -1.0, 1.0))

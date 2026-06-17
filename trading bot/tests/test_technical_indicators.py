@@ -49,3 +49,46 @@ class TestPriceVsSmaPct:
 
     def test_price_below_sma_is_negative(self):
         assert price_vs_sma_pct(price=90.0, sma_value=100.0) == pytest.approx(-10.0)
+
+
+from technical.indicators import pct_return, momentum_12m_1m, tsmom_composite
+
+
+class TestPctReturn:
+    def test_positive_return(self):
+        close = pd.Series(np.linspace(100.0, 121.0, 22))
+        result = pct_return(close, bars_back=21)
+        assert result == pytest.approx((121.0 - 100.0) / 100.0 * 100.0)
+
+    def test_flat_series_zero_return(self):
+        close = pd.Series(np.full(30, 100.0))
+        assert pct_return(close, bars_back=20) == pytest.approx(0.0)
+
+    def test_insufficient_history_returns_zero(self):
+        close = pd.Series([100.0, 101.0])
+        assert pct_return(close, bars_back=20) == pytest.approx(0.0)
+
+
+class TestMomentum12m1m:
+    def test_uptrend_gives_positive_momentum(self):
+        close = pd.Series(np.linspace(100.0, 200.0, 260))
+        assert momentum_12m_1m(close) > 0
+
+    def test_flat_series_gives_zero_momentum(self):
+        close = pd.Series(np.full(260, 100.0))
+        assert momentum_12m_1m(close) == pytest.approx(0.0)
+
+    def test_short_history_returns_zero(self):
+        close = pd.Series(np.full(50, 100.0))
+        assert momentum_12m_1m(close) == pytest.approx(0.0)
+
+
+class TestTsmomComposite:
+    def test_all_positive_returns_positive_composite(self):
+        assert tsmom_composite(10.0, 20.0, 30.0) == pytest.approx(0.2)
+
+    def test_clips_to_one(self):
+        assert tsmom_composite(200.0, 200.0, 200.0) == pytest.approx(1.0)
+
+    def test_clips_to_negative_one(self):
+        assert tsmom_composite(-200.0, -200.0, -200.0) == pytest.approx(-1.0)
