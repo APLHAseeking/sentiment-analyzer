@@ -172,6 +172,11 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         "Add entry_commission to positions",
         "ALTER TABLE positions ADD COLUMN entry_commission REAL NOT NULL DEFAULT 0",
     ),
+    (
+        5,
+        "Add stop_pct to positions",
+        "ALTER TABLE positions ADD COLUMN stop_pct REAL NOT NULL DEFAULT 15.0",
+    ),
 ]
 
 
@@ -243,15 +248,16 @@ def insert_position(ticker: str, entry_price: float, shares: float,
                     position_pct: float, entry_date: str,
                     signal_id: int | None, rationale: str,
                     signal_source: str = "congressional",
-                    entry_commission: float = 0.0) -> None:
+                    entry_commission: float = 0.0,
+                    stop_pct: float = 15.0) -> None:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO positions
                (ticker, entry_price, shares, position_pct, entry_date, signal_id,
-                rationale, peak_price, signal_source, entry_commission)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rationale, peak_price, signal_source, entry_commission, stop_pct)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, entry_price, shares, position_pct, entry_date, signal_id,
-             rationale, entry_price, signal_source, entry_commission),
+             rationale, entry_price, signal_source, entry_commission, stop_pct),
         )
         if cur.rowcount == 0:
             raise ValueError(

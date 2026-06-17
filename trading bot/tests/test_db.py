@@ -237,3 +237,29 @@ def test_get_fundamental_signals_filters_by_date(db):
     recent_rows = db.get_fundamental_signals(since_date="2026-02-01")
     assert len(recent_rows) == 1
     assert recent_rows[0]["ticker"] == "MSFT"
+
+
+def test_insert_position_defaults_stop_pct_to_15(db):
+    db.insert_disclosures([{
+        "id": "sp-001", "politician": "Jane", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-28T08:00:00",
+    }])
+    sid = db.insert_signal("sp-001", "AAPL", 7, 4.0, "test", [])
+    db.insert_position("AAPL", 100.0, 10.0, 4.0, "2026-04-28", sid, "test")
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "AAPL")
+    assert pos["stop_pct"] == pytest.approx(15.0)
+
+
+def test_insert_position_stores_custom_stop_pct(db):
+    db.insert_disclosures([{
+        "id": "sp-002", "politician": "Jane", "ticker": "MSFT",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-28T08:00:00",
+    }])
+    sid = db.insert_signal("sp-002", "MSFT", 7, 4.0, "test", [])
+    db.insert_position("MSFT", 200.0, 5.0, 4.0, "2026-04-28", sid, "test", stop_pct=3.5)
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "MSFT")
+    assert pos["stop_pct"] == pytest.approx(3.5)
