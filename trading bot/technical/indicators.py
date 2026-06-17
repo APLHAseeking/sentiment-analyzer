@@ -269,3 +269,28 @@ def dist_to_52w_extremes_pct(close: pd.Series, last_close: float) -> tuple[float
     dist_to_high = (last_close - high_52w) / high_52w * 100.0 if high_52w != 0 else 0.0
     dist_to_low = (last_close - low_52w) / low_52w * 100.0 if low_52w != 0 else 0.0
     return dist_to_high, dist_to_low
+
+
+def relative_strength_pct(asset_close: pd.Series, bench_close: pd.Series, window: int) -> float:
+    """Asset's window-bar return minus the benchmark's window-bar return (each
+    measured positionally from its own series' end — both are daily US-market
+    series so they cover the same trading days)."""
+    asset_ret = pct_return(asset_close, bars_back=window)
+    bench_ret = pct_return(bench_close, bars_back=window)
+    return float(asset_ret - bench_ret)
+
+
+def rs_line_slope(asset_close: pd.Series, bench_close: pd.Series, window: int = 20) -> str:
+    n = min(len(asset_close), len(bench_close))
+    if n <= window:
+        return "flat"
+    asset_tail = asset_close.iloc[-n:].to_numpy()
+    bench_tail = bench_close.iloc[-n:].to_numpy()
+    rs_line = asset_tail / bench_tail
+    past = rs_line[-1 - window]
+    now = rs_line[-1]
+    if now > past:
+        return "rising"
+    if now < past:
+        return "falling"
+    return "flat"

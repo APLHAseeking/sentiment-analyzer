@@ -408,3 +408,30 @@ class TestDistTo52wExtremesPct:
         dist_high, dist_low = dist_to_52w_extremes_pct(close, last_close=50.0)
         assert dist_low == pytest.approx(0.0, abs=0.01)
         assert dist_high < 0
+
+
+from technical.indicators import relative_strength_pct, rs_line_slope
+
+
+class TestRelativeStrengthPct:
+    def test_outperformance_gives_positive_relative_strength(self):
+        asset = pd.Series(np.linspace(100.0, 130.0, 70))   # +30%
+        bench = pd.Series(np.linspace(100.0, 110.0, 70))   # +10%
+        assert relative_strength_pct(asset, bench, window=60) > 0
+
+    def test_underperformance_gives_negative_relative_strength(self):
+        asset = pd.Series(np.linspace(100.0, 105.0, 70))   # +5%
+        bench = pd.Series(np.linspace(100.0, 120.0, 70))   # +20%
+        assert relative_strength_pct(asset, bench, window=60) < 0
+
+
+class TestRsLineSlope:
+    def test_asset_outpacing_benchmark_is_rising(self):
+        asset = pd.Series(np.linspace(100.0, 150.0, 40))
+        bench = pd.Series(np.linspace(100.0, 110.0, 40))
+        assert rs_line_slope(asset, bench, window=20) == "rising"
+
+    def test_asset_lagging_benchmark_is_falling(self):
+        asset = pd.Series(np.linspace(100.0, 105.0, 40))
+        bench = pd.Series(np.linspace(100.0, 150.0, 40))
+        assert rs_line_slope(asset, bench, window=20) == "falling"
