@@ -249,8 +249,11 @@ def test_enforce_stop_losses_source_include_processes_only_matching(mock_broker,
         "scraped_at": "2026-04-26T08:00:00",
     }])
     sid = db.insert_signal("sf-aapl-01", "AAPL", 7, 4.0, "Good", [])
-    db.insert_position("SH",   100.0, 10.0, 5.0, "2026-04-01", None, "Hedge", "hedge")
-    db.insert_position("AAPL", 100.0, 5.0,  4.0, "2026-04-01", sid,  "Test",  "congressional")
+    # stop_pct=5.0 explicit: this test exercises source scope filtering, not stop width,
+    # so give both positions a stop_pct matching the injected RiskConfig (positions no
+    # longer fall back to a live RiskConfig at poll time — see enforce_stop_losses).
+    db.insert_position("SH",   100.0, 10.0, 5.0, "2026-04-01", None, "Hedge", "hedge", stop_pct=5.0)
+    db.insert_position("AAPL", 100.0, 5.0,  4.0, "2026-04-01", sid,  "Test",  "congressional", stop_pct=5.0)
     # source_include="hedge" → only SH processed
     closed = p.enforce_stop_losses(source_include="hedge")
     assert "SH" in closed
@@ -271,8 +274,9 @@ def test_enforce_stop_losses_source_exclude_skips_matching(mock_broker, db):
         "scraped_at": "2026-04-26T08:00:00",
     }])
     sid = db.insert_signal("sf-aapl-02", "AAPL", 7, 4.0, "Good", [])
-    db.insert_position("SH",   100.0, 10.0, 5.0, "2026-04-01", None, "Hedge", "hedge")
-    db.insert_position("AAPL", 100.0, 5.0,  4.0, "2026-04-01", sid,  "Test",  "congressional")
+    # stop_pct=5.0 explicit: see note in test_enforce_stop_losses_source_include_processes_only_matching
+    db.insert_position("SH",   100.0, 10.0, 5.0, "2026-04-01", None, "Hedge", "hedge", stop_pct=5.0)
+    db.insert_position("AAPL", 100.0, 5.0,  4.0, "2026-04-01", sid,  "Test",  "congressional", stop_pct=5.0)
     # source_exclude="hedge" → SH skipped, AAPL processed
     closed = p.enforce_stop_losses(source_exclude="hedge")
     assert "SH" not in closed
@@ -296,7 +300,11 @@ def test_portfolio_reads_max_positions_from_config(mock_broker):
 
 
 def test_portfolio_reads_stop_loss_from_config(mock_broker, db):
-    # 6% drop — triggers 5% custom threshold, would NOT trigger the default 15%
+    # 6% drop — triggers a 5% per-position stop_pct, would NOT trigger the 15% DB default.
+    # NOTE: enforce_stop_losses() with no override now reads each position's OWN stored
+    # stop_pct (set at open time), not RiskConfig.trailing_stop_pct directly — see
+    # Component 6 of the technical-analysis-layer change. risk_cfg is still passed since
+    # Portfolio requires a risk_cfg instance, but it no longer drives this stop's width.
     risk_cfg = RiskConfig(trailing_stop_pct=5.0)
     p = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
     mock_broker.get_positions.return_value = [{
@@ -310,8 +318,8 @@ def test_portfolio_reads_stop_loss_from_config(mock_broker, db):
         "scraped_at": "2026-04-26T08:00:00",
     }])
     sid = db.insert_signal("cfg-sl-01", "AAPL", 8, 5.0, "Good", [])
-    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
-    closed = p.enforce_stop_losses()   # no explicit pct — must read from injected config
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test", stop_pct=5.0)
+    closed = p.enforce_stop_losses()   # no explicit pct — reads the position's own stop_pct
     assert "AAPL" in closed
 
 
@@ -731,3 +739,54 @@ def test_open_position_default_stop_pct_unchanged_when_not_provided(mock_broker,
     assert call_kwargs["stop_price"] == pytest.approx(expected_stop)
     pos = next(p for p in db.get_open_positions() if p["ticker"] == "MSFT")
     assert pos["stop_pct"] == pytest.approx(settings.risk.trailing_stop_pct)
+
+
+def test_enforce_stop_losses_uses_per_position_stop_pct_with_no_override(mock_broker, db):
+    """Each position's own stop_pct governs its trailing/closing when no
+    explicit stop_loss_pct override is given to enforce_stop_losses()."""
+    portfolio = Portfolio(broker=mock_broker)
+    mock_broker.get_stop_orders.return_value = {}
+    mock_broker.get_positions.return_value = [
+        {"ticker": "AAPL", "qty": 10.0, "current_price": 94.0, "avg_entry_price": 100.0},
+        {"ticker": "MSFT", "qty": 5.0, "current_price": 94.0, "avg_entry_price": 100.0},
+    ]
+    db.insert_disclosures([{
+        "id": "pp-stop-01", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("pp-stop-01", "AAPL", 8, 5.0, "Good", [])
+    # AAPL: tight 5% structural stop -> a 6% drop from peak closes it
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test", stop_pct=5.0)
+    # MSFT: default 15% stop -> the same 6% drop does NOT close it
+    db.insert_position("MSFT", 100.0, 5.0, 4.0, "2026-04-01", None, "Test")
+
+    closed = portfolio.enforce_stop_losses()
+
+    assert "AAPL" in closed
+    assert "MSFT" not in closed
+
+
+def test_enforce_stop_losses_explicit_override_ignores_per_position_stop_pct(mock_broker, db):
+    """An explicit stop_loss_pct override (used by hedge-scoped polling) must
+    apply uniformly, even when a position has its own stored stop_pct."""
+    portfolio = Portfolio(broker=mock_broker)
+    mock_broker.get_stop_orders.return_value = {}
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0, "current_price": 94.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "pp-stop-02", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("pp-stop-02", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test", stop_pct=5.0)
+
+    # 6% drop from peak would close under the position's own 5% stop_pct, but the
+    # explicit 20% override must keep it open.
+    closed = portfolio.enforce_stop_losses(stop_loss_pct=20.0)
+
+    assert "AAPL" not in closed

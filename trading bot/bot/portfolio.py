@@ -268,7 +268,7 @@ class Portfolio:
     ) -> list[str]:
         if source_include is not None and source_exclude is not None:
             raise ValueError("source_include and source_exclude are mutually exclusive")
-        pct = stop_loss_pct if stop_loss_pct is not None else self._risk.trailing_stop_pct
+        default_pct = self._risk.trailing_stop_pct
         closed = []
         open_positions = {p["ticker"]: dict(p) for p in db.get_open_positions()}
 
@@ -283,6 +283,12 @@ class Portfolio:
                 continue
             if source_exclude is not None and source == source_exclude:
                 continue
+
+            # An explicit override (e.g. hedge-scoped polling) applies uniformly and
+            # ignores the stored per-position value. With no override, each position
+            # trails/closes at its OWN stop_pct (set once at open time), not whatever
+            # RiskConfig.trailing_stop_pct happens to be right now.
+            pct = stop_loss_pct if stop_loss_pct is not None else (meta.get("stop_pct") or default_pct)
 
             current = pos["current_price"]
             peak = meta.get("peak_price") or pos["avg_entry_price"]
