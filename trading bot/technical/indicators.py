@@ -6,8 +6,12 @@ bottom of this module (added last) for how everything wires together.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
+
+from risk.position_sizing import atr_pct_from_ohlc
 
 
 def rolling_sma(close: pd.Series, window: int) -> pd.Series:
@@ -294,3 +298,179 @@ def rs_line_slope(asset_close: pd.Series, bench_close: pd.Series, window: int = 
     if now < past:
         return "falling"
     return "flat"
+
+
+@dataclass(frozen=True)
+class TechnicalSnapshot:
+    ticker: str
+    as_of: str
+    last_close: float
+    htf_trend: str
+    htf_above_200d: bool
+    dist_to_52w_high_pct: float
+    dist_to_52w_low_pct: float
+    sma20: float
+    sma50: float
+    sma200: float
+    ma_alignment: str
+    sma200_slope_pct_20d: float
+    price_vs_sma20_pct: float
+    price_vs_sma50_pct: float
+    market_structure: str
+    ret_1m_pct: float
+    ret_3m_pct: float
+    ret_6m_pct: float
+    ret_12m_1m_pct: float
+    tsmom_composite: float
+    rsi14: float
+    rsi_regime: str
+    rsi_divergence: str
+    macd_hist: float
+    macd_state: str
+    atr_pct: float
+    atr_pct_percentile_1y: float
+    bb_percent_b: float
+    bb_bandwidth_percentile_1y: float
+    rel_volume_20d: float
+    obv_trend: str
+    volume_confirms_move: bool
+    rs_vs_spy_3m_pct: float
+    rs_vs_spy_6m_pct: float
+    rs_vs_sector_3m_pct: float | None
+    rs_line_slope: str
+    nearest_support: float
+    nearest_resistance: float
+    dist_to_support_pct: float
+    dist_to_resistance_pct: float
+    fib_levels: dict[str, float]
+    anchored_vwap_from_low: float
+    bars_available: int
+    data_complete: bool
+
+
+def compute_snapshot(
+    ticker: str,
+    ohlcv: pd.DataFrame,
+    spy_close: pd.Series,
+    sector_close: pd.Series | None,
+    as_of: str,
+) -> TechnicalSnapshot:
+    high, low, close, volume = ohlcv["High"], ohlcv["Low"], ohlcv["Close"], ohlcv["Volume"]
+    bars_available = len(close)
+    data_complete = bars_available >= 250
+    last_close = float(close.iloc[-1])
+
+    sma20_series = rolling_sma(close, 20)
+    sma50_series = rolling_sma(close, 50)
+    sma200_series = rolling_sma(close, 200)
+    sma20 = float(sma20_series.iloc[-1]) if not pd.isna(sma20_series.iloc[-1]) else last_close
+    sma50 = float(sma50_series.iloc[-1]) if not pd.isna(sma50_series.iloc[-1]) else last_close
+    sma200 = float(sma200_series.iloc[-1]) if not pd.isna(sma200_series.iloc[-1]) else last_close
+
+    htf_trend = htf_trend_from_weekly(close)
+    dist_to_high_pct, dist_to_low_pct = dist_to_52w_extremes_pct(close, last_close)
+
+    ret_1m = pct_return(close, 22)
+    ret_3m = pct_return(close, 65)
+    ret_6m = pct_return(close, 130)
+    ret_12m_1m = momentum_12m_1m(close)
+    tsmom = tsmom_composite(ret_1m, ret_3m, ret_12m_1m)
+
+    rsi_series = compute_rsi(close, window=14)
+    rsi14 = float(rsi_series.iloc[-1])
+    rsi_regime = "overbought" if rsi14 >= 70 else "oversold" if rsi14 <= 30 else "neutral"
+
+    _, _, macd_hist_arr = compute_macd(close)
+    macd_hist = float(macd_hist_arr[-1])
+    macd_state = macd_state_from_hist(macd_hist_arr)
+
+    atr_pct = atr_pct_from_ohlc(high.values, low.values, close.values, window=14)
+    atr_series = rolling_atr_pct(high, low, close, window=14).to_numpy()
+    atr_pct_percentile_1y = _percentile_rank(atr_series, atr_pct, lookback=252)
+
+    percent_b_arr, bandwidth_arr = bollinger_bands(close, window=20, num_std=2.0)
+    last_percent_b = percent_b_arr[-1]
+    bb_percent_b = float(last_percent_b) if not np.isnan(last_percent_b) else 0.5
+    last_bandwidth = bandwidth_arr[-1]
+    bb_bandwidth_percentile_1y = _percentile_rank(
+        bandwidth_arr, float(last_bandwidth) if not np.isnan(last_bandwidth) else 0.0, lookback=252
+    )
+
+    rel_vol = rel_volume(volume, window=20)
+    obv_series = compute_obv(close, volume)
+    obv_trend = obv_trend_from_series(obv_series, window=20)
+    vol_confirms = volume_confirms_move(close, rel_vol)
+
+    pivot_highs = find_pivots(high.values, k=3, kind="high")
+    pivot_lows = find_pivots(low.values, k=3, kind="low")
+    market_structure = market_structure_from_pivots(pivot_highs, pivot_lows, high, low)
+    rsi_divergence = rsi_divergence_from_pivots(pivot_highs, pivot_lows, high, low, rsi_series)
+    support, resistance = support_resistance_from_pivots(pivot_highs, pivot_lows, high, low, last_close)
+    dist_to_support_pct = (last_close - support) / support * 100.0 if support != 0 else 0.0
+    dist_to_resistance_pct = (resistance - last_close) / last_close * 100.0 if last_close != 0 else 0.0
+
+    if pivot_highs and pivot_lows:
+        swing_high = float(high.iloc[pivot_highs[-1]])
+        swing_low = float(low.iloc[pivot_lows[-1]])
+    else:
+        swing_high = float(high.max())
+        swing_low = float(low.min())
+    fib_levels = fib_levels_from_swing(swing_high, swing_low)
+
+    low_idx = int(np.asarray(low.values).argmin())
+    anchored_vwap_from_low = anchored_vwap(high, low, close, volume, anchor_idx=low_idx)
+
+    rs_vs_spy_3m_pct = relative_strength_pct(close, spy_close, window=65)
+    rs_vs_spy_6m_pct = relative_strength_pct(close, spy_close, window=130)
+    rs_vs_sector_3m_pct = (
+        relative_strength_pct(close, sector_close, window=65)
+        if sector_close is not None else None
+    )
+    rs_slope = rs_line_slope(close, spy_close, window=20)
+
+    return TechnicalSnapshot(
+        ticker=ticker,
+        as_of=as_of,
+        last_close=last_close,
+        htf_trend=htf_trend,
+        htf_above_200d=last_close > sma200,
+        dist_to_52w_high_pct=dist_to_high_pct,
+        dist_to_52w_low_pct=dist_to_low_pct,
+        sma20=sma20,
+        sma50=sma50,
+        sma200=sma200,
+        ma_alignment=ma_alignment(sma20, sma50, sma200),
+        sma200_slope_pct_20d=sma_slope_pct(sma200_series.dropna(), lookback=20),
+        price_vs_sma20_pct=price_vs_sma_pct(last_close, sma20),
+        price_vs_sma50_pct=price_vs_sma_pct(last_close, sma50),
+        market_structure=market_structure,
+        ret_1m_pct=ret_1m,
+        ret_3m_pct=ret_3m,
+        ret_6m_pct=ret_6m,
+        ret_12m_1m_pct=ret_12m_1m,
+        tsmom_composite=tsmom,
+        rsi14=rsi14,
+        rsi_regime=rsi_regime,
+        rsi_divergence=rsi_divergence,
+        macd_hist=macd_hist,
+        macd_state=macd_state,
+        atr_pct=atr_pct,
+        atr_pct_percentile_1y=atr_pct_percentile_1y,
+        bb_percent_b=bb_percent_b,
+        bb_bandwidth_percentile_1y=bb_bandwidth_percentile_1y,
+        rel_volume_20d=rel_vol,
+        obv_trend=obv_trend,
+        volume_confirms_move=vol_confirms,
+        rs_vs_spy_3m_pct=rs_vs_spy_3m_pct,
+        rs_vs_spy_6m_pct=rs_vs_spy_6m_pct,
+        rs_vs_sector_3m_pct=rs_vs_sector_3m_pct,
+        rs_line_slope=rs_slope,
+        nearest_support=support,
+        nearest_resistance=resistance,
+        dist_to_support_pct=dist_to_support_pct,
+        dist_to_resistance_pct=dist_to_resistance_pct,
+        fib_levels=fib_levels,
+        anchored_vwap_from_low=anchored_vwap_from_low,
+        bars_available=bars_available,
+        data_complete=data_complete,
+    )

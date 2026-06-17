@@ -435,3 +435,55 @@ class TestRsLineSlope:
         asset = pd.Series(np.linspace(100.0, 105.0, 40))
         bench = pd.Series(np.linspace(100.0, 150.0, 40))
         assert rs_line_slope(asset, bench, window=20) == "falling"
+
+
+from technical.indicators import TechnicalSnapshot, compute_snapshot
+
+
+def _make_ohlcv(n: int, start_price: float = 100.0, trend: float = 0.0) -> pd.DataFrame:
+    """Synthetic OHLCV DataFrame: close compounds by `trend` per bar (e.g. 0.003 = +0.3%/bar)."""
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")
+    closes = start_price * (1.0 + trend) ** np.arange(n)
+    high = closes * 1.01
+    low = closes * 0.99
+    volume = np.full(n, 1_000_000.0)
+    return pd.DataFrame({"High": high, "Low": low, "Close": closes, "Volume": volume}, index=idx)
+
+
+class TestComputeSnapshot:
+    def test_uptrend_snapshot_has_expected_shape_and_bullish_signals(self):
+        ohlcv = _make_ohlcv(300, start_price=100.0, trend=0.003)
+        spy_close = pd.Series(np.linspace(400.0, 420.0, 300))
+        snapshot = compute_snapshot(
+            ticker="TEST", ohlcv=ohlcv, spy_close=spy_close,
+            sector_close=None, as_of="2026-06-17",
+        )
+        assert isinstance(snapshot, TechnicalSnapshot)
+        assert snapshot.ticker == "TEST"
+        assert snapshot.bars_available == 300
+        assert snapshot.data_complete is True
+        assert snapshot.ma_alignment == "bullish"
+        assert snapshot.htf_trend == "up"
+        assert snapshot.rs_vs_spy_3m_pct > 0
+        assert snapshot.rs_vs_sector_3m_pct is None
+        assert isinstance(snapshot.fib_levels, dict)
+
+    def test_short_history_marks_data_incomplete_without_crashing(self):
+        ohlcv = _make_ohlcv(50, start_price=100.0, trend=0.001)
+        spy_close = pd.Series(np.linspace(400.0, 410.0, 50))
+        snapshot = compute_snapshot(
+            ticker="SHORT", ohlcv=ohlcv, spy_close=spy_close,
+            sector_close=None, as_of="2026-06-17",
+        )
+        assert snapshot.bars_available == 50
+        assert snapshot.data_complete is False
+
+    def test_sector_close_provided_computes_relative_strength(self):
+        ohlcv = _make_ohlcv(300, start_price=100.0, trend=0.003)
+        spy_close = pd.Series(np.linspace(400.0, 420.0, 300))
+        sector_close = pd.Series(np.linspace(50.0, 55.0, 300))
+        snapshot = compute_snapshot(
+            ticker="TEST", ohlcv=ohlcv, spy_close=spy_close,
+            sector_close=sector_close, as_of="2026-06-17",
+        )
+        assert snapshot.rs_vs_sector_3m_pct is not None
