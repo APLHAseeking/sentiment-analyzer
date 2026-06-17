@@ -146,3 +146,53 @@ class TestMacdStateFromHist:
 
     def test_bearish_fading(self):
         assert macd_state_from_hist([-0.1, -0.5, -0.2]) == "bearish_fading"
+
+
+from risk.position_sizing import atr_pct_from_ohlc
+from technical.indicators import rolling_atr_pct, bollinger_bands, _percentile_rank
+
+
+class TestRollingAtrPct:
+    def test_constant_range_gives_expected_pct(self):
+        n = 30
+        close = pd.Series(np.full(n, 100.0))
+        high = close + 1.0
+        low = close - 1.0
+        result = rolling_atr_pct(high, low, close, window=14)
+        assert result.iloc[-1] == pytest.approx(2.0, abs=0.1)
+
+    def test_matches_scalar_atr_pct_from_ohlc(self):
+        n = 30
+        close = pd.Series(np.full(n, 100.0))
+        high = close + 1.0
+        low = close - 1.0
+        rolling_result = rolling_atr_pct(high, low, close, window=14)
+        scalar_result = atr_pct_from_ohlc(high.values, low.values, close.values, window=14)
+        assert rolling_result.iloc[-1] == pytest.approx(scalar_result, abs=0.05)
+
+
+class TestBollingerBands:
+    def test_noisy_series_gives_finite_percent_b_and_bandwidth(self):
+        np.random.seed(0)
+        close = pd.Series(100.0 + np.random.normal(0, 1.0, 30))
+        percent_b, bandwidth = bollinger_bands(close, window=20, num_std=2.0)
+        assert not np.isnan(percent_b[-1])
+        assert not np.isnan(bandwidth[-1])
+
+    def test_flat_series_gives_zero_bandwidth(self):
+        close = pd.Series(np.full(30, 100.0))
+        _, bandwidth = bollinger_bands(close, window=20, num_std=2.0)
+        assert bandwidth[-1] == pytest.approx(0.0, abs=1e-6)
+
+
+class TestPercentileRank:
+    def test_max_value_gives_100th_percentile(self):
+        history = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        assert _percentile_rank(history, value=5.0, lookback=5) == pytest.approx(100.0)
+
+    def test_min_value_gives_lowest_percentile(self):
+        history = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        assert _percentile_rank(history, value=1.0, lookback=5) == pytest.approx(20.0)
+
+    def test_empty_history_returns_50(self):
+        assert _percentile_rank(np.array([]), value=1.0, lookback=5) == pytest.approx(50.0)

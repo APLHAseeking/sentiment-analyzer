@@ -93,3 +93,39 @@ def macd_state_from_hist(hist) -> str:
     direction = "bullish" if arr[-1] > 0 else "bearish"
     momentum = "expanding" if abs(arr[-1]) > abs(arr[-2]) else "fading"
     return f"{direction}_{momentum}"
+
+
+def rolling_atr_pct(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    """Rolling ATR% array — for the percentile field. The single latest ATR% value used
+    for sizing/snapshot should come from risk.position_sizing.atr_pct_from_ohlc instead;
+    this function exists only to provide the historical series for _percentile_rank."""
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    atr = tr.rolling(window).mean()
+    return atr / close * 100.0
+
+
+def bollinger_bands(close: pd.Series, window: int = 20, num_std: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
+    mid = close.rolling(window).mean()
+    std = close.rolling(window).std(ddof=0)
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    band_range = (upper - lower).replace(0.0, np.nan)
+    percent_b = (close - lower) / band_range
+    bandwidth = (upper - lower) / mid.replace(0.0, np.nan) * 100.0
+    return percent_b.to_numpy(), bandwidth.to_numpy()
+
+
+def _percentile_rank(history, value: float, lookback: int = 252) -> float:
+    arr = np.asarray(history, dtype=float)
+    arr = arr[~np.isnan(arr)]
+    if len(arr) == 0:
+        return 50.0
+    window = arr[-lookback:]
+    if len(window) == 0:
+        return 50.0
+    return float(np.mean(window <= value)) * 100.0
