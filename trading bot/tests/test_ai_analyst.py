@@ -524,3 +524,57 @@ class TestParseTechnicalResponse:
     def test_invalid_json_raises(self):
         with pytest.raises(ValueError, match="invalid JSON"):
             parse_technical_response("not json", last_close=100.0)
+
+
+from bot.ai_analyst import score_technical
+from technical.indicators import TechnicalSnapshot
+
+
+def _make_snapshot(**overrides) -> TechnicalSnapshot:
+    base = dict(
+        ticker="AAPL", as_of="2026-06-17", last_close=100.0,
+        htf_trend="up", htf_above_200d=True,
+        dist_to_52w_high_pct=-5.0, dist_to_52w_low_pct=40.0,
+        sma20=99.0, sma50=95.0, sma200=90.0, ma_alignment="bullish",
+        sma200_slope_pct_20d=2.0, price_vs_sma20_pct=1.0, price_vs_sma50_pct=5.0,
+        market_structure="HH_HL",
+        ret_1m_pct=3.0, ret_3m_pct=8.0, ret_6m_pct=15.0, ret_12m_1m_pct=20.0,
+        tsmom_composite=0.3,
+        rsi14=60.0, rsi_regime="neutral", rsi_divergence="none",
+        macd_hist=0.5, macd_state="bullish_expanding",
+        atr_pct=2.0, atr_pct_percentile_1y=50.0,
+        bb_percent_b=0.7, bb_bandwidth_percentile_1y=40.0,
+        rel_volume_20d=1.2, obv_trend="rising", volume_confirms_move=True,
+        rs_vs_spy_3m_pct=2.0, rs_vs_spy_6m_pct=5.0, rs_vs_sector_3m_pct=1.0,
+        rs_line_slope="rising",
+        nearest_support=95.0, nearest_resistance=110.0,
+        dist_to_support_pct=5.0, dist_to_resistance_pct=10.0,
+        fib_levels={"38.2": 97.0, "50.0": 95.0, "61.8": 93.0},
+        anchored_vwap_from_low=96.0,
+        bars_available=300, data_complete=True,
+    )
+    base.update(overrides)
+    return TechnicalSnapshot(**base)
+
+
+def test_score_technical_returns_technical_score(mocker):
+    _mock_claude(mocker, _technical_payload())
+    result = score_technical(_make_snapshot(), regime_label="bull", signal_type="fundamental")
+    assert isinstance(result, TechnicalScore)
+    assert result.entry == "buy"
+
+
+def test_score_technical_both_includes_bonus_text_in_system_prompt(mocker):
+    _mock_claude(mocker, _technical_payload())
+    score_technical(_make_snapshot(), regime_label="bull", signal_type="both")
+    import bot.ai_analyst as m
+    system_text = m._get_client().messages.create.call_args[1]["system"][0]["text"]
+    assert "Combined Signal Note" in system_text
+
+
+def test_score_technical_congressional_omits_bonus_text(mocker):
+    _mock_claude(mocker, _technical_payload())
+    score_technical(_make_snapshot(), regime_label="bull", signal_type="congressional")
+    import bot.ai_analyst as m
+    system_text = m._get_client().messages.create.call_args[1]["system"][0]["text"]
+    assert "Combined Signal Note" not in system_text

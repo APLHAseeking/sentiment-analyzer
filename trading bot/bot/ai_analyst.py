@@ -487,3 +487,56 @@ def review_exit(ticker: str, entry_price: float, current_price: float,
         return parse_exit_response(_claude_call(_EXIT_SYSTEM, prompt, max_tokens=256))
 
     return _call_with_retry(_call)
+
+
+def _build_technical_prompt(snapshot: "TechnicalSnapshot", regime_label: str) -> str:
+    fib = ", ".join(f"{k}%={v:.2f}" for k, v in snapshot.fib_levels.items())
+    rs_sector = (
+        "n/a" if snapshot.rs_vs_sector_3m_pct is None
+        else f"{snapshot.rs_vs_sector_3m_pct:+.2f}%"
+    )
+    lines = [
+        f"Ticker: {snapshot.ticker} | As of: {snapshot.as_of} | "
+        f"Last close: {snapshot.last_close:.2f} | Regime: {regime_label}",
+        f"HTF trend: {snapshot.htf_trend} | Above 200d SMA: {snapshot.htf_above_200d} | "
+        f"Dist to 52w high: {snapshot.dist_to_52w_high_pct:.1f}% | "
+        f"Dist to 52w low: {snapshot.dist_to_52w_low_pct:.1f}%",
+        f"Trend: SMA20={snapshot.sma20:.2f} SMA50={snapshot.sma50:.2f} SMA200={snapshot.sma200:.2f} "
+        f"alignment={snapshot.ma_alignment} sma200_slope_20d={snapshot.sma200_slope_pct_20d:.2f}% "
+        f"price_vs_sma20={snapshot.price_vs_sma20_pct:+.2f}% price_vs_sma50={snapshot.price_vs_sma50_pct:+.2f}% "
+        f"market_structure={snapshot.market_structure}",
+        f"TS-momentum: ret_1m={snapshot.ret_1m_pct:+.2f}% ret_3m={snapshot.ret_3m_pct:+.2f}% "
+        f"ret_6m={snapshot.ret_6m_pct:+.2f}% ret_12m_1m={snapshot.ret_12m_1m_pct:+.2f}% "
+        f"tsmom_composite={snapshot.tsmom_composite:+.2f}",
+        f"Oscillators: RSI14={snapshot.rsi14:.1f} ({snapshot.rsi_regime}) "
+        f"divergence={snapshot.rsi_divergence} MACD_hist={snapshot.macd_hist:+.3f} "
+        f"macd_state={snapshot.macd_state}",
+        f"Volatility: ATR%={snapshot.atr_pct:.2f} (pct1y={snapshot.atr_pct_percentile_1y:.0f}) "
+        f"BB%B={snapshot.bb_percent_b:.2f} BB_bandwidth_pct1y={snapshot.bb_bandwidth_percentile_1y:.0f}",
+        f"Volume: rel_volume_20d={snapshot.rel_volume_20d:.2f}x obv_trend={snapshot.obv_trend} "
+        f"volume_confirms_move={snapshot.volume_confirms_move}",
+        f"Relative strength: vs_SPY_3m={snapshot.rs_vs_spy_3m_pct:+.2f}% "
+        f"vs_SPY_6m={snapshot.rs_vs_spy_6m_pct:+.2f}% vs_sector_3m={rs_sector} "
+        f"rs_line_slope={snapshot.rs_line_slope}",
+        f"Levels: support={snapshot.nearest_support:.2f} resistance={snapshot.nearest_resistance:.2f} "
+        f"dist_to_support={snapshot.dist_to_support_pct:.2f}% dist_to_resistance={snapshot.dist_to_resistance_pct:.2f}% "
+        f"fib=[{fib}] anchored_vwap_from_low={snapshot.anchored_vwap_from_low:.2f}",
+        f"Data quality: bars_available={snapshot.bars_available} data_complete={snapshot.data_complete}",
+    ]
+    return "\n".join(lines)
+
+
+def score_technical(
+    snapshot: "TechnicalSnapshot",
+    regime_label: str,
+    signal_type: str = "fundamental",
+) -> TechnicalScore:
+    prompt = _build_technical_prompt(snapshot, regime_label)
+    system_text = _TECHNICAL_SCHEMA
+    if signal_type == "both":
+        system_text += _TECHNICAL_BOTH_BONUS
+
+    def _call():
+        return parse_technical_response(_claude_call(system_text, prompt), last_close=snapshot.last_close)
+
+    return _call_with_retry(_call)
