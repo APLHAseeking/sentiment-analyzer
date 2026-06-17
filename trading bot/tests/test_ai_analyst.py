@@ -469,3 +469,58 @@ def test_bull_bear_use_claude_sonnet(mocker):
     _bear_argument("test prompt", "bull text")
     bear_model = mock_client.messages.create.call_args[1]["model"]
     assert bear_model == "claude-sonnet-4-6", f"Bear used {bear_model!r}"
+
+
+from bot.ai_analyst import TechnicalScore, parse_technical_response
+
+
+def _technical_payload(**overrides):
+    base = {
+        "conviction": 8, "entry": "buy", "setup_type": "pullback_to_support",
+        "trend_alignment": "bullish", "momentum_state": "rsi_rising",
+        "volume_confirmation": "confirmed", "relative_strength": "outperforming",
+        "entry_trigger": "reclaim of 20-day SMA", "invalidation_price": 95.0,
+        "target_price": 115.0, "reward_risk": 3.0,
+        "key_levels": "support 95, resistance 115",
+        "conflicts": [], "rationale": "Clean setup", "risk_flags": [],
+    }
+    base.update(overrides)
+    return json.dumps(base)
+
+
+class TestParseTechnicalResponse:
+    def test_valid_buy_passes_through(self):
+        # last_close=100: reward_risk = (115-100)/(100-95) = 3.0, matches reported 3.0
+        score = parse_technical_response(_technical_payload(), last_close=100.0)
+        assert isinstance(score, TechnicalScore)
+        assert score.entry == "buy"
+        assert score.reward_risk == pytest.approx(3.0)
+        assert score.conviction == 8
+
+    def test_invalidation_above_last_close_downgrades_to_skip(self):
+        payload = _technical_payload(invalidation_price=105.0)  # >= last_close=100
+        score = parse_technical_response(payload, last_close=100.0)
+        assert score.entry == "skip"
+        assert score.reward_risk == 0.0
+
+    def test_target_below_last_close_downgrades_to_skip(self):
+        payload = _technical_payload(target_price=95.0)  # <= last_close=100
+        score = parse_technical_response(payload, last_close=100.0)
+        assert score.entry == "skip"
+        assert score.reward_risk == 0.0
+
+    def test_reward_risk_mismatch_downgrades_to_skip(self):
+        # Geometry is valid (recomputed reward_risk=3.0) but model self-reports 10.0
+        payload = _technical_payload(reward_risk=10.0)
+        score = parse_technical_response(payload, last_close=100.0)
+        assert score.entry == "skip"
+        assert score.reward_risk == 0.0
+
+    def test_skip_entry_is_not_escalated(self):
+        payload = _technical_payload(entry="skip")
+        score = parse_technical_response(payload, last_close=100.0)
+        assert score.entry == "skip"
+
+    def test_invalid_json_raises(self):
+        with pytest.raises(ValueError, match="invalid JSON"):
+            parse_technical_response("not json", last_close=100.0)
