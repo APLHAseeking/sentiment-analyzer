@@ -185,6 +185,8 @@ class SizingConfig:
     # Tune this to your target gross exposure; keep it ≤ max_position_pct (validated).
     per_trade_risk_pct: float = 0.15
     atr_window: int = 14                     # ATR lookback in bars
+    enable_technical_gate: bool = False      # config-gated TA layer; False = today's behavior
+    min_reward_risk: float = 2.0             # below this, a technical "buy" is treated as skip
 
 
 # ---------------------------------------------------------------------------

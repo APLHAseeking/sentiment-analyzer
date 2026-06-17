@@ -99,3 +99,9 @@ def test_hedge_event_types_exist():
     assert EventType.HEDGE_ENTRY.value == "hedge_entry"
     assert EventType.HEDGE_EXIT.value == "hedge_exit"
     assert EventType.HEDGE_STOP_LOSS.value == "hedge_stop_loss"
+
+
+def test_sizing_config_technical_gate_defaults():
+    s = Settings()
+    assert s.sizing.enable_technical_gate is False
+    assert s.sizing.min_reward_risk == 2.0
