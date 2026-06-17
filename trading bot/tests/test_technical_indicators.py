@@ -92,3 +92,57 @@ class TestTsmomComposite:
 
     def test_clips_to_negative_one(self):
         assert tsmom_composite(-200.0, -200.0, -200.0) == pytest.approx(-1.0)
+
+
+from technical.indicators import compute_rsi, compute_macd, macd_state_from_hist
+
+
+class TestComputeRsi:
+    def test_monotonic_uptrend_gives_rsi_100(self):
+        close = pd.Series(np.arange(1.0, 31.0))
+        rsi = compute_rsi(close, window=14)
+        assert rsi.iloc[-1] == pytest.approx(100.0)
+
+    def test_monotonic_downtrend_gives_rsi_0(self):
+        close = pd.Series(np.arange(30.0, 0.0, -1.0))
+        rsi = compute_rsi(close, window=14)
+        assert rsi.iloc[-1] == pytest.approx(0.0)
+
+    def test_alternating_moves_give_rsi_near_50(self):
+        vals = [100.0]
+        for i in range(100):
+            vals.append(vals[-1] + (1.0 if i % 2 == 0 else -1.0))
+        close = pd.Series(vals)
+        rsi = compute_rsi(close, window=14)
+        assert rsi.iloc[-1] == pytest.approx(50.0, abs=5.0)
+
+
+class TestComputeMacd:
+    def test_returns_three_arrays_of_equal_length(self):
+        close = pd.Series(np.linspace(100.0, 150.0, 60))
+        macd_line, signal_line, hist = compute_macd(close)
+        assert len(macd_line) == len(signal_line) == len(hist) == 60
+
+    def test_uptrend_gives_positive_macd_line(self):
+        close = pd.Series(np.linspace(100.0, 150.0, 60))
+        macd_line, _, _ = compute_macd(close)
+        assert macd_line[-1] > 0
+
+    def test_downtrend_gives_negative_macd_line(self):
+        close = pd.Series(np.linspace(150.0, 100.0, 60))
+        macd_line, _, _ = compute_macd(close)
+        assert macd_line[-1] < 0
+
+
+class TestMacdStateFromHist:
+    def test_bullish_expanding(self):
+        assert macd_state_from_hist([0.1, 0.2, 0.5]) == "bullish_expanding"
+
+    def test_bullish_fading(self):
+        assert macd_state_from_hist([0.1, 0.5, 0.2]) == "bullish_fading"
+
+    def test_bearish_expanding(self):
+        assert macd_state_from_hist([-0.1, -0.2, -0.5]) == "bearish_expanding"
+
+    def test_bearish_fading(self):
+        assert macd_state_from_hist([-0.1, -0.5, -0.2]) == "bearish_fading"

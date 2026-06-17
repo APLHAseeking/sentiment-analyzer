@@ -62,3 +62,34 @@ def momentum_12m_1m(close: pd.Series) -> float:
 def tsmom_composite(ret_1m_pct: float, ret_3m_pct: float, ret_12m_1m_pct: float) -> float:
     raw = (ret_1m_pct + ret_3m_pct + ret_12m_1m_pct) / 300.0
     return float(np.clip(raw, -1.0, 1.0))
+
+
+def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
+    """Wilder-smoothed RSI via ewm(alpha=1/window). Forced to 100 where avg_loss==0."""
+    delta = close.diff()
+    gain = delta.clip(lower=0.0)
+    loss = -delta.clip(upper=0.0)
+    avg_gain = gain.ewm(alpha=1.0 / window, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1.0 / window, adjust=False).mean()
+    rs = avg_gain / avg_loss.replace(0.0, np.nan)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    rsi = rsi.where(avg_loss != 0.0, 100.0)
+    return rsi
+
+
+def compute_macd(
+    close: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line.to_numpy(), signal_line.to_numpy(), histogram.to_numpy()
+
+
+def macd_state_from_hist(hist) -> str:
+    arr = np.asarray(hist, dtype=float)
+    direction = "bullish" if arr[-1] > 0 else "bearish"
+    momentum = "expanding" if abs(arr[-1]) > abs(arr[-2]) else "fading"
+    return f"{direction}_{momentum}"
