@@ -162,3 +162,52 @@ def volume_confirms_move(close: pd.Series, rel_vol: float) -> bool:
         return False
     directional = close.iloc[-1] != close.iloc[-2]
     return bool(directional and rel_vol > 1.0)
+
+
+def find_pivots(values, k: int = 3, kind: str = "high") -> list[int]:
+    """Fixed-lookback local extrema. An index needs k bars on both sides to be
+    confirmed, so the most recent k bars never produce a pivot (expected/causal)."""
+    arr = np.asarray(values, dtype=float)
+    pivots: list[int] = []
+    n = len(arr)
+    for i in range(k, n - k):
+        window = arr[i - k: i + k + 1]
+        center = arr[i]
+        if kind == "high" and center == window.max():
+            pivots.append(i)
+        elif kind == "low" and center == window.min():
+            pivots.append(i)
+    return pivots
+
+
+def market_structure_from_pivots(
+    pivot_highs: list[int], pivot_lows: list[int], high: pd.Series, low: pd.Series
+) -> str:
+    if len(pivot_highs) < 2 or len(pivot_lows) < 2:
+        return "range"
+    h_prev, h_last = high.iloc[pivot_highs[-2]], high.iloc[pivot_highs[-1]]
+    l_prev, l_last = low.iloc[pivot_lows[-2]], low.iloc[pivot_lows[-1]]
+    if h_last > h_prev and l_last > l_prev:
+        return "HH_HL"
+    if h_last < h_prev and l_last < l_prev:
+        return "LH_LL"
+    return "range"
+
+
+def rsi_divergence_from_pivots(
+    pivot_highs: list[int], pivot_lows: list[int],
+    high: pd.Series, low: pd.Series, rsi: pd.Series,
+) -> str:
+    if len(pivot_lows) >= 2:
+        l_prev_idx, l_last_idx = pivot_lows[-2], pivot_lows[-1]
+        price_lower_low = low.iloc[l_last_idx] < low.iloc[l_prev_idx]
+        rsi_higher_low = rsi.iloc[l_last_idx] > rsi.iloc[l_prev_idx]
+        if price_lower_low and rsi_higher_low:
+            return "bullish"
+    if len(pivot_highs) >= 2:
+        h_prev_idx, h_last_idx = pivot_highs[-2], pivot_highs[-1]
+        price_higher_high = high.iloc[h_last_idx] > high.iloc[h_prev_idx]
+        rsi_lower_high = rsi.iloc[h_last_idx] < rsi.iloc[h_prev_idx]
+        if price_higher_high and rsi_lower_high:
+            return "bearish"
+    return "none"

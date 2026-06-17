@@ -252,3 +252,72 @@ class TestVolumeConfirmsMove:
     def test_flat_bar_does_not_confirm_even_with_high_volume(self):
         close = pd.Series([100.0, 100.0])
         assert volume_confirms_move(close, rel_vol=1.5) is False
+
+
+from technical.indicators import find_pivots, market_structure_from_pivots, rsi_divergence_from_pivots
+
+
+class TestFindPivots:
+    def test_finds_single_peak(self):
+        values = [1, 2, 3, 5, 3, 2, 1, 1, 1, 1]
+        assert 3 in find_pivots(values, k=3, kind="high")
+
+    def test_finds_single_trough(self):
+        values = [9, 8, 7, 1, 7, 8, 9, 9, 9, 9]
+        assert 3 in find_pivots(values, k=3, kind="low")
+
+    def test_no_pivots_in_monotonic_series(self):
+        values = list(range(20))
+        assert find_pivots(values, k=3, kind="high") == []
+
+
+class TestMarketStructureFromPivots:
+    def test_higher_highs_and_higher_lows_is_uptrend_structure(self):
+        high = pd.Series([10.0, 12.0, 11.0, 15.0, 13.0])
+        low = pd.Series([8.0, 9.0, 9.5, 11.0, 12.0])
+        result = market_structure_from_pivots(
+            pivot_highs=[1, 3], pivot_lows=[0, 2], high=high, low=low
+        )
+        assert result == "HH_HL"
+
+    def test_lower_highs_and_lower_lows_is_downtrend_structure(self):
+        high = pd.Series([15.0, 13.0, 12.0, 10.0, 9.0])
+        low = pd.Series([12.0, 11.0, 9.0, 8.0, 7.0])
+        result = market_structure_from_pivots(
+            pivot_highs=[0, 1], pivot_lows=[2, 3], high=high, low=low
+        )
+        assert result == "LH_LL"
+
+    def test_fewer_than_two_pivots_each_side_is_range(self):
+        high = pd.Series([10.0, 12.0])
+        low = pd.Series([8.0, 9.0])
+        assert market_structure_from_pivots([1], [0], high, low) == "range"
+
+
+class TestRsiDivergenceFromPivots:
+    def test_bullish_divergence_detected(self):
+        low = pd.Series([10.0, 9.0, 8.0, 7.0])
+        high = pd.Series([20.0, 21.0, 22.0, 23.0])
+        rsi = pd.Series([30.0, 25.0, 35.0, 40.0])
+        result = rsi_divergence_from_pivots(
+            pivot_highs=[], pivot_lows=[1, 3], high=high, low=low, rsi=rsi
+        )
+        assert result == "bullish"
+
+    def test_bearish_divergence_detected(self):
+        high = pd.Series([20.0, 22.0, 24.0, 26.0])
+        low = pd.Series([10.0, 11.0, 12.0, 13.0])
+        rsi = pd.Series([70.0, 75.0, 65.0, 60.0])
+        result = rsi_divergence_from_pivots(
+            pivot_highs=[1, 3], pivot_lows=[], high=high, low=low, rsi=rsi
+        )
+        assert result == "bearish"
+
+    def test_no_divergence_when_price_and_rsi_agree(self):
+        low = pd.Series([10.0, 9.0, 8.0, 7.0])
+        high = pd.Series([20.0, 21.0, 22.0, 23.0])
+        rsi = pd.Series([30.0, 25.0, 20.0, 15.0])
+        result = rsi_divergence_from_pivots(
+            pivot_highs=[], pivot_lows=[1, 3], high=high, low=low, rsi=rsi
+        )
+        assert result == "none"
