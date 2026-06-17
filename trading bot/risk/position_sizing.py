@@ -134,3 +134,22 @@ def vol_pct_from_close(close, window: int = 14, fallback: float = 1.0) -> float:
     tail = close[-(window + 1):]
     rets = np.abs(np.diff(tail) / tail[:-1])
     return float(rets.mean() * 100.0)
+
+
+def structure_stop_size_pct(
+    entry_price: float,
+    invalidation_price: float,
+    per_trade_risk_pct: float,
+    max_position_pct: float,
+) -> float:
+    """size_pct = clamp(per_trade_risk_pct / stop_distance_pct, 0, max_position_pct).
+
+    stop_distance_pct = (entry_price - invalidation_price) / entry_price * 100.
+    Falls back to a 1.0% distance (matching atr_pct_from_ohlc's fallback style)
+    if invalidation_price >= entry_price (should already be rejected upstream).
+    """
+    stop_distance_pct = (entry_price - invalidation_price) / entry_price * 100.0
+    if stop_distance_pct <= 0:
+        stop_distance_pct = 1.0
+    raw = per_trade_risk_pct / stop_distance_pct * 100.0
+    return float(min(max(raw, 0.0), max_position_pct))
