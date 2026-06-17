@@ -374,3 +374,37 @@ class TestAnchoredVwap:
         volume = pd.Series(np.zeros(n))
         result = anchored_vwap(high, low, close, volume, anchor_idx=0)
         assert result == pytest.approx(100.0)
+
+
+from technical.indicators import htf_trend_from_weekly, dist_to_52w_extremes_pct
+
+
+class TestHtfTrendFromWeekly:
+    def test_uptrend_daily_series_gives_up(self):
+        idx = pd.date_range("2024-01-01", periods=500, freq="D")
+        close = pd.Series(np.linspace(100.0, 300.0, 500), index=idx)
+        assert htf_trend_from_weekly(close) == "up"
+
+    def test_downtrend_daily_series_gives_down(self):
+        idx = pd.date_range("2024-01-01", periods=500, freq="D")
+        close = pd.Series(np.linspace(300.0, 100.0, 500), index=idx)
+        assert htf_trend_from_weekly(close) == "down"
+
+    def test_short_history_gives_flat(self):
+        idx = pd.date_range("2024-01-01", periods=20, freq="D")
+        close = pd.Series(np.full(20, 100.0), index=idx)
+        assert htf_trend_from_weekly(close) == "flat"
+
+
+class TestDistTo52wExtremesPct:
+    def test_price_at_high_gives_zero_distance_to_high(self):
+        close = pd.Series(np.linspace(50.0, 100.0, 252))
+        dist_high, dist_low = dist_to_52w_extremes_pct(close, last_close=100.0)
+        assert dist_high == pytest.approx(0.0, abs=0.01)
+        assert dist_low > 0
+
+    def test_price_at_low_gives_zero_distance_to_low(self):
+        close = pd.Series(np.linspace(50.0, 100.0, 252))
+        dist_high, dist_low = dist_to_52w_extremes_pct(close, last_close=50.0)
+        assert dist_low == pytest.approx(0.0, abs=0.01)
+        assert dist_high < 0

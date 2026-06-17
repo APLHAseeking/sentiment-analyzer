@@ -244,3 +244,28 @@ def anchored_vwap(
     if total_vol == 0:
         return float(close.iloc[-1])
     return float((typical * vol).sum() / total_vol)
+
+
+def htf_trend_from_weekly(daily_close: pd.Series, window_weeks: int = 30) -> str:
+    """Resample to weekly closes, take a window_weeks SMA, compare now vs 4 weeks ago."""
+    weekly = daily_close.resample("W").last().dropna()
+    sma = weekly.rolling(window_weeks).mean()
+    valid = sma.dropna()
+    if len(valid) < 5:
+        return "flat"
+    now = valid.iloc[-1]
+    past = valid.iloc[-5]
+    if now > past:
+        return "up"
+    if now < past:
+        return "down"
+    return "flat"
+
+
+def dist_to_52w_extremes_pct(close: pd.Series, last_close: float) -> tuple[float, float]:
+    window = close.iloc[-252:] if len(close) >= 252 else close
+    high_52w = float(window.max())
+    low_52w = float(window.min())
+    dist_to_high = (last_close - high_52w) / high_52w * 100.0 if high_52w != 0 else 0.0
+    dist_to_low = (last_close - low_52w) / low_52w * 100.0 if low_52w != 0 else 0.0
+    return dist_to_high, dist_to_low
