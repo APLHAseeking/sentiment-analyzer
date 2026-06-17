@@ -1,6 +1,7 @@
 import functools
 import re
 from datetime import date
+import pandas as pd
 import yfinance as yf
 
 import bot.db as db
@@ -24,6 +25,15 @@ def get_sector_for_ticker(ticker: str) -> str:
 
 def clear_sector_cache() -> None:
     get_sector_for_ticker.cache_clear()
+
+
+@functools.lru_cache(maxsize=32)
+def get_etf_close_history(etf_ticker: str, period: str = "2y") -> pd.Series:
+    return yf.Ticker(etf_ticker).history(period=period)["Close"]
+
+
+def clear_etf_cache() -> None:
+    get_etf_close_history.cache_clear()
 
 
 def parse_amount_min_usd(amount_range: str) -> int:

@@ -141,3 +141,30 @@ class TestVolPctFromClose:
 
     def test_insufficient_history_returns_fallback(self):
         assert vol_pct_from_close(np.array([100.0, 101.0]), window=14) == pytest.approx(1.0)
+
+
+from risk.position_sizing import structure_stop_size_pct
+
+
+class TestStructureStopSizePct:
+    def test_close_stop_gives_larger_size_than_far_stop(self):
+        close_stop = structure_stop_size_pct(100.0, 98.0, 0.15, 8.0)   # 2% stop distance
+        far_stop = structure_stop_size_pct(100.0, 90.0, 0.15, 8.0)     # 10% stop distance
+        assert close_stop > far_stop
+
+    def test_two_pct_stop_distance_size(self):
+        # stop_distance = (100-98)/100*100 = 2% -> 0.15/2*100 = 7.5%
+        assert structure_stop_size_pct(100.0, 98.0, 0.15, 8.0) == pytest.approx(7.5)
+
+    def test_caps_at_max_position_pct(self):
+        # stop_distance = 0.5% -> 0.15/0.5*100 = 30% -> capped at 8.0
+        assert structure_stop_size_pct(100.0, 99.5, 0.15, 8.0) == pytest.approx(8.0)
+
+    def test_invalid_invalidation_price_uses_fallback_distance(self):
+        # invalidation_price >= entry_price -> fallback to 1.0% distance -> 15% -> capped at 8.0
+        assert structure_stop_size_pct(100.0, 100.0, 0.15, 8.0) == pytest.approx(8.0)
+        assert structure_stop_size_pct(100.0, 105.0, 0.15, 8.0) == pytest.approx(8.0)
+
+    def test_result_is_always_non_negative(self):
+        for inval in [50.0, 80.0, 95.0, 99.0]:
+            assert structure_stop_size_pct(100.0, inval, 0.15, 8.0) >= 0.0
