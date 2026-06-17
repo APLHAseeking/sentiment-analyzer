@@ -706,3 +706,28 @@ def test_open_position_falls_back_to_nav_estimate_when_no_fill_price(mock_broker
     # NAV-based: shares = (100_000 * 5/100) / 100.0 = 50.0
     assert positions[0]["shares"] == pytest.approx(50.0)
     assert positions[0]["entry_price"] == pytest.approx(100.0)
+
+
+def test_open_position_uses_initial_stop_pct_when_provided(mock_broker, db):
+    """A structural stop width overrides the global trailing_stop_pct for both
+    the resting broker stop and the persisted positions.stop_pct."""
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("AAPL", 5.0, None, "test", 100.0, initial_stop_pct=2.0)
+    call_kwargs = mock_broker.place_stop_order.call_args[1]
+    assert call_kwargs["stop_price"] == pytest.approx(98.0)
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "AAPL")
+    assert pos["stop_pct"] == pytest.approx(2.0)
+
+
+def test_open_position_default_stop_pct_unchanged_when_not_provided(mock_broker, db):
+    """initial_stop_pct=None (default) must behave exactly as before this feature."""
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("MSFT", 5.0, None, "test", 200.0)
+    from system.config import settings
+    call_kwargs = mock_broker.place_stop_order.call_args[1]
+    expected_stop = 200.0 * (1 - settings.risk.trailing_stop_pct / 100)
+    assert call_kwargs["stop_price"] == pytest.approx(expected_stop)
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "MSFT")
+    assert pos["stop_pct"] == pytest.approx(settings.risk.trailing_stop_pct)

@@ -34,9 +34,13 @@ class Portfolio:
 
     def open_position(self, ticker: str, position_pct: float, signal_id: int | None,
                       rationale: str, entry_price: float,
-                      signal_source: str = "congressional") -> bool:
+                      signal_source: str = "congressional",
+                      initial_stop_pct: float | None = None) -> bool:
         """Returns True if position was successfully opened."""
         position_pct = min(position_pct, self._risk.max_position_pct)
+        stop_pct_used = (
+            initial_stop_pct if initial_stop_pct is not None else self._risk.trailing_stop_pct
+        )
 
         # Pre-flight duplicate check before committing real capital
         if db.position_exists(ticker):
@@ -73,6 +77,7 @@ class Portfolio:
                 rationale=rationale,
                 signal_source=signal_source,
                 entry_commission=entry_commission,
+                stop_pct=stop_pct_used,
             )
         except Exception:
             log.critical(
@@ -87,7 +92,7 @@ class Portfolio:
         # Register a resting stop order at the initial trailing-stop level so that
         # overnight / between-poll gaps are covered. The polled enforce_stop_losses()
         # acts as backstop and updates (trails) the stop upward as the peak rises.
-        stop_price = actual_entry_price * (1 - self._risk.trailing_stop_pct / 100)
+        stop_price = actual_entry_price * (1 - stop_pct_used / 100)
         self.broker.place_stop_order(ticker=ticker, qty=actual_shares, stop_price=stop_price)
 
         return True
