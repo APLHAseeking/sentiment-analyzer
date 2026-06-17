@@ -934,3 +934,105 @@ def test_process_signal_uses_conservative_atr_fallback_on_history_failure(mocker
     call_kwargs = orch._portfolio.open_position.call_args[1]
     assert call_kwargs["position_pct"] == pytest.approx(expected_final)
     assert _ATR_FALLBACK_PCT == 10.0
+
+
+# ---------------------------------------------------------------------------
+# MA50/MA200 conviction modifier
+# ---------------------------------------------------------------------------
+
+import numpy as np
+
+
+def test_ma_conviction_delta_golden_cross():
+    """price > MA50 > MA200 → +1"""
+    from orchestration.main_loop import _ma_conviction_delta
+    closes = np.linspace(80.0, 110.0, 250)   # steady uptrend
+    assert _ma_conviction_delta(closes, 115.0) == 1
+
+
+def test_ma_conviction_delta_below_ma200():
+    """price ≤ MA200 → -2"""
+    from orchestration.main_loop import _ma_conviction_delta
+    closes = np.linspace(120.0, 90.0, 250)   # downtrend
+    ma200 = float(np.mean(closes[-200:]))
+    assert _ma_conviction_delta(closes, ma200 - 1.0) == -2
+
+
+def test_ma_conviction_delta_below_ma50_above_ma200():
+    """price above MA200 but below MA50 → -1 (pulled back below near-term MA)"""
+    from orchestration.main_loop import _ma_conviction_delta
+    # 202 bars at 100 then 50 bars at 105: MA50=105, MA200≈101.25
+    closes = np.concatenate([np.full(202, 100.0), np.full(50, 105.0)])
+    ma50  = float(np.mean(closes[-50:]))    # 105.0
+    ma200 = float(np.mean(closes[-200:]))   # 101.25
+    current = 103.0  # above MA200, below MA50
+    assert current > ma200 and current < ma50
+    assert _ma_conviction_delta(closes, current) == -1
+
+
+def test_ma_conviction_delta_insufficient_history():
+    """fewer than 200 bars → 0 (no penalty)"""
+    from orchestration.main_loop import _ma_conviction_delta
+    closes = np.ones(150)
+    assert _ma_conviction_delta(closes, 1.0) == 0
+
+
+def test_process_signal_golden_cross_vs_below_ma200_position_size(mocker, orch):
+    """Golden cross (price above both MAs) must produce larger position than price-below-MA200."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    import pandas as pd
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+    orch._port_vol_mult = 1.0
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=7, position_pct=5.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+
+    n = 252
+    idx = pd.date_range("2025-06-01", periods=n, freq="B")
+
+    # Golden cross: steady uptrend. 2.5% H-L spread gives ATR≈5% → base_pct≈3%;
+    # conviction 8 tilts to 3.12% (capped at 3% congressional cap) while conviction
+    # 5 tilts to 2.4% (below cap), so the two scenarios remain distinguishable.
+    up_closes = np.linspace(80.0, 110.0, n)
+    up_df = pd.DataFrame({"Close": up_closes, "High": up_closes * 1.025,
+                           "Low": up_closes * 0.975, "Volume": 1e6}, index=idx)
+    ticker_up = MagicMock()
+    ticker_up.fast_info.last_price = 115.0
+    ticker_up.history.return_value = up_df
+    mocker.patch("orchestration.main_loop.yf.Ticker", return_value=ticker_up)
+
+    disc = {"id": "d-ma1", "politician": "J", "ticker": "AAPL",
+            "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+            "amount_range": "$50,001 - $100,000"}
+    orch._process_signal(disc, {})
+    pct_golden = orch._portfolio.open_position.call_args[1]["position_pct"]
+    orch._portfolio.open_position.reset_mock()
+
+    # Below MA200: downtrend
+    dn_closes = np.linspace(120.0, 80.0, n)
+    dn_df = pd.DataFrame({"Close": dn_closes, "High": dn_closes * 1.025,
+                           "Low": dn_closes * 0.975, "Volume": 1e6}, index=idx)
+    ticker_dn = MagicMock()
+    ticker_dn.fast_info.last_price = 75.0
+    ticker_dn.history.return_value = dn_df
+    mocker.patch("orchestration.main_loop.yf.Ticker", return_value=ticker_dn)
+
+    disc2 = {**disc, "id": "d-ma2"}
+    orch._process_signal(disc2, {})
+    pct_below = orch._portfolio.open_position.call_args[1]["position_pct"]
+
+    assert pct_golden > pct_below

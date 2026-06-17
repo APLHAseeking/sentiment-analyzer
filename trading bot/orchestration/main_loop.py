@@ -78,6 +78,27 @@ _ATR_FALLBACK_PCT = 10.0          # conservative (high-vol) ATR fallback when hi
 _MIN_ECONOMIC_POSITION_PCT = 0.1  # below this, an order is not worth the commission/slippage
 
 
+def _ma_conviction_delta(close_prices: np.ndarray, current_price: float) -> int:
+    """Conviction adjustment (-2 to +1) based on 50- and 200-day simple moving averages.
+
+    +1  price > MA50 > MA200  — golden cross, confirmed uptrend
+     0  price > MA200, but MA50 ≤ MA200  — recovery not yet confirmed
+    -1  price ≤ MA50 and price > MA200  — short-term weakness
+    -2  price ≤ MA200  — structurally bearish
+     0  fewer than 200 bars of history — skip, no penalty
+    """
+    if len(close_prices) < 200:
+        return 0
+    ma50 = float(np.mean(close_prices[-50:]))
+    ma200 = float(np.mean(close_prices[-200:]))
+    if current_price <= ma200:
+        return -2
+    if current_price <= ma50:
+        return -1
+    # price above both MAs
+    return +1 if ma50 > ma200 else 0
+
+
 class RegimeAwareOrchestrator:
     """Wraps the existing bot pipeline with regime detection and risk management."""
 
@@ -591,16 +612,20 @@ class RegimeAwareOrchestrator:
                        alert=True)
             return False
 
-        # ATR-based deterministic position sizing
+        # ATR-based deterministic position sizing + MA50/MA200 conviction modifier.
+        # Fetch 1y so we have enough history for both ATR (last 14 bars) and MA200.
+        ma_delta = 0
         try:
-            hist = _t.history(period="30d")
+            hist = _t.history(period="1y")
             atr_pct = atr_pct_from_ohlc(
                 hist["High"].values, hist["Low"].values, hist["Close"].values,
                 window=self._cfg.sizing.atr_window,
             )
+            ma_delta = _ma_conviction_delta(hist["Close"].values, entry_price)
         except Exception:
             atr_pct = _ATR_FALLBACK_PCT
 
+        conviction = max(1, min(10, score.conviction + ma_delta))
         base_pct = vol_target_size_pct(
             atr_pct=atr_pct,
             per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
@@ -608,12 +633,12 @@ class RegimeAwareOrchestrator:
         )
         base_pct = apply_conviction_tilt(
             base_pct=base_pct,
-            conviction=score.conviction,
+            conviction=conviction,
             max_position_pct=self._cfg.risk.max_position_pct,
         )
         log.debug(
-            "%s: vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d)",
-            ticker, base_pct, atr_pct, score.conviction,
+            "%s: vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d→%d ma_delta=%+d)",
+            ticker, base_pct, atr_pct, score.conviction, conviction, ma_delta,
         )
 
         # Regime allocation scaling
@@ -739,16 +764,20 @@ class RegimeAwareOrchestrator:
                        alert=True)
             return False
 
-        # ATR-based deterministic position sizing
+        # ATR-based deterministic position sizing + MA50/MA200 conviction modifier.
+        # Fetch 1y so we have enough history for both ATR (last 14 bars) and MA200.
+        ma_delta = 0
         try:
-            hist = _t.history(period="30d")
+            hist = _t.history(period="1y")
             atr_pct = atr_pct_from_ohlc(
                 hist["High"].values, hist["Low"].values, hist["Close"].values,
                 window=self._cfg.sizing.atr_window,
             )
+            ma_delta = _ma_conviction_delta(hist["Close"].values, entry_price)
         except Exception:
             atr_pct = _ATR_FALLBACK_PCT
 
+        conviction = max(1, min(10, score.conviction + ma_delta))
         base_pct = vol_target_size_pct(
             atr_pct=atr_pct,
             per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
@@ -756,12 +785,12 @@ class RegimeAwareOrchestrator:
         )
         base_pct = apply_conviction_tilt(
             base_pct=base_pct,
-            conviction=score.conviction,
+            conviction=conviction,
             max_position_pct=self._cfg.risk.max_position_pct,
         )
         log.debug(
-            "%s (%s): vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d)",
-            ticker, signal_type, base_pct, atr_pct, score.conviction,
+            "%s (%s): vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d→%d ma_delta=%+d)",
+            ticker, signal_type, base_pct, atr_pct, score.conviction, conviction, ma_delta,
         )
 
         if self._regime_state is not None:
