@@ -196,3 +196,59 @@ class TestPercentileRank:
 
     def test_empty_history_returns_50(self):
         assert _percentile_rank(np.array([]), value=1.0, lookback=5) == pytest.approx(50.0)
+
+
+from technical.indicators import compute_obv, rel_volume, obv_trend_from_series, volume_confirms_move
+
+
+class TestComputeObv:
+    def test_rising_close_gives_rising_obv(self):
+        close = pd.Series(np.linspace(100.0, 110.0, 10))
+        volume = pd.Series(np.full(10, 1000.0))
+        obv = compute_obv(close, volume)
+        assert obv.iloc[-1] > obv.iloc[0]
+
+    def test_falling_close_gives_falling_obv(self):
+        close = pd.Series(np.linspace(110.0, 100.0, 10))
+        volume = pd.Series(np.full(10, 1000.0))
+        obv = compute_obv(close, volume)
+        assert obv.iloc[-1] < 0
+
+
+class TestRelVolume:
+    def test_spike_volume_gives_high_rel_volume(self):
+        volume = pd.Series(np.full(25, 1000.0))
+        volume.iloc[-1] = 5000.0
+        assert rel_volume(volume, window=20) == pytest.approx(5.0, abs=0.1)
+
+    def test_insufficient_history_returns_one(self):
+        volume = pd.Series(np.full(5, 1000.0))
+        assert rel_volume(volume, window=20) == pytest.approx(1.0)
+
+
+class TestObvTrendFromSeries:
+    def test_rising_obv_detected(self):
+        obv = pd.Series(np.linspace(0.0, 1000.0, 30))
+        assert obv_trend_from_series(obv, window=20) == "rising"
+
+    def test_falling_obv_detected(self):
+        obv = pd.Series(np.linspace(1000.0, 0.0, 30))
+        assert obv_trend_from_series(obv, window=20) == "falling"
+
+    def test_flat_obv_detected(self):
+        obv = pd.Series(np.full(30, 500.0))
+        assert obv_trend_from_series(obv, window=20) == "flat"
+
+
+class TestVolumeConfirmsMove:
+    def test_directional_bar_with_high_volume_confirms(self):
+        close = pd.Series([100.0, 102.0])
+        assert volume_confirms_move(close, rel_vol=1.5) is True
+
+    def test_directional_bar_with_low_volume_does_not_confirm(self):
+        close = pd.Series([100.0, 102.0])
+        assert volume_confirms_move(close, rel_vol=0.8) is False
+
+    def test_flat_bar_does_not_confirm_even_with_high_volume(self):
+        close = pd.Series([100.0, 100.0])
+        assert volume_confirms_move(close, rel_vol=1.5) is False

@@ -129,3 +129,36 @@ def _percentile_rank(history, value: float, lookback: int = 252) -> float:
     if len(window) == 0:
         return 50.0
     return float(np.mean(window <= value)) * 100.0
+
+
+def compute_obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+    direction = np.sign(close.diff().fillna(0.0))
+    return (direction * volume).cumsum()
+
+
+def rel_volume(volume: pd.Series, window: int = 20) -> float:
+    if len(volume) < window + 1:
+        return 1.0
+    baseline = volume.iloc[-window - 1:-1].mean()
+    if baseline == 0:
+        return 1.0
+    return float(volume.iloc[-1] / baseline)
+
+
+def obv_trend_from_series(obv: pd.Series, window: int = 20) -> str:
+    if len(obv) <= window:
+        return "flat"
+    past = obv.iloc[-1 - window]
+    now = obv.iloc[-1]
+    if now > past:
+        return "rising"
+    if now < past:
+        return "falling"
+    return "flat"
+
+
+def volume_confirms_move(close: pd.Series, rel_vol: float) -> bool:
+    if len(close) < 2:
+        return False
+    directional = close.iloc[-1] != close.iloc[-2]
+    return bool(directional and rel_vol > 1.0)
