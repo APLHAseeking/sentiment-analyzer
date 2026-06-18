@@ -817,10 +817,10 @@ class RegimeAwareOrchestrator:
             return False
 
         # ATR-based deterministic position sizing + MA50/MA200 conviction modifier.
-        # Fetch 1y so we have enough history for both ATR (last 14 bars) and MA200.
+        # Fetch 2y: enough history for ATR/MA200 plus the technical-snapshot pipeline.
         ma_delta = 0
         try:
-            hist = _t.history(period="1y")
+            hist = _t.history(period="2y")
             atr_pct = atr_pct_from_ohlc(
                 hist["High"].values, hist["Low"].values, hist["Close"].values,
                 window=self._cfg.sizing.atr_window,
@@ -828,13 +828,49 @@ class RegimeAwareOrchestrator:
             ma_delta = _ma_conviction_delta(hist["Close"].values, entry_price)
         except Exception:
             atr_pct = _ATR_FALLBACK_PCT
+            hist = None
 
         conviction = max(1, min(10, score.conviction + ma_delta))
-        base_pct = vol_target_size_pct(
-            atr_pct=atr_pct,
-            per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
-            max_position_pct=self._cfg.risk.max_position_pct,
-        )
+
+        initial_stop_pct: float | None = None
+        if self._cfg.sizing.enable_technical_gate and hist is not None:
+            try:
+                snapshot = compute_snapshot(
+                    ticker=ticker,
+                    ohlcv=hist,
+                    spy_close=get_etf_close_history("SPY"),
+                    sector_close=_get_sector_etf_close(sector),
+                    as_of=date.today().isoformat(),
+                )
+                tech_score = score_technical(
+                    snapshot,
+                    regime_label=self._regime_state.regime_label if self._regime_state else "neutral",
+                    signal_type=signal_type,
+                )
+            except Exception:
+                log.exception("Technical gate failed for %s (%s) — rejecting", ticker, signal_type)
+                return False
+            if (tech_score.entry != "buy"
+                    or tech_score.reward_risk < self._cfg.sizing.min_reward_risk):
+                emit_event(
+                    log, EventType.SIGNAL_REJECTED,
+                    f"{ticker} ({signal_type}) rejected by technical gate "
+                    f"(entry={tech_score.entry}, reward_risk={tech_score.reward_risk:.2f})",
+                )
+                return False
+            base_pct = structure_stop_size_pct(
+                entry_price=entry_price,
+                invalidation_price=tech_score.invalidation_price,
+                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+                max_position_pct=self._cfg.risk.max_position_pct,
+            )
+            initial_stop_pct = (entry_price - tech_score.invalidation_price) / entry_price * 100
+        else:
+            base_pct = vol_target_size_pct(
+                atr_pct=atr_pct,
+                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+                max_position_pct=self._cfg.risk.max_position_pct,
+            )
         base_pct = apply_conviction_tilt(
             base_pct=base_pct,
             conviction=conviction,
@@ -912,6 +948,7 @@ class RegimeAwareOrchestrator:
             rationale=score.rationale,
             entry_price=entry_price,
             signal_source=signal_type,
+            initial_stop_pct=initial_stop_pct,
         )
         try:
             from bot.db import insert_fundamental_signal
