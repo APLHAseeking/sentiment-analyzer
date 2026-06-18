@@ -31,6 +31,7 @@ from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
+import pandas as pd
 
 import yfinance as yf
 import exchange_calendars as xcals
@@ -40,9 +41,12 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from bot.analytics import log_weekly_report
 from bot.researcher import gather_research, gather_research_batch
 from bot.scraper import run_scraper
-from bot.signal_engine import filter_disclosures, get_sector_for_ticker, compute_lag_days, get_cluster_count, clear_sector_cache
+from bot.signal_engine import (
+    filter_disclosures, get_sector_for_ticker, compute_lag_days, get_cluster_count,
+    clear_sector_cache, get_etf_close_history, clear_etf_cache,
+)
 from bot.committee import get_committees_for_politician
-from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore
+from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore, score_technical
 from bot.db import get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken
 from bot.universe import refresh_universe, get_universe
 from bot.portfolio import Portfolio
@@ -55,12 +59,14 @@ from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
 from risk.risk_manager import RiskManager, RiskState
-from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt, atr_pct_from_ohlc
+from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt, atr_pct_from_ohlc, structure_stop_size_pct
 from screener.factor_scorer import run_factor_screen, prefetch_screener_data, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
 from dashboard.data_store import DashboardStore
 from hedge.hedge_engine import HedgeEngine
 from risk.correlation import CorrelationFilter
+from technical.indicators import compute_snapshot
+from technical.sector_map import SECTOR_ETF_MAP
 
 log = logging.getLogger(__name__)
 _AMS = ZoneInfo("Europe/Amsterdam")
@@ -97,6 +103,16 @@ def _ma_conviction_delta(close_prices: np.ndarray, current_price: float) -> int:
         return -1
     # price above both MAs
     return +1 if ma50 > ma200 else 0
+
+
+def _get_sector_etf_close(sector: str) -> pd.Series | None:
+    etf = SECTOR_ETF_MAP.get(sector)
+    if etf is None:
+        return None
+    try:
+        return get_etf_close_history(etf)
+    except Exception:
+        return None
 
 
 class RegimeAwareOrchestrator:
@@ -366,6 +382,7 @@ class RegimeAwareOrchestrator:
 
         # Clear sector cache daily so stale GICS classifications don't persist across sessions
         clear_sector_cache()
+        clear_etf_cache()
 
         self._maybe_rolling_refit()
         self._update_market_data()
@@ -613,10 +630,10 @@ class RegimeAwareOrchestrator:
             return False
 
         # ATR-based deterministic position sizing + MA50/MA200 conviction modifier.
-        # Fetch 1y so we have enough history for both ATR (last 14 bars) and MA200.
+        # Fetch 2y: enough history for ATR/MA200 plus the technical-snapshot pipeline.
         ma_delta = 0
         try:
-            hist = _t.history(period="1y")
+            hist = _t.history(period="2y")
             atr_pct = atr_pct_from_ohlc(
                 hist["High"].values, hist["Low"].values, hist["Close"].values,
                 window=self._cfg.sizing.atr_window,
@@ -624,13 +641,47 @@ class RegimeAwareOrchestrator:
             ma_delta = _ma_conviction_delta(hist["Close"].values, entry_price)
         except Exception:
             atr_pct = _ATR_FALLBACK_PCT
+            hist = None
 
         conviction = max(1, min(10, score.conviction + ma_delta))
-        base_pct = vol_target_size_pct(
-            atr_pct=atr_pct,
-            per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
-            max_position_pct=self._cfg.risk.max_position_pct,
-        )
+
+        initial_stop_pct: float | None = None
+        if self._cfg.sizing.enable_technical_gate and hist is not None:
+            try:
+                snapshot = compute_snapshot(
+                    ticker=ticker,
+                    ohlcv=hist,
+                    spy_close=get_etf_close_history("SPY"),
+                    sector_close=_get_sector_etf_close(sector),
+                    as_of=date.today().isoformat(),
+                )
+                tech_score = score_technical(
+                    snapshot,
+                    regime_label=self._regime_state.regime_label if self._regime_state else "neutral",
+                    signal_type="congressional",
+                )
+            except Exception:
+                log.exception("Technical gate failed for %s — rejecting", ticker)
+                return False
+            if (tech_score.entry != "buy"
+                    or tech_score.reward_risk < self._cfg.sizing.min_reward_risk):
+                emit_event(log, EventType.SIGNAL_REJECTED,
+                           f"{ticker} rejected by technical gate (entry={tech_score.entry}, "
+                           f"reward_risk={tech_score.reward_risk:.2f})")
+                return False
+            base_pct = structure_stop_size_pct(
+                entry_price=entry_price,
+                invalidation_price=tech_score.invalidation_price,
+                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+                max_position_pct=self._cfg.risk.max_position_pct,
+            )
+            initial_stop_pct = (entry_price - tech_score.invalidation_price) / entry_price * 100
+        else:
+            base_pct = vol_target_size_pct(
+                atr_pct=atr_pct,
+                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+                max_position_pct=self._cfg.risk.max_position_pct,
+            )
         base_pct = apply_conviction_tilt(
             base_pct=base_pct,
             conviction=conviction,
@@ -702,6 +753,7 @@ class RegimeAwareOrchestrator:
         self._portfolio.open_position(
             ticker=ticker, position_pct=final_pct,
             signal_id=signal_id, rationale=score.rationale, entry_price=entry_price,
+            initial_stop_pct=initial_stop_pct,
         )
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(log, EventType.ORDER_PLACED,
