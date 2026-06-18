@@ -1,5 +1,10 @@
 # Technical Analysis Layer Implementation Plan
 
+> **Status: COMPLETE — merged to `main` at `5de0a39` on 2026-06-17.** All 22 tasks implemented
+> (4 parallel tracks + 4 sequential integration tasks), 659/659 tests passing. Default behavior
+> (`enable_technical_gate=False`) verified byte-for-byte unchanged. See `trading bot/CLAUDE.md`
+> Gotchas for the user-facing summary.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a config-gated, deterministic technical-indicator pipeline plus an LLM synthesis call that gates entries on timing/risk-geometry, and use its structural invalidation level to replace the fixed 15% stop and ATR-only sizing — for gated trades only. Default (`enable_technical_gate=False`) behavior is byte-for-byte unchanged.
@@ -43,7 +48,7 @@ All file paths below are relative to the repo root `/Users/thomasvromen/Document
 - Modify: `trading bot/system/config.py:182-188` (`SizingConfig`)
 - Test: `trading bot/tests/test_config.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_config.py`:
 
@@ -54,12 +59,12 @@ def test_sizing_config_technical_gate_defaults():
     assert s.sizing.min_reward_risk == 2.0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_config.py::test_sizing_config_technical_gate_defaults -v`
 Expected: FAIL with `AttributeError: 'SizingConfig' object has no attribute 'enable_technical_gate'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `trading bot/system/config.py`, change the `SizingConfig` dataclass (currently lines 173-187) from:
 
@@ -103,12 +108,12 @@ class SizingConfig:
     min_reward_risk: float = 2.0             # below this, a technical "buy" is treated as skip
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_config.py -v`
 Expected: PASS (all tests in the file, no regressions)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/system/config.py" "trading bot/tests/test_config.py" && git commit -m "$(cat <<'EOF'
@@ -128,7 +133,7 @@ EOF
 - Create: `trading bot/technical/sector_map.py`
 - Test: `trading bot/tests/test_technical_sector_map.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `trading bot/tests/test_technical_sector_map.py`:
 
@@ -154,12 +159,12 @@ def test_unknown_sector_returns_none_via_get():
     assert SECTOR_ETF_MAP.get("Unknown Sector") is None
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_sector_map.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'technical'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `trading bot/technical/__init__.py`:
 
@@ -189,12 +194,12 @@ SECTOR_ETF_MAP: dict[str, str] = {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_sector_map.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/__init__.py" "trading bot/technical/sector_map.py" "trading bot/tests/test_technical_sector_map.py" && git commit -m "$(cat <<'EOF'
@@ -213,7 +218,7 @@ EOF
 - Create: `trading bot/technical/indicators.py`
 - Create: `trading bot/tests/test_technical_indicators.py`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `trading bot/tests/test_technical_indicators.py`:
 
@@ -271,12 +276,12 @@ class TestPriceVsSmaPct:
         assert price_vs_sma_pct(price=90.0, sma_value=100.0) == pytest.approx(-10.0)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Create `trading bot/technical/indicators.py`:
 
@@ -321,12 +326,12 @@ def price_vs_sma_pct(price: float, sma_value: float) -> float:
     return float((price - sma_value) / sma_value * 100.0)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -345,7 +350,7 @@ EOF
 - Modify: `trading bot/technical/indicators.py` (append)
 - Modify: `trading bot/tests/test_technical_indicators.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -393,12 +398,12 @@ class TestTsmomComposite:
         assert tsmom_composite(-200.0, -200.0, -200.0) == pytest.approx(-1.0)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'pct_return' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/technical/indicators.py`:
 
@@ -429,12 +434,12 @@ def tsmom_composite(ret_1m_pct: float, ret_3m_pct: float, ret_12m_1m_pct: float)
     return float(np.clip(raw, -1.0, 1.0))
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -453,7 +458,7 @@ EOF
 - Modify: `trading bot/technical/indicators.py` (append)
 - Modify: `trading bot/tests/test_technical_indicators.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -512,12 +517,12 @@ class TestMacdStateFromHist:
         assert macd_state_from_hist([-0.1, -0.5, -0.2]) == "bearish_fading"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'compute_rsi' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/technical/indicators.py`:
 
@@ -553,12 +558,12 @@ def macd_state_from_hist(hist) -> str:
     return f"{direction}_{momentum}"
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -577,7 +582,7 @@ EOF
 - Modify: `trading bot/technical/indicators.py` (append)
 - Modify: `trading bot/tests/test_technical_indicators.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -632,12 +637,12 @@ class TestPercentileRank:
         assert _percentile_rank(np.array([]), value=1.0, lookback=5) == pytest.approx(50.0)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'rolling_atr_pct' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/technical/indicators.py`:
 
@@ -678,12 +683,12 @@ def _percentile_rank(history, value: float, lookback: int = 252) -> float:
     return float(np.mean(window <= value)) * 100.0
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -702,7 +707,7 @@ EOF
 - Modify: `trading bot/technical/indicators.py` (append)
 - Modify: `trading bot/tests/test_technical_indicators.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -763,12 +768,12 @@ class TestVolumeConfirmsMove:
         assert volume_confirms_move(close, rel_vol=1.5) is False
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'compute_obv' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/technical/indicators.py`:
 
@@ -806,12 +811,12 @@ def volume_confirms_move(close: pd.Series, rel_vol: float) -> bool:
     return bool(directional and rel_vol > 1.0)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -830,7 +835,7 @@ EOF
 - Modify: `trading bot/technical/indicators.py` (append)
 - Modify: `trading bot/tests/test_technical_indicators.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -904,12 +909,12 @@ class TestRsiDivergenceFromPivots:
         assert result == "none"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'find_pivots' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/technical/indicators.py`:
 
@@ -963,12 +968,12 @@ def rsi_divergence_from_pivots(
     return "none"
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -987,7 +992,7 @@ EOF
 - Modify: `trading bot/technical/indicators.py` (append)
 - Modify: `trading bot/tests/test_technical_indicators.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -1045,12 +1050,12 @@ class TestAnchoredVwap:
         assert result == pytest.approx(100.0)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'support_resistance_from_pivots' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/technical/indicators.py`:
 
@@ -1088,12 +1093,12 @@ def anchored_vwap(
     return float((typical * vol).sum() / total_vol)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -1112,7 +1117,7 @@ EOF
 - Modify: `trading bot/technical/indicators.py` (append)
 - Modify: `trading bot/tests/test_technical_indicators.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -1151,12 +1156,12 @@ class TestDistTo52wExtremesPct:
         assert dist_high < 0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'htf_trend_from_weekly' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/technical/indicators.py`:
 
@@ -1186,12 +1191,12 @@ def dist_to_52w_extremes_pct(close: pd.Series, last_close: float) -> tuple[float
     return dist_to_high, dist_to_low
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -1210,7 +1215,7 @@ EOF
 - Modify: `trading bot/technical/indicators.py` (append)
 - Modify: `trading bot/tests/test_technical_indicators.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -1242,12 +1247,12 @@ class TestRsLineSlope:
         assert rs_line_slope(asset, bench, window=20) == "falling"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'relative_strength_pct' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/technical/indicators.py`:
 
@@ -1277,12 +1282,12 @@ def rs_line_slope(asset_close: pd.Series, bench_close: pd.Series, window: int = 
     return "flat"
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -1303,7 +1308,7 @@ EOF
 
 This task wires every function from Tasks 3–11 into one frozen dataclass and one pipeline function — the only entry point the rest of the codebase will call.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_technical_indicators.py`:
 
@@ -1360,12 +1365,12 @@ class TestComputeSnapshot:
         assert snapshot.rs_vs_sector_3m_pct is not None
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: FAIL with `ImportError: cannot import name 'TechnicalSnapshot' from 'technical.indicators'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add `from dataclasses import dataclass` and `from risk.position_sizing import atr_pct_from_ohlc` to the top of `trading bot/technical/indicators.py` (alongside the existing `import numpy as np` / `import pandas as pd`), then append:
 
@@ -1546,12 +1551,12 @@ def compute_snapshot(
     )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_technical_indicators.py -v`
 Expected: PASS (full file — confirms every Task 3–11 function composes correctly)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/technical/indicators.py" "trading bot/tests/test_technical_indicators.py" && git commit -m "$(cat <<'EOF'
@@ -1570,7 +1575,7 @@ EOF
 - Modify: `trading bot/risk/position_sizing.py` (append, after `vol_pct_from_close`)
 - Test: `trading bot/tests/test_position_sizing.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_position_sizing.py`:
 
@@ -1602,12 +1607,12 @@ class TestStructureStopSizePct:
             assert structure_stop_size_pct(100.0, inval, 0.15, 8.0) >= 0.0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_position_sizing.py -v`
 Expected: FAIL with `ImportError: cannot import name 'structure_stop_size_pct' from 'risk.position_sizing'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/risk/position_sizing.py`:
 
@@ -1631,12 +1636,12 @@ def structure_stop_size_pct(
     return float(min(max(raw, 0.0), max_position_pct))
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_position_sizing.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/risk/position_sizing.py" "trading bot/tests/test_position_sizing.py" && git commit -m "$(cat <<'EOF'
@@ -1655,7 +1660,7 @@ EOF
 - Modify: `trading bot/bot/ai_analyst.py` (insert after `_BOTH_BONUS`, and after `ExitDecision`/`parse_exit_response`)
 - Test: `trading bot/tests/test_ai_analyst.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_ai_analyst.py`:
 
@@ -1715,12 +1720,12 @@ class TestParseTechnicalResponse:
             parse_technical_response("not json", last_close=100.0)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_ai_analyst.py -k TestParseTechnicalResponse -v`
 Expected: FAIL with `ImportError: cannot import name 'TechnicalScore' from 'bot.ai_analyst'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `trading bot/bot/ai_analyst.py`, insert the following block right after the existing `_BOTH_BONUS` string (currently lines 55-57, before `_RESEARCH_ADJUSTMENTS`):
 
@@ -1861,12 +1866,12 @@ def parse_technical_response(text: str, last_close: float) -> TechnicalScore:
     )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_ai_analyst.py -v`
 Expected: PASS (full file, no regressions)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/bot/ai_analyst.py" "trading bot/tests/test_ai_analyst.py" && git commit -m "$(cat <<'EOF'
@@ -1885,7 +1890,7 @@ EOF
 - Modify: `trading bot/bot/ai_analyst.py` (append, after `review_exit`)
 - Test: `trading bot/tests/test_ai_analyst.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_ai_analyst.py`:
 
@@ -1944,12 +1949,12 @@ def test_score_technical_congressional_omits_bonus_text(mocker):
     assert "Combined Signal Note" not in system_text
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_ai_analyst.py -k score_technical -v`
 Expected: FAIL with `ImportError: cannot import name 'score_technical' from 'bot.ai_analyst'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `trading bot/bot/ai_analyst.py`:
 
@@ -2007,12 +2012,12 @@ def score_technical(
     return _call_with_retry(_call)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_ai_analyst.py -v`
 Expected: PASS (full file, no regressions)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/bot/ai_analyst.py" "trading bot/tests/test_ai_analyst.py" && git commit -m "$(cat <<'EOF'
@@ -2031,7 +2036,7 @@ EOF
 - Modify: `trading bot/bot/db.py:154-175` (`_MIGRATIONS`), `:242-260` (`insert_position`)
 - Test: `trading bot/tests/test_db.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_db.py`:
 
@@ -2062,12 +2067,12 @@ def test_insert_position_stores_custom_stop_pct(db):
     assert pos["stop_pct"] == pytest.approx(3.5)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_db.py -k stop_pct -v`
 Expected: FAIL with `sqlite3.OperationalError: no such column: stop_pct` (or `KeyError`/`IndexError` from the row mapping)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `trading bot/bot/db.py`, add a 5th migration to `_MIGRATIONS` (currently lines 154-175), after the `take_profit_taken`/`entry_commission` migrations:
 
@@ -2130,12 +2135,12 @@ def insert_position(ticker: str, entry_price: float, shares: float,
 
 (`get_open_positions()` already does `SELECT *`, so `stop_pct` appears automatically — no change needed there.)
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_db.py -v`
 Expected: PASS (full file, no regressions)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/bot/db.py" "trading bot/tests/test_db.py" && git commit -m "$(cat <<'EOF'
@@ -2154,7 +2159,7 @@ EOF
 - Modify: `trading bot/bot/portfolio.py:35-93` (`open_position`)
 - Test: `trading bot/tests/test_portfolio.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_portfolio.py`:
 
@@ -2184,12 +2189,12 @@ def test_open_position_default_stop_pct_unchanged_when_not_provided(mock_broker,
     assert pos["stop_pct"] == pytest.approx(settings.risk.trailing_stop_pct)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_portfolio.py -k initial_stop_pct -v`
 Expected: FAIL with `TypeError: open_position() got an unexpected keyword argument 'initial_stop_pct'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `trading bot/bot/portfolio.py`, change `open_position` (currently lines 35-93) from:
 
@@ -2262,12 +2267,12 @@ to:
         self.broker.place_stop_order(ticker=ticker, qty=actual_shares, stop_price=stop_price)
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_portfolio.py -v`
 Expected: PASS (full file, no regressions — `test_open_position_registers_stop_order` and `test_open_position_stop_uses_custom_trailing_pct` must still pass unchanged)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/bot/portfolio.py" "trading bot/tests/test_portfolio.py" && git commit -m "$(cat <<'EOF'
@@ -2289,7 +2294,7 @@ EOF
 
 **Important — read before starting:** the existing test `test_portfolio_reads_stop_loss_from_config` (line ~298) currently inserts a position via `db.insert_position(...)` *without* a `stop_pct`, then asserts that `enforce_stop_losses()` with no override falls back to a custom `RiskConfig(trailing_stop_pct=5.0)` injected into `Portfolio`. That was correct under the old global-constant design. Under the new per-position design, a position's *own stored* `stop_pct` (set once, at open time) is what governs its stop — not whatever `RiskConfig.trailing_stop_pct` happens to be at poll time. This is the entire point of Component 6 (a structural stop must keep its own width as it trails, immune to later config edits). So this existing test's premise is now stale and must be fixed as part of this task, not left to break.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 First, fix the existing test. In `trading bot/tests/test_portfolio.py`, change `test_portfolio_reads_stop_loss_from_config` from:
 
@@ -2395,12 +2400,12 @@ def test_enforce_stop_losses_explicit_override_ignores_per_position_stop_pct(moc
     assert "AAPL" not in closed
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_portfolio.py -k "per_position_stop_pct or explicit_override_ignores" -v`
 Expected: FAIL — `test_enforce_stop_losses_uses_per_position_stop_pct_with_no_override` fails because MSFT (no per-position override, 6% drop) closes today since `enforce_stop_losses()` currently uses the single global `trailing_stop_pct` (15% by default, so a 6% drop should NOT close it today either — verify by reading the assertion: actually re-check this fails for the right reason, i.e. AAPL not closing since today's code uses one global pct, not per-position; rerun and confirm the actual failure message before moving to Step 3)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `trading bot/bot/portfolio.py`, change `enforce_stop_losses` (currently lines 258-317) from:
 
@@ -2474,12 +2479,12 @@ to:
 
 The rest of the method (the resting-stop trail logic and the `drop_from_peak >= pct` close, lines ~288-317) already references the local `pct` variable and needs no further changes.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_portfolio.py -v`
 Expected: PASS (full file — confirms the fixed test, the two new tests, and every other existing test in the file, which all pass an explicit `stop_loss_pct` and are therefore unaffected)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/bot/portfolio.py" "trading bot/tests/test_portfolio.py" && git commit -m "$(cat <<'EOF'
@@ -2498,7 +2503,7 @@ EOF
 - Modify: `trading bot/bot/signal_engine.py` (top imports, and after `clear_sector_cache`)
 - Test: `trading bot/tests/test_signal_engine.py` (top imports, append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 In `trading bot/tests/test_signal_engine.py`, extend the existing import block (currently lines 2-6) from:
 
@@ -2541,12 +2546,12 @@ def test_get_etf_close_history_is_cached():
     clear_etf_cache()  # cleanup
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_signal_engine.py -v`
 Expected: FAIL with `ImportError: cannot import name 'get_etf_close_history' from 'bot.signal_engine'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `trading bot/bot/signal_engine.py`, add `import pandas as pd` to the top imports (currently lines 1-9), then add the following after `clear_sector_cache` (currently lines 25-26):
 
@@ -2560,12 +2565,12 @@ def clear_etf_cache() -> None:
     get_etf_close_history.cache_clear()
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_signal_engine.py -v`
 Expected: PASS (full file, no regressions)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/bot/signal_engine.py" "trading bot/tests/test_signal_engine.py" && git commit -m "$(cat <<'EOF'
@@ -2584,7 +2589,7 @@ EOF
 - Modify: `trading bot/orchestration/main_loop.py` (imports, `_get_sector_etf_close` helper, `_process_signal`)
 - Test: `trading bot/tests/test_orchestrator.py` (append)
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_orchestrator.py`:
 
@@ -2722,12 +2727,12 @@ def test_technical_gate_on_buy_passes_structure_stop_pct(mocker, orch):
     assert call_kwargs["initial_stop_pct"] == pytest.approx(2.0)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_orchestrator.py -k technical_gate -v`
 Expected: FAIL — `test_technical_gate_off_by_default_skips_gate` fails with `TypeError: open_position() got an unexpected keyword argument 'initial_stop_pct'` (the other two fail similarly, plus `AttributeError`/`ImportError` for `compute_snapshot`/`score_technical`/`TechnicalScore` not yet wired into `orchestration.main_loop`)
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `trading bot/orchestration/main_loop.py`, update imports. Add `import pandas as pd` after `import numpy as np` (line 33). Change line 43 from:
 
@@ -2912,12 +2917,12 @@ to:
         )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_orchestrator.py -v`
 Expected: PASS (full file, no regressions — every pre-existing test calls `open_position` with the gate off, so `initial_stop_pct=None` flows through identically to before)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/orchestration/main_loop.py" "trading bot/tests/test_orchestrator.py" && git commit -m "$(cat <<'EOF'
@@ -2938,7 +2943,7 @@ EOF
 
 This mirrors Task 20 exactly, inside `_process_fundamental_candidate` (starts at line 714 as of Task 20's edits having already landed — locate it by function name, since Task 20 shifted line numbers below it). The only difference: use the existing local `signal_type` variable (`"both"` or `"fundamental"`) instead of the hardcoded `"congressional"` string.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `trading bot/tests/test_orchestrator.py`:
 
@@ -3059,12 +3064,12 @@ def test_fundamental_technical_gate_on_buy_passes_structure_stop_pct(mocker, orc
     assert call_kwargs["initial_stop_pct"] == pytest.approx(2.0)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_orchestrator.py -k fundamental_technical_gate -v`
 Expected: FAIL with `TypeError: open_position() got an unexpected keyword argument 'initial_stop_pct'`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `trading bot/orchestration/main_loop.py`, inside `_process_fundamental_candidate`, find the block (mirroring the pre-Task-20 shape of `_process_signal`):
 
@@ -3187,12 +3192,12 @@ to:
         )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest tests/test_orchestrator.py -v`
 Expected: PASS (full file, no regressions)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/orchestration/main_loop.py" "trading bot/tests/test_orchestrator.py" && git commit -m "$(cat <<'EOF'
@@ -3210,17 +3215,17 @@ EOF
 **Files:**
 - Modify: `trading bot/CLAUDE.md` (header test count, "Verifying changes" test count, new "Gotchas" bullets)
 
-- [ ] **Step 1: Run the full suite and capture the count**
+- [x] **Step 1: Run the full suite and capture the count**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest -q`
 Expected: all tests PASS; note the final count reported (e.g. `623 passed`) — it must be the 552 baseline plus every test added in Tasks 1–21. If anything fails, stop and fix it before continuing (do not edit CLAUDE.md against a red suite).
 
-- [ ] **Step 2: Confirm gate-off behavior is unchanged for every pre-existing test**
+- [x] **Step 2: Confirm gate-off behavior is unchanged for every pre-existing test**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest -q -k "not technical"`
 Expected: same pass count as before this feature branch existed minus the new gate-specific tests filtered out by `-k` — i.e. zero failures among tests that predate this plan. This confirms `enable_technical_gate=False` (the default) didn't change any existing behavior.
 
-- [ ] **Step 3: Update `trading bot/CLAUDE.md`**
+- [x] **Step 3: Update `trading bot/CLAUDE.md`**
 
 Change the header line (currently):
 
@@ -3279,12 +3284,12 @@ Then add the following bullets to the end of the "Gotchas" section (after the ex
   relative-strength vs. sector; unmapped sectors are treated as neutral, not an error).
 ```
 
-- [ ] **Step 4: Run the full suite one more time**
+- [x] **Step 4: Run the full suite one more time**
 
 Run: `cd "/Users/thomasvromen/Documents/Claude code test/trading bot" && pytest -q`
 Expected: same pass count as Step 1 (CLAUDE.md changes don't affect test outcomes — this just re-confirms nothing is broken before the final commit)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd "/Users/thomasvromen/Documents/Claude code test" && git add "trading bot/CLAUDE.md" && git commit -m "$(cat <<'EOF'
