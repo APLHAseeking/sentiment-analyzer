@@ -5,7 +5,8 @@
 > performance numbers are look-ahead biased until then.
 > See `docs/PHASE0_FINDINGS.md` for gate decision rules and required datasets.
 > Phases 1–3 are fully implemented; paper trading is operational.
-> Hardening plans A–E are complete (552 tests green as of 2026-06-16).
+> Hardening plans A–E are complete; the technical-analysis gate (config-gated, default
+> off) landed 2026-06-17 — 659 tests green.
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -97,7 +98,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 552 tests; keep green (run from inside trading bot/)
+pytest                                 # 659 tests; keep green (run from inside trading bot/)
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 
@@ -118,6 +119,33 @@ pytest tests/test_simulation.py -q    # example: a single module
 - **NAV-based sizing everywhere:** live `Portfolio.open_position`, `backtesting/simulation.py`, the walk-forward and PIT runners all size off NAV via `risk.position_sizing.vol_target_size_pct` (deterministic ATR/vol targeting). Position size is **not** LLM-driven; the LLM only gates buy/skip + a bounded conviction tilt. `per_trade_risk_pct` (in `SizingConfig`) is the gross-exposure knob.
 - **MA50/MA200 conviction modifier:** `_ma_conviction_delta()` in `orchestration/main_loop.py` adjusts LLM conviction by −2 to +1 based on price vs 50- and 200-day SMAs (golden cross: +1; price between MAs: 0 or −1; below MA200: −2). Applied to both `_process_signal` and `_process_fundamental_candidate` after AI scoring, before `apply_conviction_tilt`. Requires 200 bars; history is fetched with `period="1y"`. Congressional-only entries are still capped at `_CONGRESSIONAL_MAX_PCT = 3%`.
 - **Stops are resting broker orders (Alpaca) plus a polled backstop.** `enforce_stop_losses` trails the resting stop up (place-new-THEN-cancel-old, so no gap in coverage) and only touches positions in its source scope. Resting stops are cancelled on close/reduce. `SimulatedBroker` only enforces stops via the poll.
+- **Technical-analysis gate (config-gated, default off):** `SizingConfig.enable_technical_gate`
+  (default `False`) inserts a deterministic indicator pipeline (`technical/indicators.py`,
+  `TechnicalSnapshot`/`compute_snapshot`) plus one extra Claude call
+  (`bot/ai_analyst.score_technical`) after the existing AI entry score, in both
+  `_process_signal` and `_process_fundamental_candidate`. When off, behavior is
+  byte-for-byte identical to before (the `hist` fetch widened from `period="1y"` to
+  `period="2y"` is the only universal change, reused by both the existing ATR/MA-delta
+  code and the new gate). When on: a `"skip"` or `reward_risk < SizingConfig.min_reward_risk`
+  (default 2.0) rejects the candidate; a `"buy"` switches sizing from `vol_target_size_pct`
+  to `risk.position_sizing.structure_stop_size_pct` (risk-budget ÷ stop-distance, using the
+  model's `invalidation_price`) and passes a per-position `initial_stop_pct` through to
+  `Portfolio.open_position`. Technical conviction never blends into `EntryScore.conviction`
+  or `ma_delta` — it only gates pass/fail and drives sizing/stop inputs, kept separate for
+  auditability.
+- **`positions.stop_pct` column (schema v5):** every position now carries its own stop
+  width (`NOT NULL DEFAULT 15.0`), set at open time by `Portfolio.open_position`'s
+  `initial_stop_pct` param (falls back to `RiskConfig.trailing_stop_pct` when not given —
+  today's default path). `enforce_stop_losses()` with **no** explicit `stop_loss_pct`
+  override now reads each position's own stored `stop_pct`, not the live
+  `RiskConfig.trailing_stop_pct` — a position's stop width is fixed at entry, not
+  retroactively changed by later config edits. An explicit `stop_loss_pct` override (used
+  by hedge-scoped polling) still applies uniformly and ignores the per-position value,
+  exactly as before.
+- **`technical/` package:** hand-rolled indicators only (no TA-Lib/pandas-ta) —
+  `technical/indicators.py` (pure functions + `TechnicalSnapshot`/`compute_snapshot`) and
+  `technical/sector_map.py` (GICS sector string → sector ETF ticker, used for
+  relative-strength vs. sector; unmapped sectors are treated as neutral, not an error).
 - **Rejected sells are no-ops at the DB layer:** `close_position`/`reduce_position` book nothing and mutate nothing on a REJECTED order — they alert and leave the position for the next reconcile/poll.
 - The regime lock file (`RISK_LOCKOUT`) is **not** auto-cleared; trading stays halted until a human deletes it.
 - Dates are ISO `YYYY-MM-DD` strings throughout; regime/DB joins assume this.
