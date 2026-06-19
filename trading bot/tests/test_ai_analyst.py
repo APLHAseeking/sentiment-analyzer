@@ -593,3 +593,50 @@ def test_get_openai_client_raises_without_key(mocker):
     from bot.ai_analyst import _get_openai_client
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
         _get_openai_client()
+
+
+# ---------------------------------------------------------------------------
+# _llm_call provider branch (Task 3 of the openai-primary-provider plan)
+# ---------------------------------------------------------------------------
+
+def _make_openai_resp(text: str):
+    """Build a mock that mimics an OpenAI ChatCompletion with .choices[0].message.content."""
+    resp = MagicMock()
+    resp.choices = [MagicMock(message=MagicMock(content=text))]
+    return resp
+
+
+def test_llm_call_uses_openai_when_provider_is_openai(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="openai"))
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_openai_resp("openai response text")
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    result = _llm_call("system prompt", "user prompt", max_tokens=256)
+
+    assert result == "openai response text"
+    call_kwargs = mock_client.chat.completions.create.call_args[1]
+    assert call_kwargs["model"] == "gpt-5.4"
+    assert call_kwargs["temperature"] == 0
+    assert call_kwargs["seed"] == 0
+    assert call_kwargs["max_tokens"] == 256
+    assert call_kwargs["messages"] == [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "user prompt"},
+    ]
+
+
+def test_llm_call_uses_anthropic_when_provider_is_anthropic(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="anthropic"))
+    _mock_claude(mocker, "anthropic response text")
+
+    from bot.ai_analyst import _llm_call
+    result = _llm_call("system prompt", "user prompt", max_tokens=256)
+
+    assert result == "anthropic response text"

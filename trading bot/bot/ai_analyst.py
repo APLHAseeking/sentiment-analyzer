@@ -383,8 +383,27 @@ def _build_entry_prompt(
     return "\n".join(lines)
 
 
-def _claude_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
-    """Single Claude API call with prompt caching on the system prompt."""
+def _llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
+    """Single LLM call, routed to the configured provider.
+
+    OpenAI's prompt caching is automatic on repeated prefixes >=1024 tokens —
+    no cache_control equivalent needed on that path.
+    """
+    from system.config import settings
+    if settings.llm_provider == "openai":
+        client = _get_openai_client()
+        resp = client.chat.completions.create(
+            model="gpt-5.4",
+            max_tokens=max_tokens,
+            temperature=0,
+            seed=0,
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ],
+        )
+        return resp.choices[0].message.content
+
     client = _get_client()
     msg = client.messages.create(
         model="claude-sonnet-4-6",
@@ -398,6 +417,11 @@ def _claude_call(system_text: str, user_text: str, max_tokens: int = 512) -> str
         messages=[{"role": "user", "content": user_text}],
     )
     return msg.content[0].text
+
+
+def _claude_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
+    """Deprecated alias — removed in Task 5 once all call sites use _llm_call directly."""
+    return _llm_call(system_text, user_text, max_tokens)
 
 
 def _bull_argument(prompt: str) -> str:
