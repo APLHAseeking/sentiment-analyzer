@@ -288,7 +288,12 @@ class Portfolio:
             # ignores the stored per-position value. With no override, each position
             # trails/closes at its OWN stop_pct (set once at open time), not whatever
             # RiskConfig.trailing_stop_pct happens to be right now.
-            pct = stop_loss_pct if stop_loss_pct is not None else (meta.get("stop_pct") or default_pct)
+            stored_pct = meta.get("stop_pct")
+            pct = (
+                stop_loss_pct if stop_loss_pct is not None
+                else stored_pct if stored_pct is not None
+                else default_pct
+            )
 
             current = pos["current_price"]
             peak = meta.get("peak_price") or pos["avg_entry_price"]

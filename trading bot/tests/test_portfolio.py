@@ -790,3 +790,26 @@ def test_enforce_stop_losses_explicit_override_ignores_per_position_stop_pct(moc
     closed = portfolio.enforce_stop_losses(stop_loss_pct=20.0)
 
     assert "AAPL" not in closed
+
+
+def test_enforce_stop_losses_honors_stored_zero_stop_pct(mock_broker, db):
+    """A stored stop_pct of exactly 0.0 must not be silently replaced by the
+    global default — Python's `or` treats 0.0 as falsy, masking a real (if
+    degenerate) structural stop with a much wider one."""
+    portfolio = Portfolio(broker=mock_broker)
+    mock_broker.get_stop_orders.return_value = {}
+    mock_broker.get_positions.return_value = [
+        {"ticker": "AAPL", "qty": 10.0, "current_price": 94.0, "avg_entry_price": 100.0},
+    ]
+    db.insert_disclosures([{
+        "id": "pp-stop-03", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("pp-stop-03", "AAPL", 8, 5.0, "Good", [])
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test", stop_pct=0.0)
+
+    closed = portfolio.enforce_stop_losses()
+
+    assert "AAPL" in closed
