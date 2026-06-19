@@ -282,6 +282,8 @@ class Settings:
     db_path: str = field(default_factory=lambda: resolve(_env("DB_PATH", "trading.db")))
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))
     timezone: str = "Europe/Amsterdam"
+    # TODO(Task 7 of the openai-primary-provider plan): flip default to "openai".
+    llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "anthropic"))
 
     credentials: Credentials = field(default_factory=Credentials)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
@@ -314,6 +316,8 @@ class Settings:
             raise ValueError("max_invested_pct must be in (0, 100]")
         if not (0 < self.sizing.per_trade_risk_pct <= self.risk.max_position_pct):
             raise ValueError("per_trade_risk_pct must be in (0, max_position_pct]")
+        if self.llm_provider not in ("anthropic", "openai"):
+            raise ValueError(f"llm_provider must be 'anthropic' or 'openai', got {self.llm_provider!r}")
 
 
 # Module-level singleton — import this everywhere

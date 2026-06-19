@@ -38,6 +38,18 @@ def test_regime_label_maps_cover_all_candidate_counts():
         assert len(cfg.label_maps[n]) == n
 
 
+def test_settings_llm_provider_defaults_to_anthropic_for_now():
+    s = Settings()
+    assert s.llm_provider == "anthropic"
+
+
+def test_validate_rejects_unknown_llm_provider():
+    from dataclasses import replace
+    s = replace(Settings(), llm_provider="cohere")
+    with pytest.raises(ValueError, match="llm_provider"):
+        s.validate()
+
+
 def test_regime_size_multiplier_keys_match_label_maps():
     cfg = Settings()
     all_labels = set()
