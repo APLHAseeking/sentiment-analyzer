@@ -51,6 +51,33 @@ def test_pipeline_skips_entries_when_at_capacity(mocker, orch):
     assert orch._portfolio.enforce_stop_losses.call_count >= 1
 
 
+def test_congressional_phase_receives_fundamental_ticker_set(mocker, orch):
+    """A ticker present in both the fundamental screener's candidates and the
+    qualified congressional disclosures must reach _process_signal with that
+    overlap available, so it can resolve signal_type="both" even when Phase 1
+    attempted (and vetoed) it rather than opening a position."""
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
+        FactorCandidate(ticker="AAPL", composite_score=80, value_score=25,
+                         momentum_score=28, quality_score=27, research=None),
+    ])
+    mocker.patch("orchestration.main_loop.filter_disclosures", return_value=[
+        {"id": "d1", "politician": "J", "ticker": "AAPL",
+         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+         "amount_range": "$50,001 - $100,000"},
+    ])
+    mocker.patch.object(orch, "_process_fundamental_candidate", return_value=False)
+    signal_spy = mocker.patch.object(orch, "_process_signal", return_value=False)
+
+    orch.run_morning_pipeline()
+
+    signal_spy.assert_called_once()
+    _, kwargs = signal_spy.call_args
+    assert "AAPL" in kwargs["fundamental_tickers"]
+
+
 def test_pipeline_enforces_stop_losses_even_at_capacity(mocker, orch):
     orch._broker = _mock_broker(cash=5_000, position_value=95_000)  # 95% invested
     mocker.patch.object(orch, "_process_signal")
@@ -1258,6 +1285,148 @@ def test_technical_gate_on_buy_passes_structure_stop_pct(mocker, orch):
 
     call_kwargs = orch._portfolio.open_position.call_args[1]
     assert call_kwargs["initial_stop_pct"] == pytest.approx(2.0)
+
+
+def test_process_signal_resolves_both_signal_type_when_also_fundamental_candidate(mocker, orch):
+    """A ticker that also qualifies on the fundamental screener must be scored
+    as signal_type="both" (full conviction credit, no congressional cap) even
+    when it reaches the technical gate via the congressional path — e.g.
+    because Phase 1 attempted it and was vetoed rather than opened."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, sizing=dataclasses.replace(orch._cfg.sizing, enable_technical_gate=True)
+    )
+    from bot.ai_analyst import EntryScore, TechnicalScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    mocker.patch("orchestration.main_loop.compute_snapshot", return_value=MagicMock())
+    score_technical_spy = mocker.patch(
+        "orchestration.main_loop.score_technical",
+        return_value=TechnicalScore(
+            conviction=8, entry="buy", setup_type="pullback_to_support",
+            trend_alignment="bullish", momentum_state="rising",
+            volume_confirmation="confirmed", relative_strength="outperforming",
+            entry_trigger="reclaim of 20-day SMA", invalidation_price=98.0,
+            target_price=110.0, reward_risk=6.0, key_levels="support 98",
+            conflicts=(), rationale="clean setup", risk_flags=(),
+        ),
+    )
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "tg-both", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    orch._process_signal(disc, {}, fundamental_tickers={"AAPL"})
+
+    assert score_technical_spy.call_args[1]["signal_type"] == "both"
+
+
+def test_process_signal_no_congressional_cap_when_both_signal_type(mocker, orch):
+    """trading bot/CLAUDE.md documents: "A ticker in both screener and
+    disclosures gets the "both" signal type, full conviction credit, and no
+    congressional size cap." The 3%-NAV cap must not apply once signal_type
+    resolves to "both", even when reached via the congressional path."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "tg-both-cap", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    orch._process_signal(disc, {}, fundamental_tickers={"AAPL"})
+
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    assert call_kwargs["position_pct"] > 3.0
+
+
+def test_process_signal_defaults_to_congressional_signal_type(mocker, orch):
+    """Without an overlapping fundamental candidate, signal_type stays
+    "congressional" — byte-for-byte the pre-fix behavior."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, sizing=dataclasses.replace(orch._cfg.sizing, enable_technical_gate=True)
+    )
+    from bot.ai_analyst import EntryScore, TechnicalScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    mocker.patch("orchestration.main_loop.compute_snapshot", return_value=MagicMock())
+    score_technical_spy = mocker.patch(
+        "orchestration.main_loop.score_technical",
+        return_value=TechnicalScore(
+            conviction=8, entry="buy", setup_type="pullback_to_support",
+            trend_alignment="bullish", momentum_state="rising",
+            volume_confirmation="confirmed", relative_strength="outperforming",
+            entry_trigger="reclaim of 20-day SMA", invalidation_price=98.0,
+            target_price=110.0, reward_risk=6.0, key_levels="support 98",
+            conflicts=(), rationale="clean setup", risk_flags=(),
+        ),
+    )
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "tg-congress-only", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    orch._process_signal(disc, {})
+
+    assert score_technical_spy.call_args[1]["signal_type"] == "congressional"
 
 
 def test_technical_gate_rejects_when_invalidation_price_above_live_entry_price(mocker, orch):

@@ -519,6 +519,7 @@ class RegimeAwareOrchestrator:
             )
 
             # ── Phase 1: Fundamental factor screener (primary signal source) ─────
+            candidates: list[FactorCandidate] = []
             try:
                 universe = list(get_universe())
                 # Use pre-fetched data if available (populated by run_screener_prefetch at 13:00)
@@ -554,10 +555,13 @@ class RegimeAwareOrchestrator:
                 log.exception("Phase 1 fundamental screener failed — skipping")
 
             # ── Phase 2: Congressional signals (supplementary) ───────────────────
-            # These are capped at _CONGRESSIONAL_MAX_PCT per position and
-            # _CONGRESSIONAL_MAX_PER_DAY entries per morning. When a congressional
-            # ticker also appears in the fundamental screener, it was already handled
-            # above with the "both" signal type and full conviction credit.
+            # Capped at _CONGRESSIONAL_MAX_PCT per position and
+            # _CONGRESSIONAL_MAX_PER_DAY entries per morning. A ticker that also
+            # appears in the fundamental screener gets the "both" signal type,
+            # full conviction credit, and no congressional cap here too — Phase 1
+            # may have attempted it and been vetoed rather than opened, so this
+            # is re-resolved per-ticker rather than assumed already handled.
+            fundamental_tickers = frozenset(c.ticker for c in candidates)
             congressional_opened = 0
             for disc in qualified:
                 if not self._portfolio.can_open_new_position():
@@ -572,7 +576,9 @@ class RegimeAwareOrchestrator:
                 if disc["ticker"] in all_open_tickers:
                     continue
                 try:
-                    opened = self._process_signal(disc, sector_allocation)
+                    opened = self._process_signal(
+                        disc, sector_allocation, fundamental_tickers=fundamental_tickers
+                    )
                     if opened:
                         all_open_tickers.add(disc["ticker"])
                         congressional_opened += 1
@@ -711,9 +717,21 @@ class RegimeAwareOrchestrator:
         )
         return base_pct, initial_stop_pct
 
-    def _process_signal(self, disc: dict, sector_allocation: dict) -> bool:
-        """Process a congressional disclosure signal. Returns True if a position was opened."""
+    def _process_signal(
+        self,
+        disc: dict,
+        sector_allocation: dict,
+        fundamental_tickers: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Process a congressional disclosure signal. Returns True if a position was opened.
+
+        fundamental_tickers is the set of tickers the fundamental screener
+        surfaced this run (Phase 1) — used to resolve signal_type="both" for a
+        ticker that qualifies on both signals, even when Phase 1 attempted it
+        and was vetoed rather than opening a position.
+        """
         ticker = disc["ticker"]
+        signal_type = "both" if ticker in fundamental_tickers else "congressional"
         committees = get_committees_for_politician(disc["politician"])
         sector = get_sector_for_ticker(ticker)
         lag = compute_lag_days(disc["transaction_date"], disc["disclosure_date"])
@@ -756,7 +774,7 @@ class RegimeAwareOrchestrator:
 
         sized = self._size_position(
             ticker=ticker, sector=sector, entry_price=entry_price,
-            score_conviction=score.conviction, signal_type="congressional",
+            score_conviction=score.conviction, signal_type=signal_type,
         )
         if sized is None:
             return False
@@ -773,8 +791,11 @@ class RegimeAwareOrchestrator:
         else:
             final_pct = base_pct
 
-        # Congressional-only signals are supplementary — cap position size
-        final_pct = min(final_pct, _CONGRESSIONAL_MAX_PCT)
+        # Congressional-only signals are supplementary — cap position size.
+        # A ticker that also qualifies on the fundamental screener ("both")
+        # gets full conviction credit and no congressional cap.
+        if signal_type != "both":
+            final_pct = min(final_pct, _CONGRESSIONAL_MAX_PCT)
 
         # Correlation filter
         corr_mult = self._corr_filter.size_multiplier(ticker)
@@ -827,10 +848,10 @@ class RegimeAwareOrchestrator:
         )
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(log, EventType.ORDER_PLACED,
-                   f"Opened {ticker} (congressional) pct={final_pct:.1f}% conv={score.conviction}",
+                   f"Opened {ticker} ({signal_type}) pct={final_pct:.1f}% conv={score.conviction}",
                    data={"ticker": ticker, "pct": final_pct,
                          "regime": self._regime_state.regime_label if self._regime_state else "?",
-                         "conviction": score.conviction})
+                         "conviction": score.conviction, "signal_type": signal_type})
         return True
 
     def _process_fundamental_candidate(
