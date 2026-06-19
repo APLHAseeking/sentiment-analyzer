@@ -1123,6 +1123,95 @@ def test_technical_gate_on_skip_rejects_signal(mocker, orch):
     orch._portfolio.open_position.assert_not_called()
 
 
+def test_technical_gate_falls_back_to_vol_target_on_score_technical_failure(mocker, orch):
+    """A transient failure evaluating the technical gate (LLM call exhausted
+    retries, JSON parse error) must degrade to the existing vol-target sizing
+    path rather than rejecting a candidate the upstream AI score already
+    approved — matching this codebase's fail-open pattern for the correlation
+    filter, the ADV check, and the ATR fallback."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, sizing=dataclasses.replace(orch._cfg.sizing, enable_technical_gate=True)
+    )
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    mocker.patch("orchestration.main_loop.compute_snapshot",
+                 return_value=MagicMock(data_complete=True))
+    mocker.patch("orchestration.main_loop.score_technical", side_effect=RuntimeError("LLM call failed"))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "tg-fallback", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    result = orch._process_signal(disc, {})
+
+    assert result is True
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    assert call_kwargs["initial_stop_pct"] is None
+
+
+def test_technical_gate_rejects_candidate_with_incomplete_price_history(mocker, orch):
+    """snapshot.data_complete/bars_available previously only flowed into the
+    LLM prompt text — no code path checked them. A thinly-traded/recently
+    listed ticker with NaN-padded indicators must be rejected outright, not
+    scored and sized off mostly-default values."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, sizing=dataclasses.replace(orch._cfg.sizing, enable_technical_gate=True)
+    )
+    from bot.ai_analyst import EntryScore
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    mocker.patch("orchestration.main_loop.compute_snapshot",
+                 return_value=MagicMock(data_complete=False, bars_available=50))
+    score_spy = mocker.patch("orchestration.main_loop.score_technical")
+
+    disc = {
+        "id": "tg-incomplete", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    result = orch._process_signal(disc, {})
+
+    assert result is False
+    score_spy.assert_not_called()
+    orch._portfolio.open_position.assert_not_called()
+
+
 def test_technical_gate_on_buy_passes_structure_stop_pct(mocker, orch):
     import dataclasses
     orch._cfg = dataclasses.replace(

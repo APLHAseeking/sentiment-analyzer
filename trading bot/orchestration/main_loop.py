@@ -618,6 +618,7 @@ class RegimeAwareOrchestrator:
         conviction = max(1, min(10, score_conviction + ma_delta))
 
         initial_stop_pct: float | None = None
+        use_vol_target = True
         if self._cfg.sizing.enable_technical_gate and hist is not None:
             try:
                 snapshot = compute_snapshot(
@@ -627,42 +628,73 @@ class RegimeAwareOrchestrator:
                     sector_close=_get_sector_etf_close(sector),
                     as_of=date.today().isoformat(),
                 )
-                tech_score = score_technical(
-                    snapshot,
-                    regime_label=self._regime_state.regime_label if self._regime_state else "neutral",
-                    signal_type=signal_type,
-                )
             except Exception:
-                log.exception("Technical gate failed for %s (%s) — rejecting", ticker, signal_type)
-                return None
-            if (tech_score.entry != "buy"
-                    or tech_score.reward_risk < self._cfg.sizing.min_reward_risk):
+                # Transient infra failure (ETF/price fetch) — degrade to vol-target
+                # sizing rather than rejecting a candidate the upstream AI score
+                # already approved, matching this codebase's fail-open pattern
+                # (correlation filter, ADV check, ATR fallback).
+                log.warning(
+                    "Technical-gate snapshot failed for %s (%s) — falling back to vol-target sizing",
+                    ticker, signal_type, exc_info=True,
+                )
+                snapshot = None
+
+            if snapshot is not None and not snapshot.data_complete:
                 emit_event(
                     log, EventType.SIGNAL_REJECTED,
-                    f"{ticker} ({signal_type}) rejected by technical gate "
-                    f"(entry={tech_score.entry}, reward_risk={tech_score.reward_risk:.2f})",
+                    f"{ticker} ({signal_type}) rejected by technical gate: insufficient "
+                    f"price history (bars_available={snapshot.bars_available})",
                 )
                 return None
-            # tech_score.invalidation_price was only geometry-checked against the
-            # history close used for scoring, not this live entry_price fetched
-            # moments later. Re-check here — a gap-down through the invalidation
-            # level breaks the structural stop (zero/negative width).
-            if tech_score.invalidation_price >= entry_price:
-                emit_event(
-                    log, EventType.SIGNAL_REJECTED,
-                    f"{ticker} ({signal_type}) rejected by technical gate: stop geometry "
-                    f"invalid vs. live price (entry_price={entry_price:.2f}, "
-                    f"invalidation_price={tech_score.invalidation_price:.2f})",
+
+            tech_score = None
+            if snapshot is not None:
+                try:
+                    tech_score = score_technical(
+                        snapshot,
+                        regime_label=self._regime_state.regime_label if self._regime_state else "neutral",
+                        signal_type=signal_type,
+                    )
+                except Exception:
+                    # LLM call/parse retry exhaustion — same fail-open rationale
+                    # as the snapshot fetch above.
+                    log.warning(
+                        "score_technical failed for %s (%s) — falling back to vol-target sizing",
+                        ticker, signal_type, exc_info=True,
+                    )
+
+            if tech_score is not None:
+                if (tech_score.entry != "buy"
+                        or tech_score.reward_risk < self._cfg.sizing.min_reward_risk):
+                    emit_event(
+                        log, EventType.SIGNAL_REJECTED,
+                        f"{ticker} ({signal_type}) rejected by technical gate "
+                        f"(entry={tech_score.entry}, reward_risk={tech_score.reward_risk:.2f})",
+                    )
+                    return None
+                # tech_score.invalidation_price was only geometry-checked against
+                # the history close used for scoring, not this live entry_price
+                # fetched moments later. Re-check here — a gap-down through the
+                # invalidation level breaks the structural stop (zero/negative
+                # width).
+                if tech_score.invalidation_price >= entry_price:
+                    emit_event(
+                        log, EventType.SIGNAL_REJECTED,
+                        f"{ticker} ({signal_type}) rejected by technical gate: stop geometry "
+                        f"invalid vs. live price (entry_price={entry_price:.2f}, "
+                        f"invalidation_price={tech_score.invalidation_price:.2f})",
+                    )
+                    return None
+                base_pct = structure_stop_size_pct(
+                    entry_price=entry_price,
+                    invalidation_price=tech_score.invalidation_price,
+                    per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+                    max_position_pct=self._cfg.risk.max_position_pct,
                 )
-                return None
-            base_pct = structure_stop_size_pct(
-                entry_price=entry_price,
-                invalidation_price=tech_score.invalidation_price,
-                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
-                max_position_pct=self._cfg.risk.max_position_pct,
-            )
-            initial_stop_pct = (entry_price - tech_score.invalidation_price) / entry_price * 100
-        else:
+                initial_stop_pct = (entry_price - tech_score.invalidation_price) / entry_price * 100
+                use_vol_target = False
+
+        if use_vol_target:
             base_pct = vol_target_size_pct(
                 atr_pct=atr_pct,
                 per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
