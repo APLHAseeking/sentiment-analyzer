@@ -586,6 +586,87 @@ class RegimeAwareOrchestrator:
 
         self._corr_filter.clear()
 
+    def _size_position(
+        self,
+        ticker: str,
+        sector: str,
+        entry_price: float,
+        score_conviction: int,
+        signal_type: str,
+    ) -> tuple[float, float | None] | None:
+        """ATR-based deterministic position sizing + MA50/MA200 conviction modifier,
+        plus (if SizingConfig.enable_technical_gate) the technical-analysis gate.
+
+        Shared by _process_signal and _process_fundamental_candidate so the two
+        candidate-processing paths cannot silently drift apart. Returns
+        (base_pct, initial_stop_pct) on success, or None if the candidate should
+        be rejected.
+        """
+        _t = yf.Ticker(ticker)
+        ma_delta = 0
+        try:
+            hist = _t.history(period="2y")
+            atr_pct = atr_pct_from_ohlc(
+                hist["High"].values, hist["Low"].values, hist["Close"].values,
+                window=self._cfg.sizing.atr_window,
+            )
+            ma_delta = _ma_conviction_delta(hist["Close"].values, entry_price)
+        except Exception:
+            atr_pct = _ATR_FALLBACK_PCT
+            hist = None
+
+        conviction = max(1, min(10, score_conviction + ma_delta))
+
+        initial_stop_pct: float | None = None
+        if self._cfg.sizing.enable_technical_gate and hist is not None:
+            try:
+                snapshot = compute_snapshot(
+                    ticker=ticker,
+                    ohlcv=hist,
+                    spy_close=get_etf_close_history("SPY"),
+                    sector_close=_get_sector_etf_close(sector),
+                    as_of=date.today().isoformat(),
+                )
+                tech_score = score_technical(
+                    snapshot,
+                    regime_label=self._regime_state.regime_label if self._regime_state else "neutral",
+                    signal_type=signal_type,
+                )
+            except Exception:
+                log.exception("Technical gate failed for %s (%s) — rejecting", ticker, signal_type)
+                return None
+            if (tech_score.entry != "buy"
+                    or tech_score.reward_risk < self._cfg.sizing.min_reward_risk):
+                emit_event(
+                    log, EventType.SIGNAL_REJECTED,
+                    f"{ticker} ({signal_type}) rejected by technical gate "
+                    f"(entry={tech_score.entry}, reward_risk={tech_score.reward_risk:.2f})",
+                )
+                return None
+            base_pct = structure_stop_size_pct(
+                entry_price=entry_price,
+                invalidation_price=tech_score.invalidation_price,
+                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+                max_position_pct=self._cfg.risk.max_position_pct,
+            )
+            initial_stop_pct = (entry_price - tech_score.invalidation_price) / entry_price * 100
+        else:
+            base_pct = vol_target_size_pct(
+                atr_pct=atr_pct,
+                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
+                max_position_pct=self._cfg.risk.max_position_pct,
+            )
+        base_pct = apply_conviction_tilt(
+            base_pct=base_pct,
+            conviction=conviction,
+            max_position_pct=self._cfg.risk.max_position_pct,
+        )
+        log.debug(
+            "%s (%s): vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d→%d ma_delta=%+d)",
+            ticker, signal_type, base_pct, atr_pct, score_conviction, conviction, ma_delta,
+        )
+        return base_pct, initial_stop_pct
+
     def _process_signal(self, disc: dict, sector_allocation: dict) -> bool:
         """Process a congressional disclosure signal. Returns True if a position was opened."""
         ticker = disc["ticker"]
@@ -629,68 +710,13 @@ class RegimeAwareOrchestrator:
                        alert=True)
             return False
 
-        # ATR-based deterministic position sizing + MA50/MA200 conviction modifier.
-        # Fetch 2y: enough history for ATR/MA200 plus the technical-snapshot pipeline.
-        ma_delta = 0
-        try:
-            hist = _t.history(period="2y")
-            atr_pct = atr_pct_from_ohlc(
-                hist["High"].values, hist["Low"].values, hist["Close"].values,
-                window=self._cfg.sizing.atr_window,
-            )
-            ma_delta = _ma_conviction_delta(hist["Close"].values, entry_price)
-        except Exception:
-            atr_pct = _ATR_FALLBACK_PCT
-            hist = None
-
-        conviction = max(1, min(10, score.conviction + ma_delta))
-
-        initial_stop_pct: float | None = None
-        if self._cfg.sizing.enable_technical_gate and hist is not None:
-            try:
-                snapshot = compute_snapshot(
-                    ticker=ticker,
-                    ohlcv=hist,
-                    spy_close=get_etf_close_history("SPY"),
-                    sector_close=_get_sector_etf_close(sector),
-                    as_of=date.today().isoformat(),
-                )
-                tech_score = score_technical(
-                    snapshot,
-                    regime_label=self._regime_state.regime_label if self._regime_state else "neutral",
-                    signal_type="congressional",
-                )
-            except Exception:
-                log.exception("Technical gate failed for %s — rejecting", ticker)
-                return False
-            if (tech_score.entry != "buy"
-                    or tech_score.reward_risk < self._cfg.sizing.min_reward_risk):
-                emit_event(log, EventType.SIGNAL_REJECTED,
-                           f"{ticker} rejected by technical gate (entry={tech_score.entry}, "
-                           f"reward_risk={tech_score.reward_risk:.2f})")
-                return False
-            base_pct = structure_stop_size_pct(
-                entry_price=entry_price,
-                invalidation_price=tech_score.invalidation_price,
-                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
-                max_position_pct=self._cfg.risk.max_position_pct,
-            )
-            initial_stop_pct = (entry_price - tech_score.invalidation_price) / entry_price * 100
-        else:
-            base_pct = vol_target_size_pct(
-                atr_pct=atr_pct,
-                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
-                max_position_pct=self._cfg.risk.max_position_pct,
-            )
-        base_pct = apply_conviction_tilt(
-            base_pct=base_pct,
-            conviction=conviction,
-            max_position_pct=self._cfg.risk.max_position_pct,
+        sized = self._size_position(
+            ticker=ticker, sector=sector, entry_price=entry_price,
+            score_conviction=score.conviction, signal_type="congressional",
         )
-        log.debug(
-            "%s: vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d→%d ma_delta=%+d)",
-            ticker, base_pct, atr_pct, score.conviction, conviction, ma_delta,
-        )
+        if sized is None:
+            return False
+        base_pct, initial_stop_pct = sized
 
         # Regime allocation scaling
         if self._regime_state is not None:
@@ -816,70 +842,13 @@ class RegimeAwareOrchestrator:
                        alert=True)
             return False
 
-        # ATR-based deterministic position sizing + MA50/MA200 conviction modifier.
-        # Fetch 2y: enough history for ATR/MA200 plus the technical-snapshot pipeline.
-        ma_delta = 0
-        try:
-            hist = _t.history(period="2y")
-            atr_pct = atr_pct_from_ohlc(
-                hist["High"].values, hist["Low"].values, hist["Close"].values,
-                window=self._cfg.sizing.atr_window,
-            )
-            ma_delta = _ma_conviction_delta(hist["Close"].values, entry_price)
-        except Exception:
-            atr_pct = _ATR_FALLBACK_PCT
-            hist = None
-
-        conviction = max(1, min(10, score.conviction + ma_delta))
-
-        initial_stop_pct: float | None = None
-        if self._cfg.sizing.enable_technical_gate and hist is not None:
-            try:
-                snapshot = compute_snapshot(
-                    ticker=ticker,
-                    ohlcv=hist,
-                    spy_close=get_etf_close_history("SPY"),
-                    sector_close=_get_sector_etf_close(sector),
-                    as_of=date.today().isoformat(),
-                )
-                tech_score = score_technical(
-                    snapshot,
-                    regime_label=self._regime_state.regime_label if self._regime_state else "neutral",
-                    signal_type=signal_type,
-                )
-            except Exception:
-                log.exception("Technical gate failed for %s (%s) — rejecting", ticker, signal_type)
-                return False
-            if (tech_score.entry != "buy"
-                    or tech_score.reward_risk < self._cfg.sizing.min_reward_risk):
-                emit_event(
-                    log, EventType.SIGNAL_REJECTED,
-                    f"{ticker} ({signal_type}) rejected by technical gate "
-                    f"(entry={tech_score.entry}, reward_risk={tech_score.reward_risk:.2f})",
-                )
-                return False
-            base_pct = structure_stop_size_pct(
-                entry_price=entry_price,
-                invalidation_price=tech_score.invalidation_price,
-                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
-                max_position_pct=self._cfg.risk.max_position_pct,
-            )
-            initial_stop_pct = (entry_price - tech_score.invalidation_price) / entry_price * 100
-        else:
-            base_pct = vol_target_size_pct(
-                atr_pct=atr_pct,
-                per_trade_risk_pct=self._cfg.sizing.per_trade_risk_pct,
-                max_position_pct=self._cfg.risk.max_position_pct,
-            )
-        base_pct = apply_conviction_tilt(
-            base_pct=base_pct,
-            conviction=conviction,
-            max_position_pct=self._cfg.risk.max_position_pct,
+        sized = self._size_position(
+            ticker=ticker, sector=sector, entry_price=entry_price,
+            score_conviction=score.conviction, signal_type=signal_type,
         )
-        log.debug(
-            "%s (%s): vol-target base_pct=%.2f%% (atr_pct=%.2f%%, conviction=%d→%d ma_delta=%+d)",
-            ticker, signal_type, base_pct, atr_pct, score.conviction, conviction, ma_delta,
-        )
+        if sized is None:
+            return False
+        base_pct, initial_stop_pct = sized
 
         if self._regime_state is not None:
             alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
