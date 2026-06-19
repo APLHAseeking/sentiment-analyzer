@@ -578,3 +578,18 @@ def test_score_technical_congressional_omits_bonus_text(mocker):
     import bot.ai_analyst as m
     system_text = m._get_client().messages.create.call_args[1]["system"][0]["text"]
     assert "Combined Signal Note" not in system_text
+
+
+def test_get_openai_client_raises_without_key(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    bad_settings = dataclasses.replace(
+        real_settings,
+        credentials=dataclasses.replace(real_settings.credentials, openai_api_key=""),
+    )
+    mocker.patch("system.config.settings", bad_settings)
+    mocker.patch("bot.ai_analyst._openai_client", None)
+
+    from bot.ai_analyst import _get_openai_client
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        _get_openai_client()

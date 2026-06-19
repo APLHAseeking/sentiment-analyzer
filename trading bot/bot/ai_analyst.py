@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 
 import anthropic as _anthropic
+import openai as _openai
 
 log = logging.getLogger(__name__)
 
@@ -173,6 +174,20 @@ def _get_client() -> _anthropic.Anthropic:
             raise RuntimeError("Missing required env var: ANTHROPIC_API_KEY")
         _client = _anthropic.Anthropic(api_key=api_key)
     return _client
+
+
+_openai_client: _openai.OpenAI | None = None
+
+
+def _get_openai_client() -> _openai.OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        from system.config import settings
+        api_key = settings.credentials.openai_api_key
+        if not api_key:
+            raise RuntimeError("Missing required env var: OPENAI_API_KEY")
+        _openai_client = _openai.OpenAI(api_key=api_key)
+    return _openai_client
 
 
 def _call_with_retry(fn):
