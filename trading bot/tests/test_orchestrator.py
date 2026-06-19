@@ -1171,6 +1171,61 @@ def test_technical_gate_on_buy_passes_structure_stop_pct(mocker, orch):
     assert call_kwargs["initial_stop_pct"] == pytest.approx(2.0)
 
 
+def test_technical_gate_rejects_when_invalidation_price_above_live_entry_price(mocker, orch):
+    """tech_score.invalidation_price is only geometry-checked against the
+    earlier history close, not the live entry price fetched moments later.
+    If the live price has gapped down through (or to) that invalidation
+    level, the structural stop is broken and the candidate must be
+    rejected rather than opened with a zero/inverted stop."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, sizing=dataclasses.replace(orch._cfg.sizing, enable_technical_gate=True)
+    )
+    from bot.ai_analyst import EntryScore, TechnicalScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    # Live entry price (100.0) has gapped down to/through the model's invalidation
+    # level (105.0, set when the history close was higher) by the time of sizing.
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    mocker.patch("orchestration.main_loop.compute_snapshot", return_value=MagicMock())
+    mocker.patch("orchestration.main_loop.score_technical",
+                 return_value=TechnicalScore(
+                     conviction=8, entry="buy", setup_type="pullback_to_support",
+                     trend_alignment="bullish", momentum_state="rising",
+                     volume_confirmation="confirmed", relative_strength="outperforming",
+                     entry_trigger="reclaim of 20-day SMA", invalidation_price=105.0,
+                     target_price=110.0, reward_risk=6.0, key_levels="support 105",
+                     conflicts=(), rationale="clean setup", risk_flags=(),
+                 ))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "tg-gap", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    result = orch._process_signal(disc, {})
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
 def test_fundamental_technical_gate_off_by_default_skips_gate(mocker, orch):
     from bot.ai_analyst import EntryScore
     from risk.risk_manager import RiskVeto

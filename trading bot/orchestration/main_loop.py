@@ -643,6 +643,18 @@ class RegimeAwareOrchestrator:
                     f"(entry={tech_score.entry}, reward_risk={tech_score.reward_risk:.2f})",
                 )
                 return None
+            # tech_score.invalidation_price was only geometry-checked against the
+            # history close used for scoring, not this live entry_price fetched
+            # moments later. Re-check here — a gap-down through the invalidation
+            # level breaks the structural stop (zero/negative width).
+            if tech_score.invalidation_price >= entry_price:
+                emit_event(
+                    log, EventType.SIGNAL_REJECTED,
+                    f"{ticker} ({signal_type}) rejected by technical gate: stop geometry "
+                    f"invalid vs. live price (entry_price={entry_price:.2f}, "
+                    f"invalidation_price={tech_score.invalidation_price:.2f})",
+                )
+                return None
             base_pct = structure_stop_size_pct(
                 entry_price=entry_price,
                 invalidation_price=tech_score.invalidation_price,
