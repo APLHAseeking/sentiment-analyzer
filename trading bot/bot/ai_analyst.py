@@ -512,7 +512,8 @@ def _build_technical_prompt(snapshot: "TechnicalSnapshot", regime_label: str) ->
         f"divergence={snapshot.rsi_divergence} MACD_hist={snapshot.macd_hist:+.3f} "
         f"macd_state={snapshot.macd_state}",
         f"Volatility: ATR%={snapshot.atr_pct:.2f} (pct1y={snapshot.atr_pct_percentile_1y:.0f}) "
-        f"BB%B={snapshot.bb_percent_b:.2f} BB_bandwidth_pct1y={snapshot.bb_bandwidth_percentile_1y:.0f}",
+        f"BB%B={snapshot.bb_percent_b:.2f} BB_bandwidth_pct1y={snapshot.bb_bandwidth_percentile_1y:.0f} "
+        f"BB_bands_flat={snapshot.bb_bands_flat}",
         f"Volume: rel_volume_20d={snapshot.rel_volume_20d:.2f}x obv_trend={snapshot.obv_trend} "
         f"volume_confirms_move={snapshot.volume_confirms_move}",
         f"Relative strength: vs_SPY_3m={snapshot.rs_vs_spy_3m_pct:+.2f}% "

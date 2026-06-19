@@ -95,7 +95,9 @@ def compute_macd(
 def macd_state_from_hist(hist) -> str:
     arr = np.asarray(hist, dtype=float)
     direction = "bullish" if arr[-1] > 0 else "bearish"
-    momentum = "expanding" if abs(arr[-1]) > abs(arr[-2]) else "fading"
+    momentum = (
+        "expanding" if len(arr) >= 2 and abs(arr[-1]) > abs(arr[-2]) else "fading"
+    )
     return f"{direction}_{momentum}"
 
 
@@ -276,11 +278,13 @@ def dist_to_52w_extremes_pct(close: pd.Series, last_close: float) -> tuple[float
 
 
 def relative_strength_pct(asset_close: pd.Series, bench_close: pd.Series, window: int) -> float:
-    """Asset's window-bar return minus the benchmark's window-bar return (each
-    measured positionally from its own series' end — both are daily US-market
-    series so they cover the same trading days)."""
-    asset_ret = pct_return(asset_close, bars_back=window)
-    bench_ret = pct_return(bench_close, bars_back=window)
+    """Asset's window-bar return minus the benchmark's window-bar return.
+    Aligned by date first — a missing/extra row on one side (a halt, a
+    stock-specific gap) must not silently shift the other series' bars out
+    of calendar sync."""
+    asset_aligned, bench_aligned = asset_close.align(bench_close, join="inner")
+    asset_ret = pct_return(asset_aligned, bars_back=window)
+    bench_ret = pct_return(bench_aligned, bars_back=window)
     return float(asset_ret - bench_ret)
 
 
@@ -346,6 +350,7 @@ class TechnicalSnapshot:
     anchored_vwap_from_low: float
     bars_available: int
     data_complete: bool
+    bb_bands_flat: bool = False
 
 
 def compute_snapshot(
@@ -392,6 +397,10 @@ def compute_snapshot(
     last_percent_b = percent_b_arr[-1]
     bb_percent_b = float(last_percent_b) if not np.isnan(last_percent_b) else 0.5
     last_bandwidth = bandwidth_arr[-1]
+    # A zero-width band (halted/illiquid ticker, zero realized volatility over the
+    # window) makes bb_percent_b mathematically degenerate — flag it explicitly so
+    # consumers don't mistake the 0.5 default for a genuinely calm/neutral reading.
+    bb_bands_flat = bool(not np.isnan(last_bandwidth) and last_bandwidth < 1e-9)
     bb_bandwidth_percentile_1y = _percentile_rank(
         bandwidth_arr, float(last_bandwidth) if not np.isnan(last_bandwidth) else 0.0, lookback=252
     )
@@ -473,4 +482,5 @@ def compute_snapshot(
         anchored_vwap_from_low=anchored_vwap_from_low,
         bars_available=bars_available,
         data_complete=data_complete,
+        bb_bands_flat=bb_bands_flat,
     )

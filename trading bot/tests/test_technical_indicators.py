@@ -147,6 +147,11 @@ class TestMacdStateFromHist:
     def test_bearish_fading(self):
         assert macd_state_from_hist([-0.1, -0.5, -0.2]) == "bearish_fading"
 
+    def test_single_bar_does_not_crash(self):
+        """A ticker with <2 bars of history (new IPO, halted) must not raise
+        IndexError on the unconditional arr[-2] momentum comparison."""
+        assert macd_state_from_hist([0.3]) == "bullish_fading"
+
 
 from risk.position_sizing import atr_pct_from_ohlc
 from technical.indicators import rolling_atr_pct, bollinger_bands, _percentile_rank
@@ -424,6 +429,17 @@ class TestRelativeStrengthPct:
         bench = pd.Series(np.linspace(100.0, 120.0, 70))   # +20%
         assert relative_strength_pct(asset, bench, window=60) < 0
 
+    def test_identical_trend_with_one_missing_asset_row_gives_zero(self):
+        """asset and bench track the IDENTICAL underlying trend on every shared
+        date; asset is just missing one row in the middle (a halt/no-print day).
+        True relative strength must be ~0 — positional (not date) indexing would
+        misalign the two series past the gap and fabricate a nonzero reading."""
+        dates = pd.date_range("2024-01-01", periods=90, freq="D")
+        true_vals = np.linspace(100.0, 145.0, 90)
+        bench = pd.Series(true_vals, index=dates)
+        asset = pd.Series(np.delete(true_vals, 40), index=dates.delete(40))
+        assert relative_strength_pct(asset, bench, window=60) == pytest.approx(0.0, abs=1e-6)
+
 
 class TestRsLineSlope:
     def test_asset_outpacing_benchmark_is_rising(self):
@@ -453,7 +469,7 @@ def _make_ohlcv(n: int, start_price: float = 100.0, trend: float = 0.0) -> pd.Da
 class TestComputeSnapshot:
     def test_uptrend_snapshot_has_expected_shape_and_bullish_signals(self):
         ohlcv = _make_ohlcv(300, start_price=100.0, trend=0.003)
-        spy_close = pd.Series(np.linspace(400.0, 420.0, 300))
+        spy_close = pd.Series(np.linspace(400.0, 420.0, 300), index=ohlcv.index)
         snapshot = compute_snapshot(
             ticker="TEST", ohlcv=ohlcv, spy_close=spy_close,
             sector_close=None, as_of="2026-06-17",
@@ -470,7 +486,7 @@ class TestComputeSnapshot:
 
     def test_short_history_marks_data_incomplete_without_crashing(self):
         ohlcv = _make_ohlcv(50, start_price=100.0, trend=0.001)
-        spy_close = pd.Series(np.linspace(400.0, 410.0, 50))
+        spy_close = pd.Series(np.linspace(400.0, 410.0, 50), index=ohlcv.index)
         snapshot = compute_snapshot(
             ticker="SHORT", ohlcv=ohlcv, spy_close=spy_close,
             sector_close=None, as_of="2026-06-17",
@@ -480,10 +496,31 @@ class TestComputeSnapshot:
 
     def test_sector_close_provided_computes_relative_strength(self):
         ohlcv = _make_ohlcv(300, start_price=100.0, trend=0.003)
-        spy_close = pd.Series(np.linspace(400.0, 420.0, 300))
-        sector_close = pd.Series(np.linspace(50.0, 55.0, 300))
+        spy_close = pd.Series(np.linspace(400.0, 420.0, 300), index=ohlcv.index)
+        sector_close = pd.Series(np.linspace(50.0, 55.0, 300), index=ohlcv.index)
         snapshot = compute_snapshot(
             ticker="TEST", ohlcv=ohlcv, spy_close=spy_close,
             sector_close=sector_close, as_of="2026-06-17",
         )
         assert snapshot.rs_vs_sector_3m_pct is not None
+
+    def test_flat_price_snapshot_flags_bollinger_bands_as_flat(self):
+        """A halted/illiquid ticker with zero realized volatility over the
+        20-day window must not be reported as a neutral BB%B=0.5 with no
+        signal that the reading is degenerate."""
+        ohlcv = _make_ohlcv(300, start_price=100.0, trend=0.0)
+        spy_close = pd.Series(np.linspace(400.0, 420.0, 300), index=ohlcv.index)
+        snapshot = compute_snapshot(
+            ticker="FLAT", ohlcv=ohlcv, spy_close=spy_close,
+            sector_close=None, as_of="2026-06-17",
+        )
+        assert snapshot.bb_bands_flat is True
+
+    def test_normal_volatility_snapshot_does_not_flag_bollinger_bands_as_flat(self):
+        ohlcv = _make_ohlcv(300, start_price=100.0, trend=0.003)
+        spy_close = pd.Series(np.linspace(400.0, 420.0, 300), index=ohlcv.index)
+        snapshot = compute_snapshot(
+            ticker="TEST", ohlcv=ohlcv, spy_close=spy_close,
+            sector_close=None, as_of="2026-06-17",
+        )
+        assert snapshot.bb_bands_flat is False
