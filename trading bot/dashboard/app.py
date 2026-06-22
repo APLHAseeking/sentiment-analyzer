@@ -25,13 +25,14 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from dashboard.data_store import DashboardStore
+from system.paths import resolve
 
 # -------------------------------------------------------------------
 # Config
 # -------------------------------------------------------------------
 
-DB_PATH = os.environ.get("DB_PATH", "trading.db")
-STATE_PATH = os.environ.get("DASHBOARD_STATE", "dashboard_state.json")
+DB_PATH = resolve(os.environ.get("DB_PATH", "trading.db"))
+STATE_PATH = resolve(os.environ.get("DASHBOARD_STATE", "dashboard_state.json"))
 REFRESH_SECS = int(os.environ.get("DASHBOARD_REFRESH", "300"))
 
 REGIME_COLORS = {
