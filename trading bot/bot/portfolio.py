@@ -374,7 +374,8 @@ class Portfolio:
             )
 
             current = pos["current_price"]
-            peak = meta.get("peak_price") or pos["avg_entry_price"]
+            stored_peak = meta.get("peak_price")
+            peak = stored_peak if stored_peak is not None else pos["avg_entry_price"]
             db.update_position_peak(ticker, current)
 
             # Trail the resting stop upward (only-up). Cancel the old stop before
@@ -409,6 +410,12 @@ class Portfolio:
                         alert=True,
                     )
 
+            # A non-positive peak (e.g. an explicitly-stored 0.0) can't be used
+            # as a meaningful denominator — skip the stop-loss distance check
+            # for this poll rather than dividing by zero (same guard style as
+            # enforce_take_profits' `if entry <= 0: continue`).
+            if peak <= 0:
+                continue
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:
                 self.close_position(

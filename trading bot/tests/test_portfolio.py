@@ -903,3 +903,30 @@ def test_enforce_stop_losses_honors_stored_zero_stop_pct(mock_broker, db):
     closed = portfolio.enforce_stop_losses()
 
     assert "AAPL" in closed
+
+
+def test_enforce_stop_losses_honors_stored_zero_peak_price(mock_broker, db):
+    """A stored peak_price of exactly 0.0 must not be silently replaced by
+    avg_entry_price — Python's `or` treats 0.0 as falsy, masking a real (if
+    degenerate) stored peak with the entry price.
+
+    avg_entry_price=100, current=80 would be a 20% drop from peak if the bug
+    incorrectly falls back to avg_entry_price as the peak — which trips a 15%
+    stop_loss_pct and closes the position. With the stored peak honored as
+    0.0, the position must NOT close (a non-positive peak can't be used as a
+    denominator for the drop-from-peak calc, so that check is skipped instead
+    of dividing by zero)."""
+    portfolio = Portfolio(broker=mock_broker)
+    mock_broker.get_stop_orders.return_value = {}
+    mock_broker.get_positions.return_value = [
+        {"ticker": "AAPL", "qty": 10.0, "current_price": 80.0, "avg_entry_price": 100.0},
+    ]
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    # Force peak_price to an explicit 0.0 (update_position_peak only ever raises
+    # it, so write it directly to simulate an explicitly-stored degenerate value).
+    with db.get_conn() as conn:
+        conn.execute("UPDATE positions SET peak_price = 0.0 WHERE ticker = ?", ("AAPL",))
+
+    closed = portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    assert "AAPL" not in closed
