@@ -26,6 +26,12 @@ from monitoring.logger import EventType, emit_event
 
 log = logging.getLogger(__name__)
 
+# Sector label used for inverse-ETF hedge orders. Hedge orders are exempt from
+# the ADV liquidity gate (see validate_order) since hedge ETFs have no
+# meaningful ADV constraint. Shared with orchestration/main_loop.py, which
+# constructs hedge orders with this same sector label — keep them in sync.
+HEDGE_SECTOR_LABEL = "Hedge"
+
 
 class RiskState(str, Enum):
     NORMAL = "normal"
@@ -296,7 +302,7 @@ class RiskManager:
                     allowed=False,
                     reason=f"Illiquid: {adv_pct:.1f}% of ADV (max {self._risk.max_adv_pct}%)",
                 )
-        elif sector != "Hedge":
+        elif sector != HEDGE_SECTOR_LABEL:
             # Hedge ETFs have no meaningful ADV constraint; exempt from the gate.
             # For everything else, missing/zero ADV data is treated as illiquid
             # and hard-vetoed rather than silently passed through.
