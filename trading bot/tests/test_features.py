@@ -139,3 +139,53 @@ def test_build_feature_matrix_with_scaler_mean_pads_missing_columns():
     # After scaler.transform(), mean-padded columns standardise to ~0
     padded_cols = X[:, n_have:n_expected]
     assert np.allclose(padded_cols, 0.0, atol=1e-8)
+
+
+def test_build_feature_matrix_with_scaler_aligns_by_name_for_middle_column():
+    """When a MIDDLE column (vix_level/vix_change) is missing but LATER
+    columns (momentum, drawdown) are present, padding must align by column
+    NAME, not position — momentum/drawdown's real values must stay in their
+    own slots, not get shifted into vix_level/vix_change's slots."""
+    data = _make_price_data(300)
+
+    # Fit scaler on the full 8-column feature set.
+    full_cfg = FeatureConfig(
+        vol_window=20, trend_window=50, min_history_bars=10,
+        use_vix=True, use_momentum=True, use_drawdown=True,
+    )
+    _, _, scaler = build_feature_matrix(data.iloc[:200], full_cfg)
+    full_cols = ["ret_1d", "vol_20d", "trend_z", "vol_z",
+                 "vix_level", "vix_change", "momentum", "drawdown"]
+    vix_level_mean = scaler.mean_[full_cols.index("vix_level")]
+    vix_change_mean = scaler.mean_[full_cols.index("vix_change")]
+
+    # Live config drops VIX (the middle columns) but keeps momentum/drawdown.
+    no_vix_cfg = FeatureConfig(
+        vol_window=20, trend_window=50, min_history_bars=10,
+        use_vix=False, use_momentum=True, use_drawdown=True,
+    )
+    X, _ = build_feature_matrix_with_scaler(data.iloc[200:], scaler, no_vix_cfg)
+
+    # Recompute the real (unscaled) momentum/drawdown for the same slice to
+    # know what the correctly-aligned, scaled values should be.
+    feat_df = compute_features(data.iloc[200:], no_vix_cfg)
+    momentum_raw = feat_df["momentum"].dropna()
+    drawdown_raw = feat_df["drawdown"].dropna()
+    common_index = momentum_raw.index.intersection(drawdown_raw.index)
+
+    momentum_scaled_expected = (
+        momentum_raw.loc[common_index].values - scaler.mean_[full_cols.index("momentum")]
+    ) / scaler.scale_[full_cols.index("momentum")]
+    drawdown_scaled_expected = (
+        drawdown_raw.loc[common_index].values - scaler.mean_[full_cols.index("drawdown")]
+    ) / scaler.scale_[full_cols.index("drawdown")]
+
+    # momentum/drawdown must be in their OWN columns (indices 6, 7), holding
+    # their real scaled values — not the mean-fill, and not shifted into
+    # vix_level/vix_change's columns (indices 4, 5).
+    n = X.shape[0]
+    assert np.allclose(X[-n:, 6], momentum_scaled_expected[-n:], atol=1e-6)
+    assert np.allclose(X[-n:, 7], drawdown_scaled_expected[-n:], atol=1e-6)
+    # vix_level/vix_change (the actually-missing middle columns) standardise to ~0.
+    assert np.allclose(X[:, 4], 0.0, atol=1e-8)
+    assert np.allclose(X[:, 5], 0.0, atol=1e-8)

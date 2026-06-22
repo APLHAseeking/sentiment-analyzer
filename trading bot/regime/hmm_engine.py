@@ -28,6 +28,7 @@ from regime.gaussian_hmm import GaussianHMM
 
 from features.feature_pipeline import (
     FeatureConfig,
+    align_features_to_scaler,
     build_feature_matrix,
     build_feature_matrix_with_scaler,
     compute_features,
@@ -36,13 +37,24 @@ from features.feature_pipeline import (
 log = logging.getLogger(__name__)
 
 
-def _pad_features_to_scaler(last_row: np.ndarray, scaler) -> np.ndarray:
+def _pad_features_to_scaler(last_row: np.ndarray | pd.DataFrame, scaler) -> np.ndarray:
     """Align a feature row to the scaler's expected width.
 
-    Missing (trailing) features are padded with the scaler's training mean so
-    they standardise to ~0 (neutral) rather than a large spurious z-score; extra
+    If ``last_row`` is a named DataFrame and the scaler has
+    ``feature_names_in_`` recorded, alignment is done by column NAME via
+    ``features.feature_pipeline.align_features_to_scaler`` — this is what
+    fixes the bug where a MIDDLE feature missing (e.g. vix_level) used to
+    shift LATER features (e.g. momentum, drawdown) into the wrong slots.
+
+    Otherwise (plain ndarray, or a scaler with no recorded names — e.g. fit
+    directly on a bare ndarray), falls back to positional padding: missing
+    (trailing) features are padded with the scaler's training mean so they
+    standardise to ~0 (neutral) rather than a large spurious z-score; extra
     columns are truncated.
     """
+    if isinstance(last_row, pd.DataFrame) and getattr(scaler, "feature_names_in_", None) is not None:
+        return align_features_to_scaler(last_row, scaler)
+
     n_expected = scaler.n_features_in_
     n_have = last_row.shape[1]
     if n_have < n_expected:
@@ -433,21 +445,25 @@ class HMMRegimeEngine:
             cols.append("drawdown")
 
         available = [c for c in cols if c in feat_df.columns]
-        last_row = feat_df[available].dropna().iloc[-1:].values  # (1, D)
+        last_row_df = feat_df[available].dropna().iloc[-1:]  # (1, D), named columns kept
 
-        if last_row.shape[0] == 0:
+        if last_row_df.shape[0] == 0:
             raise RuntimeError("New bar produced all-NaN features — tail too short")
 
-        # Align to the scaler's expected feature count. Pad missing features with the
-        # training mean (→ scales to ~0) instead of zero (→ spurious extreme z-score).
-        n_have = last_row.shape[1]
+        # Align to the scaler's expected feature count. Missing columns are
+        # filled by NAME with the training mean (→ scales to ~0) instead of
+        # zero or a positionally-shifted real value (→ corrupted feature row).
+        n_have = last_row_df.shape[1]
         n_expected = self._result.scaler.n_features_in_
         if n_have != n_expected:
             log.warning(
                 "update_single: feature width %d != expected %d — padding/truncating",
                 n_have, n_expected,
             )
-        last_row = _pad_features_to_scaler(last_row, self._result.scaler)
+        last_row = _pad_features_to_scaler(last_row_df, self._result.scaler)
+        feature_names = getattr(self._result.scaler, "feature_names_in_", None)
+        if feature_names is not None:
+            last_row = pd.DataFrame(last_row, columns=feature_names)
         obs_scaled = self._result.scaler.transform(last_row)[0]  # (D,)
 
         # One causal forward step

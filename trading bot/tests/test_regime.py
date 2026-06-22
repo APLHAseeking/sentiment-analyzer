@@ -506,6 +506,47 @@ def test_pad_features_truncates_when_too_many_columns():
     assert padded.shape == (1, 2)
 
 
+def test_pad_features_aligns_by_name_when_middle_column_missing():
+    """A MIDDLE column missing (vix_level) must not shift LATER columns
+    (momentum, drawdown) into the wrong slots. Padding must be column-name
+    aware, not purely positional, when the scaler was fit on a named
+    DataFrame (feature_names_in_ populated)."""
+    full_cols = [
+        "ret_1d", "vol_20d", "trend_z", "vol_z",
+        "vix_level", "vix_change", "momentum", "drawdown",
+    ]
+    train_df = pd.DataFrame(
+        [
+            [0.01, 0.10, 0.5, 0.2, 18.0, 0.01, 0.05, -0.02],
+            [0.02, 0.12, 0.6, 0.3, 20.0, -0.02, 0.07, -0.03],
+            [0.00, 0.11, 0.4, 0.1, 19.0, 0.00, 0.06, -0.01],
+        ],
+        columns=full_cols,
+    )
+    scaler = StandardScaler().fit(train_df)
+    vix_level_mean = scaler.mean_[full_cols.index("vix_level")]
+
+    # Live input is missing the MIDDLE column "vix_level" but HAS the
+    # LATER columns momentum/drawdown with distinct, recognisable values.
+    live_cols = ["ret_1d", "vol_20d", "trend_z", "vol_z", "vix_change", "momentum", "drawdown"]
+    live_row = pd.DataFrame(
+        [[0.015, 0.115, 0.55, 0.25, 0.005, 0.123, 0.456]],
+        columns=live_cols,
+    )
+
+    padded = _pad_features_to_scaler(live_row, scaler)
+    assert padded.shape == (1, len(full_cols))
+
+    # momentum/drawdown's real values must land in momentum/drawdown's
+    # positions, not be shifted into vix_level's slot.
+    assert padded[0, full_cols.index("momentum")] == pytest.approx(0.123)
+    assert padded[0, full_cols.index("drawdown")] == pytest.approx(0.456)
+    # vix_level (the actually-missing middle column) gets the training mean.
+    assert padded[0, full_cols.index("vix_level")] == pytest.approx(vix_level_mean)
+    # vix_change (present in the input) keeps its real value, not a mean-fill.
+    assert padded[0, full_cols.index("vix_change")] == pytest.approx(0.005)
+
+
 def test_compute_stability_metrics_accepts_explicit_recent_labels():
     """An explicit recent_labels argument overrides self._recent_labels and
     does not mutate it."""
