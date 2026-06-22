@@ -33,7 +33,7 @@ New `_get_openai_client()` — same lazy-singleton shape as the existing `_get_c
 
 ## Component 3: Provider-dispatching call (`bot/ai_analyst.py`)
 
-`_claude_call` renamed to `_llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str`. Branches on `settings.credentials.llm_provider`:
+`_claude_call` renamed to `_llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str`. Branches on `settings.llm_provider`:
 
 - **`"openai"` (default):** `client.chat.completions.create(model="gpt-5.4", max_tokens=max_tokens, temperature=0, seed=0, messages=[{"role": "system", "content": system_text}, {"role": "user", "content": user_text}])`, return `resp.choices[0].message.content`. Mirrors `bot/researcher.py`'s `_score_sentiment` exactly (same `temperature=0` + `seed=0` determinism convention). No `cache_control` block — OpenAI's prompt caching is automatic on prefixes ≥1024 tokens, no code-level opt-in.
 - **`"anthropic"`:** today's exact code — `cache_control: {"type": "ephemeral"}` on the system block, `model="claude-sonnet-4-6"`, `temperature=0`.
@@ -48,9 +48,9 @@ All five callers of `_claude_call` are updated to call `_llm_call` — no other 
 
 Changing the default to `"openai"` would silently break every existing test in `tests/test_ai_analyst.py` that patches `bot.ai_analyst._get_client` (the Anthropic getter) without setting a provider — there are 30+. Fix:
 
-- A fixture (file-scoped, `autouse` within `test_ai_analyst.py`) that forces `settings.credentials.llm_provider == "anthropic"` for that file, preserving every existing test's original intent unchanged.
+- A fixture (file-scoped, `autouse` within `test_ai_analyst.py`) that forces `settings.llm_provider == "anthropic"` for that file, preserving every existing test's original intent unchanged.
 - New tests covering the OpenAI path: `_get_openai_client` raises on missing key (mirrors the existing `_get_client` missing-key test); a happy-path call returns the expected text; `openai.RateLimitError` triggers the same backoff-and-retry behavior as the Anthropic case.
-- One test in `tests/test_config.py` asserting the real (unfixtured) default is `Credentials().llm_provider == "openai"`, and one asserting `Settings.validate()` rejects an invalid provider string.
+- One test in `tests/test_config.py` asserting the real (unfixtured) default is `Settings().llm_provider == "openai"`, and one asserting `Settings.validate()` rejects an invalid provider string.
 
 ## Component 6: Docs (`trading bot/CLAUDE.md`)
 

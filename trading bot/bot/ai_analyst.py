@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass
 
 import anthropic as _anthropic
+import openai as _openai
 
 log = logging.getLogger(__name__)
 
@@ -175,6 +176,20 @@ def _get_client() -> _anthropic.Anthropic:
     return _client
 
 
+_openai_client: _openai.OpenAI | None = None
+
+
+def _get_openai_client() -> _openai.OpenAI:
+    global _openai_client
+    if _openai_client is None:
+        from system.config import settings
+        api_key = settings.credentials.openai_api_key
+        if not api_key:
+            raise RuntimeError("Missing required env var: OPENAI_API_KEY")
+        _openai_client = _openai.OpenAI(api_key=api_key)
+    return _openai_client
+
+
 def _call_with_retry(fn):
     """Retry fn() up to _MAX_RETRIES times on RateLimitError or JSON parse failure."""
     last_exc = None
@@ -184,7 +199,7 @@ def _call_with_retry(fn):
             result = fn()
             time.sleep(_INTER_CALL_SLEEP)  # throttle: max 2 calls/second
             return result
-        except _anthropic.RateLimitError as exc:
+        except (_anthropic.RateLimitError, _openai.RateLimitError) as exc:
             last_exc = exc
             log.warning("Rate limit hit (attempt %d/%d) — retrying in %.0fs",
                         attempt + 1, _MAX_RETRIES, delay)
@@ -368,8 +383,27 @@ def _build_entry_prompt(
     return "\n".join(lines)
 
 
-def _claude_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
-    """Single Claude API call with prompt caching on the system prompt."""
+def _llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
+    """Single LLM call, routed to the configured provider.
+
+    OpenAI's prompt caching is automatic on repeated prefixes >=1024 tokens —
+    no cache_control equivalent needed on that path.
+    """
+    from system.config import settings
+    if settings.llm_provider == "openai":
+        client = _get_openai_client()
+        resp = client.chat.completions.create(
+            model="gpt-5.4",
+            max_tokens=max_tokens,
+            temperature=0,
+            seed=0,
+            messages=[
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text},
+            ],
+        )
+        return resp.choices[0].message.content
+
     client = _get_client()
     msg = client.messages.create(
         model="claude-sonnet-4-6",
@@ -387,14 +421,14 @@ def _claude_call(system_text: str, user_text: str, max_tokens: int = 512) -> str
 
 def _bull_argument(prompt: str) -> str:
     def _call():
-        return _claude_call(_BULL_SYSTEM, prompt, max_tokens=512)
+        return _llm_call(_BULL_SYSTEM, prompt, max_tokens=512)
     return _call_with_retry(_call)
 
 
 def _bear_argument(prompt: str, bull_text: str) -> str:
     combined = f"{prompt}\n\nBull case:\n{bull_text}"
     def _call():
-        return _claude_call(_BEAR_SYSTEM, combined, max_tokens=512)
+        return _llm_call(_BEAR_SYSTEM, combined, max_tokens=512)
     return _call_with_retry(_call)
 
 
@@ -420,7 +454,7 @@ def score_entry(
     system_text = _build_entry_system(signal_type, has_disclosure=disclosure is not None)
 
     def _call():
-        return parse_entry_response(_claude_call(system_text, prompt))
+        return parse_entry_response(_llm_call(system_text, prompt))
 
     return _call_with_retry(_call)
 
@@ -484,7 +518,7 @@ def review_exit(ticker: str, entry_price: float, current_price: float,
     prompt += "Hold, reduce, or exit?"
 
     def _call():
-        return parse_exit_response(_claude_call(_EXIT_SYSTEM, prompt, max_tokens=256))
+        return parse_exit_response(_llm_call(_EXIT_SYSTEM, prompt, max_tokens=256))
 
     return _call_with_retry(_call)
 
@@ -538,6 +572,6 @@ def score_technical(
         system_text += _TECHNICAL_BOTH_BONUS
 
     def _call():
-        return parse_technical_response(_claude_call(system_text, prompt), last_close=snapshot.last_close)
+        return parse_technical_response(_llm_call(system_text, prompt), last_close=snapshot.last_close)
 
     return _call_with_retry(_call)

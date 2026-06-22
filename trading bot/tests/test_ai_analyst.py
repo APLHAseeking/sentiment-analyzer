@@ -1,5 +1,6 @@
 import json
 import pytest
+import openai as _openai
 from unittest.mock import MagicMock
 from bot.ai_analyst import (
     EntryScore, ExitDecision,
@@ -7,6 +8,19 @@ from bot.ai_analyst import (
     score_entry, review_exit,
     _build_entry_system,
 )
+
+import dataclasses
+from system.config import settings as _real_settings
+
+
+@pytest.fixture(autouse=True)
+def _force_anthropic_provider(mocker):
+    """This file's tests assert Anthropic-specific behavior (model strings, error
+    types, cache_control). Force the provider regardless of Settings' real default
+    so they keep testing what they've always tested. OpenAI-path tests in this file
+    explicitly re-patch to "openai" inside their own body, which overrides this."""
+    mocker.patch("system.config.settings", dataclasses.replace(_real_settings, llm_provider="anthropic"))
+
 
 # ---------------------------------------------------------------------------
 # Anthropic mock helpers
@@ -578,3 +592,109 @@ def test_score_technical_congressional_omits_bonus_text(mocker):
     import bot.ai_analyst as m
     system_text = m._get_client().messages.create.call_args[1]["system"][0]["text"]
     assert "Combined Signal Note" not in system_text
+
+
+def test_get_openai_client_raises_without_key(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    bad_settings = dataclasses.replace(
+        real_settings,
+        credentials=dataclasses.replace(real_settings.credentials, openai_api_key=""),
+    )
+    mocker.patch("system.config.settings", bad_settings)
+    mocker.patch("bot.ai_analyst._openai_client", None)
+
+    from bot.ai_analyst import _get_openai_client
+    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+        _get_openai_client()
+
+
+# ---------------------------------------------------------------------------
+# _llm_call provider branch (Task 3 of the openai-primary-provider plan)
+# ---------------------------------------------------------------------------
+
+def _make_openai_resp(text: str):
+    """Build a mock that mimics an OpenAI ChatCompletion with .choices[0].message.content."""
+    resp = MagicMock()
+    resp.choices = [MagicMock(message=MagicMock(content=text))]
+    return resp
+
+
+def test_llm_call_uses_openai_when_provider_is_openai(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="openai"))
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_openai_resp("openai response text")
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    result = _llm_call("system prompt", "user prompt", max_tokens=256)
+
+    assert result == "openai response text"
+    call_kwargs = mock_client.chat.completions.create.call_args[1]
+    assert call_kwargs["model"] == "gpt-5.4"
+    assert call_kwargs["temperature"] == 0
+    assert call_kwargs["seed"] == 0
+    assert call_kwargs["max_tokens"] == 256
+    assert call_kwargs["messages"] == [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": "user prompt"},
+    ]
+
+
+def test_llm_call_uses_anthropic_when_provider_is_anthropic(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="anthropic"))
+    _mock_claude(mocker, "anthropic response text")
+
+    from bot.ai_analyst import _llm_call
+    result = _llm_call("system prompt", "user prompt", max_tokens=256)
+
+    assert result == "anthropic response text"
+
+
+def test_llm_call_routes_to_openai_by_real_default(mocker):
+    """Regression guard: a fresh, unmodified Settings() (no provider override at
+    all) must route through the OpenAI branch — this is the actual behavior
+    change Task 7 made. Every other _llm_call test in this file pins the
+    provider explicitly, so none of them would catch a regression in the
+    default itself (e.g. _llm_call checking the wrong attribute)."""
+    from system.config import Settings
+    mocker.patch("system.config.settings", Settings())
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_openai_resp("default routed to openai")
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    result = _llm_call("system prompt", "user prompt")
+
+    assert result == "default routed to openai"
+    mock_client.chat.completions.create.assert_called_once()
+
+
+def test_call_with_retry_retries_on_openai_rate_limit(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="openai"))
+    mocker.patch("bot.ai_analyst.time.sleep")
+
+    rate_err = _openai.RateLimitError(
+        "rate limited",
+        response=MagicMock(status_code=429, headers={}),
+        body={},
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = [
+        rate_err, rate_err, _make_openai_resp("worked on third try"),
+    ]
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call, _call_with_retry
+    result = _call_with_retry(lambda: _llm_call("sys", "user"))
+
+    assert result == "worked on third try"
+    assert mock_client.chat.completions.create.call_count == 3
