@@ -419,21 +419,16 @@ def _llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
     return msg.content[0].text
 
 
-def _claude_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
-    """Deprecated alias — removed in Task 5 once all call sites use _llm_call directly."""
-    return _llm_call(system_text, user_text, max_tokens)
-
-
 def _bull_argument(prompt: str) -> str:
     def _call():
-        return _claude_call(_BULL_SYSTEM, prompt, max_tokens=512)
+        return _llm_call(_BULL_SYSTEM, prompt, max_tokens=512)
     return _call_with_retry(_call)
 
 
 def _bear_argument(prompt: str, bull_text: str) -> str:
     combined = f"{prompt}\n\nBull case:\n{bull_text}"
     def _call():
-        return _claude_call(_BEAR_SYSTEM, combined, max_tokens=512)
+        return _llm_call(_BEAR_SYSTEM, combined, max_tokens=512)
     return _call_with_retry(_call)
 
 
@@ -459,7 +454,7 @@ def score_entry(
     system_text = _build_entry_system(signal_type, has_disclosure=disclosure is not None)
 
     def _call():
-        return parse_entry_response(_claude_call(system_text, prompt))
+        return parse_entry_response(_llm_call(system_text, prompt))
 
     return _call_with_retry(_call)
 
@@ -523,7 +518,7 @@ def review_exit(ticker: str, entry_price: float, current_price: float,
     prompt += "Hold, reduce, or exit?"
 
     def _call():
-        return parse_exit_response(_claude_call(_EXIT_SYSTEM, prompt, max_tokens=256))
+        return parse_exit_response(_llm_call(_EXIT_SYSTEM, prompt, max_tokens=256))
 
     return _call_with_retry(_call)
 
@@ -576,6 +571,6 @@ def score_technical(
         system_text += _TECHNICAL_BOTH_BONUS
 
     def _call():
-        return parse_technical_response(_claude_call(system_text, prompt), last_close=snapshot.last_close)
+        return parse_technical_response(_llm_call(system_text, prompt), last_close=snapshot.last_close)
 
     return _call_with_retry(_call)
