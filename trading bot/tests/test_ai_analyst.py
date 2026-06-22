@@ -1,5 +1,6 @@
 import json
 import pytest
+import openai as _openai
 from unittest.mock import MagicMock
 from bot.ai_analyst import (
     EntryScore, ExitDecision,
@@ -640,3 +641,27 @@ def test_llm_call_uses_anthropic_when_provider_is_anthropic(mocker):
     result = _llm_call("system prompt", "user prompt", max_tokens=256)
 
     assert result == "anthropic response text"
+
+
+def test_call_with_retry_retries_on_openai_rate_limit(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="openai"))
+    mocker.patch("bot.ai_analyst.time.sleep")
+
+    rate_err = _openai.RateLimitError(
+        "rate limited",
+        response=MagicMock(status_code=429, headers={}),
+        body={},
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = [
+        rate_err, rate_err, _make_openai_resp("worked on third try"),
+    ]
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call, _call_with_retry
+    result = _call_with_retry(lambda: _llm_call("sys", "user"))
+
+    assert result == "worked on third try"
+    assert mock_client.chat.completions.create.call_count == 3

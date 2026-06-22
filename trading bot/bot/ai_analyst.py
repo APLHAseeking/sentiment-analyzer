@@ -199,7 +199,7 @@ def _call_with_retry(fn):
             result = fn()
             time.sleep(_INTER_CALL_SLEEP)  # throttle: max 2 calls/second
             return result
-        except _anthropic.RateLimitError as exc:
+        except (_anthropic.RateLimitError, _openai.RateLimitError) as exc:
             last_exc = exc
             log.warning("Rate limit hit (attempt %d/%d) — retrying in %.0fs",
                         attempt + 1, _MAX_RETRIES, delay)
