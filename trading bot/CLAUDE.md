@@ -6,7 +6,9 @@
 > See `docs/PHASE0_FINDINGS.md` for gate decision rules and required datasets.
 > Phases 1–3 are fully implemented; paper trading is operational.
 > Hardening plans A–E are complete; the technical-analysis gate (config-gated, default
-> off) landed 2026-06-17 — 659 tests green.
+> off) landed 2026-06-17. OpenAI (`gpt-5.4`) became the default scoring provider
+> 2026-06-22 (Anthropic Claude still available via `LLM_PROVIDER=anthropic`) — 665
+> tests green.
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -98,7 +100,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 659 tests; keep green (run from inside trading bot/)
+pytest                                 # 665 tests; keep green (run from inside trading bot/)
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 
