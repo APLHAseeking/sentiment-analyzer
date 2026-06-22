@@ -282,8 +282,7 @@ class Settings:
     db_path: str = field(default_factory=lambda: resolve(_env("DB_PATH", "trading.db")))
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))
     timezone: str = "Europe/Amsterdam"
-    # TODO(Task 7 of the openai-primary-provider plan): flip default to "openai".
-    llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "anthropic"))
+    llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "openai"))
 
     credentials: Credentials = field(default_factory=Credentials)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
