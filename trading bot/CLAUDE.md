@@ -10,7 +10,12 @@
 > fallback, data-completeness check, both-signal-type resolution, indicator edge
 > cases, sizing-block dedup) landed 2026-06-19. OpenAI (`gpt-5.4`) became the default
 > scoring provider 2026-06-22 (Anthropic Claude still available via
-> `LLM_PROVIDER=anthropic`) — 678 tests green.
+> `LLM_PROVIDER=anthropic`). A hardening pass landed 2026-06-22: `_llm_call` now
+> raises `ValueError` (retryable) on missing/empty response content instead of
+> an uncaught `TypeError`/`IndexError`, retries once without `temperature`/`seed`
+> on a reasoning-tier-model 400, and `bot/universe.py`'s Russell 1000 fetch now
+> normalizes class-share tickers the same way the S&P 500 fetch does — 682
+> tests green.
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -102,7 +107,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 678 tests; keep green (run from inside trading bot/)
+pytest                                 # 682 tests; keep green (run from inside trading bot/)
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 
