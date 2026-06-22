@@ -383,6 +383,66 @@ def test_reconcile_removes_ghost_positions(mock_broker, db):
     assert not any(p["ticker"] == "GHOST" for p in open_positions)
 
 
+def test_reconcile_books_ghost_position_with_matching_fill(mock_broker, db):
+    """A ghost position (gone from the broker, e.g. a resting GTC stop filled
+    server-side) must be booked into closed_positions with the real fill price,
+    not just silently deleted — the fill already happened, its P&L must not be
+    discarded."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+
+    db.insert_disclosures([{
+        "id": "rec-fill-001", "politician": "J", "ticker": "STOP",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("rec-fill-001", "STOP", 8, 5.0, "Good", [])
+    db.insert_position("STOP", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+
+    # Broker no longer reports the position (the resting stop filled server-side)
+    mock_broker.get_positions.return_value = []
+
+    fill = Order(ticker="STOP", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    fill.status = OrderStatus.FILLED
+    fill.filled_qty = 10.0
+    fill.filled_avg_price = 85.0
+    fill.filled_at = "2026-04-10T15:30:00+00:00"
+    mock_broker.get_order_history.return_value = [fill]
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.reconcile_with_broker()
+
+    assert "STOP" in result["ghost_positions"]
+    # Removed from open positions...
+    assert not any(p["ticker"] == "STOP" for p in db.get_open_positions())
+    # ...but booked into closed_positions with the real fill price, not discarded.
+    closed = db.get_closed_positions()
+    assert len(closed) == 1
+    assert closed[0]["ticker"] == "STOP"
+    assert closed[0]["exit_price"] == pytest.approx(85.0)
+    # realized_pnl = (85 - 100) * 10 = -150 (no commissions configured on mock_broker)
+    assert closed[0]["realized_pnl"] == pytest.approx(-150.0)
+
+
+def test_reconcile_ghost_without_matching_fill_still_deletes_and_alerts(mock_broker, db, mocker):
+    """If no matching fill is found in get_order_history() for a ghost ticker,
+    fall through to the bare delete — but now also fire an alert, since silently
+    losing a position with no fill record is itself worth flagging."""
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    db.insert_position("GHOST2", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    mock_broker.get_positions.return_value = []
+    mock_broker.get_order_history.return_value = []  # no fill on record at all
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.reconcile_with_broker()
+
+    assert "GHOST2" in result["ghost_positions"]
+    assert not any(p["ticker"] == "GHOST2" for p in db.get_open_positions())
+    assert db.get_closed_positions() == []
+    mock_fire_alert.assert_called_once()
+
+
 def test_enforce_take_profits_source_exclude_skips_matching(mock_broker, db):
     from system.config import RiskConfig
     p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(take_profit_pct=5.0))
