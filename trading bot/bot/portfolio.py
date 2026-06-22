@@ -4,7 +4,7 @@ import logging
 from datetime import date
 
 import bot.db as db
-from execution.broker_interface import OrderStatus
+from execution.broker_interface import OrderSide, OrderStatus
 from monitoring.logger import EventType, emit_event
 
 log = logging.getLogger(__name__)
@@ -112,6 +112,26 @@ class Portfolio:
             )
             return
         exit_commission = order.filled_qty * self.broker.get_commission_per_share()
+        self._book_closed_position(
+            ticker=ticker,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            shares=shares,
+            entry_date=entry_date,
+            exit_reason=exit_reason,
+            signal_id=signal_id,
+            signal_source=signal_source,
+            exit_commission=exit_commission,
+        )
+
+    def _book_closed_position(self, ticker: str, entry_price: float, exit_price: float,
+                              shares: float, entry_date: str, exit_reason: str,
+                              signal_id: int | None, signal_source: str,
+                              exit_commission: float) -> None:
+        """Shared booking logic: write the closed_positions row, delete the open
+        position, and cancel any resting stop. Used both for a freshly-placed
+        sell (close_position) and for a fill discovered after the fact via
+        get_order_history() (reconcile_with_broker's ghost-position handling)."""
         entry_commission = 0.0
         for pos in db.get_open_positions():
             if pos["ticker"] == ticker:
@@ -189,6 +209,31 @@ class Portfolio:
         if hasattr(self.broker, "cancel_stop_order"):
             self.broker.cancel_stop_order(ticker)
 
+    def _find_matching_fill(self, ticker: str):
+        """Look for a filled sell order for `ticker` in the broker's order history.
+
+        Used by reconcile_with_broker to distinguish a ghost position whose
+        resting stop (or other order) actually filled server-side from one
+        that vanished with no record at all. Returns the matching Order, or
+        None if get_order_history() is unavailable or has no filled sell for
+        this ticker.
+        """
+        if not hasattr(self.broker, "get_order_history"):
+            return None
+        try:
+            history = self.broker.get_order_history()
+        except Exception as exc:
+            log.warning("get_order_history failed during reconcile for %s: %s", ticker, exc)
+            return None
+        for order in history:
+            if (
+                order.ticker == ticker
+                and order.side == OrderSide.SELL
+                and order.status == OrderStatus.FILLED
+            ):
+                return order
+        return None
+
     def reconcile_with_broker(self) -> dict:
         """Compare broker positions vs SQLite. Log and resolve discrepancies.
 
@@ -211,17 +256,50 @@ class Portfolio:
         """
         broker_pos_list = self.broker.get_positions()
         broker_positions = {p["ticker"] for p in broker_pos_list}
-        db_positions = {p["ticker"] for p in db.get_open_positions()}
+        db_meta_by_ticker = {p["ticker"]: dict(p) for p in db.get_open_positions()}
+        db_positions = set(db_meta_by_ticker)
 
         ghost = db_positions - broker_positions
         untracked = broker_positions - db_positions
 
         for ticker in ghost:
-            log.warning(
-                "RECONCILIATION: %s in SQLite but not at broker — removing ghost position",
-                ticker,
-            )
-            db.delete_position(ticker)
+            meta = db_meta_by_ticker.get(ticker, {})
+            fill = self._find_matching_fill(ticker)
+            if fill is not None:
+                # The position didn't vanish — a resting order (e.g. a GTC stop)
+                # filled server-side. Book the real outcome instead of discarding it.
+                log.warning(
+                    "RECONCILIATION: %s in SQLite but not at broker — found a matching "
+                    "fill in order history, booking it instead of a bare delete",
+                    ticker,
+                )
+                exit_commission = fill.filled_qty * self.broker.get_commission_per_share()
+                self._book_closed_position(
+                    ticker=ticker,
+                    entry_price=meta.get("entry_price", 0.0),
+                    exit_price=fill.filled_avg_price,
+                    shares=fill.filled_qty or meta.get("shares", 0.0),
+                    entry_date=meta.get("entry_date") or date.today().isoformat(),
+                    exit_reason="reconcile_fill",
+                    signal_id=meta.get("signal_id"),
+                    signal_source=meta.get("signal_source", "congressional"),
+                    exit_commission=exit_commission,
+                )
+            else:
+                log.warning(
+                    "RECONCILIATION: %s in SQLite but not at broker — removing ghost position",
+                    ticker,
+                )
+                db.delete_position(ticker)
+                emit_event(
+                    log, EventType.DEAD_FEED,
+                    f"RECONCILIATION: ghost position {ticker} removed with no matching fill "
+                    "in order history — its outcome (and any P&L) is unknown. Manual review "
+                    "recommended.",
+                    data={"ticker": ticker},
+                    level=logging.CRITICAL,
+                    alert=True,
+                )
 
         for ticker in untracked:
             if getattr(self._risk, "auto_flatten_untracked", False):
@@ -296,7 +374,8 @@ class Portfolio:
             )
 
             current = pos["current_price"]
-            peak = meta.get("peak_price") or pos["avg_entry_price"]
+            stored_peak = meta.get("peak_price")
+            peak = stored_peak if stored_peak is not None else pos["avg_entry_price"]
             db.update_position_peak(ticker, current)
 
             # Trail the resting stop upward (only-up). Cancel the old stop before
@@ -313,10 +392,30 @@ class Portfolio:
             if new_stop > existing_stop:
                 # Place the new stop BEFORE cancelling the old one so the
                 # position always has a resting stop (no gap between cancel and place).
-                self.broker.place_stop_order(ticker=ticker, qty=pos["qty"], stop_price=new_stop)
-                if hasattr(self.broker, "cancel_stop_order"):
-                    self.broker.cancel_stop_order(ticker)
+                new_stop_id = self.broker.place_stop_order(
+                    ticker=ticker, qty=pos["qty"], stop_price=new_stop
+                )
+                if new_stop_id is not None:
+                    if hasattr(self.broker, "cancel_stop_order"):
+                        self.broker.cancel_stop_order(ticker)
+                else:
+                    # Placement failed — keep the old stop resting rather than
+                    # cancelling it and leaving the position with zero stops.
+                    emit_event(
+                        log, EventType.ORDER_REJECTED,
+                        f"Failed to place trailing stop for {ticker} at ${new_stop:.2f} — "
+                        "keeping the existing resting stop in place",
+                        data={"ticker": ticker, "attempted_stop_price": new_stop},
+                        level=logging.ERROR,
+                        alert=True,
+                    )
 
+            # A non-positive peak (e.g. an explicitly-stored 0.0) can't be used
+            # as a meaningful denominator — skip the stop-loss distance check
+            # for this poll rather than dividing by zero (same guard style as
+            # enforce_take_profits' `if entry <= 0: continue`).
+            if peak <= 0:
+                continue
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:
                 self.close_position(

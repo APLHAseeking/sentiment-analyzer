@@ -383,6 +383,66 @@ def test_reconcile_removes_ghost_positions(mock_broker, db):
     assert not any(p["ticker"] == "GHOST" for p in open_positions)
 
 
+def test_reconcile_books_ghost_position_with_matching_fill(mock_broker, db):
+    """A ghost position (gone from the broker, e.g. a resting GTC stop filled
+    server-side) must be booked into closed_positions with the real fill price,
+    not just silently deleted — the fill already happened, its P&L must not be
+    discarded."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+
+    db.insert_disclosures([{
+        "id": "rec-fill-001", "politician": "J", "ticker": "STOP",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("rec-fill-001", "STOP", 8, 5.0, "Good", [])
+    db.insert_position("STOP", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+
+    # Broker no longer reports the position (the resting stop filled server-side)
+    mock_broker.get_positions.return_value = []
+
+    fill = Order(ticker="STOP", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    fill.status = OrderStatus.FILLED
+    fill.filled_qty = 10.0
+    fill.filled_avg_price = 85.0
+    fill.filled_at = "2026-04-10T15:30:00+00:00"
+    mock_broker.get_order_history.return_value = [fill]
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.reconcile_with_broker()
+
+    assert "STOP" in result["ghost_positions"]
+    # Removed from open positions...
+    assert not any(p["ticker"] == "STOP" for p in db.get_open_positions())
+    # ...but booked into closed_positions with the real fill price, not discarded.
+    closed = db.get_closed_positions()
+    assert len(closed) == 1
+    assert closed[0]["ticker"] == "STOP"
+    assert closed[0]["exit_price"] == pytest.approx(85.0)
+    # realized_pnl = (85 - 100) * 10 = -150 (no commissions configured on mock_broker)
+    assert closed[0]["realized_pnl"] == pytest.approx(-150.0)
+
+
+def test_reconcile_ghost_without_matching_fill_still_deletes_and_alerts(mock_broker, db, mocker):
+    """If no matching fill is found in get_order_history() for a ghost ticker,
+    fall through to the bare delete — but now also fire an alert, since silently
+    losing a position with no fill record is itself worth flagging."""
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    db.insert_position("GHOST2", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    mock_broker.get_positions.return_value = []
+    mock_broker.get_order_history.return_value = []  # no fill on record at all
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.reconcile_with_broker()
+
+    assert "GHOST2" in result["ghost_positions"]
+    assert not any(p["ticker"] == "GHOST2" for p in db.get_open_positions())
+    assert db.get_closed_positions() == []
+    mock_fire_alert.assert_called_once()
+
+
 def test_enforce_take_profits_source_exclude_skips_matching(mock_broker, db):
     from system.config import RiskConfig
     p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(take_profit_pct=5.0))
@@ -629,12 +689,42 @@ def test_enforce_stop_losses_places_new_stop_before_cancelling_old(mock_broker, 
     db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
 
     call_order = []
-    mock_broker.place_stop_order.side_effect = lambda **kw: call_order.append("place")
+
+    def _place(**kw):
+        call_order.append("place")
+        return "new-stop-order-id"  # successful placement — must not be None
+
+    mock_broker.place_stop_order.side_effect = _place
     mock_broker.cancel_stop_order.side_effect = lambda t: call_order.append("cancel")
 
     portfolio.enforce_stop_losses(stop_loss_pct=15.0)
 
     assert call_order == ["place", "cancel"]
+
+
+def test_enforce_stop_losses_keeps_old_stop_when_new_placement_fails(mock_broker, db, mocker):
+    """place_stop_order returns None on failure. If the new (higher) stop fails
+    to place, the old resting stop must NOT be cancelled — otherwise the
+    position is left with zero resting stops. An alert must fire instead."""
+    from system.config import RiskConfig
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0)}
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    # Simulate broker-side placement failure.
+    mock_broker.place_stop_order.return_value = None
+
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    mock_broker.place_stop_order.assert_called_once()
+    # The old stop must survive — cancel_stop_order must NOT be called.
+    mock_broker.cancel_stop_order.assert_not_called()
+    mock_fire_alert.assert_called_once()
 
 
 def test_close_position_cancels_resting_stop(mock_broker, db):
@@ -813,3 +903,30 @@ def test_enforce_stop_losses_honors_stored_zero_stop_pct(mock_broker, db):
     closed = portfolio.enforce_stop_losses()
 
     assert "AAPL" in closed
+
+
+def test_enforce_stop_losses_honors_stored_zero_peak_price(mock_broker, db):
+    """A stored peak_price of exactly 0.0 must not be silently replaced by
+    avg_entry_price — Python's `or` treats 0.0 as falsy, masking a real (if
+    degenerate) stored peak with the entry price.
+
+    avg_entry_price=100, current=80 would be a 20% drop from peak if the bug
+    incorrectly falls back to avg_entry_price as the peak — which trips a 15%
+    stop_loss_pct and closes the position. With the stored peak honored as
+    0.0, the position must NOT close (a non-positive peak can't be used as a
+    denominator for the drop-from-peak calc, so that check is skipped instead
+    of dividing by zero)."""
+    portfolio = Portfolio(broker=mock_broker)
+    mock_broker.get_stop_orders.return_value = {}
+    mock_broker.get_positions.return_value = [
+        {"ticker": "AAPL", "qty": 10.0, "current_price": 80.0, "avg_entry_price": 100.0},
+    ]
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    # Force peak_price to an explicit 0.0 (update_position_peak only ever raises
+    # it, so write it directly to simulate an explicitly-stored degenerate value).
+    with db.get_conn() as conn:
+        conn.execute("UPDATE positions SET peak_price = 0.0 WHERE ticker = ?", ("AAPL",))
+
+    closed = portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    assert "AAPL" not in closed

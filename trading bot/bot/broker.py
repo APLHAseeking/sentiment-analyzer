@@ -14,6 +14,7 @@ from alpaca.trading.enums import OrderSide as AlpacaSide, TimeInForce
 from execution.broker_interface import (
     BrokerInterface, Order, OrderSide, OrderStatus, OrderType,
 )
+from monitoring.logger import EventType, emit_event
 
 log = logging.getLogger(__name__)
 
@@ -141,6 +142,21 @@ class AlpacaBroker(BrokerInterface):
             elif "reject" in status_str:
                 order.status = OrderStatus.REJECTED
                 order.reject_reason = str(getattr(filled, "reject_reason", "") or "rejected by broker")
+        else:
+            # Poll exhausted its retries with no terminal status — the order is
+            # still SUBMITTED (filled_qty/filled_avg_price stay at 0.0), so the
+            # caller (Portfolio.open_position/close_position) falls back to the
+            # pre-trade quote price. That fallback price may not match the real
+            # fill, so flag it instead of letting it pass silently.
+            emit_event(
+                log, EventType.SLIPPAGE_HIGH,
+                f"Fill poll timed out for {order.ticker} {order.side.value} order "
+                f"{order.order_id} — falling back to pre-trade quote price, real "
+                "fill price unconfirmed",
+                data={"ticker": order.ticker, "order_id": order.order_id, "side": order.side.value},
+                level=logging.WARNING,
+                alert=True,
+            )
         return order
 
     def cancel_order(self, order_id: str) -> bool:
