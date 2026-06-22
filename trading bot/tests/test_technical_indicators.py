@@ -116,6 +116,21 @@ class TestComputeRsi:
         rsi = compute_rsi(close, window=14)
         assert rsi.iloc[-1] == pytest.approx(50.0, abs=5.0)
 
+    def test_flat_zero_variance_series_gives_neutral_rsi_not_100(self):
+        # avg_gain==0 AND avg_loss==0 (price never moved at all — halted/no-volume)
+        # must be neutral (~50), not max overbought. The old code forced RSI to 100
+        # whenever avg_loss==0, conflating "never fell" with "never moved at all".
+        close = pd.Series([100.0] * 300)
+        rsi = compute_rsi(close, window=14)
+        assert rsi.iloc[-1] == pytest.approx(50.0)
+
+    def test_strictly_increasing_series_still_gives_rsi_100(self):
+        # Companion case: avg_loss==0 but avg_gain>0 (genuine all-gains) must still
+        # correctly return 100.0 — don't break this case while fixing the flat one.
+        close = pd.Series(np.arange(1.0, 301.0))
+        rsi = compute_rsi(close, window=14)
+        assert rsi.iloc[-1] == pytest.approx(100.0)
+
 
 class TestComputeMacd:
     def test_returns_three_arrays_of_equal_length(self):

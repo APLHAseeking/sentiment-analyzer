@@ -69,7 +69,12 @@ def tsmom_composite(ret_1m_pct: float, ret_3m_pct: float, ret_12m_1m_pct: float)
 
 
 def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
-    """Wilder-smoothed RSI via ewm(alpha=1/window). Forced to 100 where avg_loss==0."""
+    """Wilder-smoothed RSI via ewm(alpha=1/window).
+
+    avg_loss==0 and avg_gain>0 (only ever rose) -> 100 (max overbought).
+    avg_loss==0 and avg_gain==0 (flat/halted, no movement at all) -> 50 (neutral) —
+    distinct from the all-gains case above, not max overbought.
+    """
     delta = close.diff()
     gain = delta.clip(lower=0.0)
     loss = -delta.clip(upper=0.0)
@@ -78,6 +83,8 @@ def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
     rs = avg_gain / avg_loss.replace(0.0, np.nan)
     rsi = 100.0 - (100.0 / (1.0 + rs))
     rsi = rsi.where(avg_loss != 0.0, 100.0)
+    flat = (avg_loss == 0.0) & (avg_gain == 0.0)
+    rsi = rsi.where(~flat, 50.0)
     return rsi
 
 
