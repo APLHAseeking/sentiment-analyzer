@@ -391,9 +391,23 @@ class Portfolio:
             if new_stop > existing_stop:
                 # Place the new stop BEFORE cancelling the old one so the
                 # position always has a resting stop (no gap between cancel and place).
-                self.broker.place_stop_order(ticker=ticker, qty=pos["qty"], stop_price=new_stop)
-                if hasattr(self.broker, "cancel_stop_order"):
-                    self.broker.cancel_stop_order(ticker)
+                new_stop_id = self.broker.place_stop_order(
+                    ticker=ticker, qty=pos["qty"], stop_price=new_stop
+                )
+                if new_stop_id is not None:
+                    if hasattr(self.broker, "cancel_stop_order"):
+                        self.broker.cancel_stop_order(ticker)
+                else:
+                    # Placement failed — keep the old stop resting rather than
+                    # cancelling it and leaving the position with zero stops.
+                    emit_event(
+                        log, EventType.ORDER_REJECTED,
+                        f"Failed to place trailing stop for {ticker} at ${new_stop:.2f} — "
+                        "keeping the existing resting stop in place",
+                        data={"ticker": ticker, "attempted_stop_price": new_stop},
+                        level=logging.ERROR,
+                        alert=True,
+                    )
 
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:

@@ -689,12 +689,42 @@ def test_enforce_stop_losses_places_new_stop_before_cancelling_old(mock_broker, 
     db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
 
     call_order = []
-    mock_broker.place_stop_order.side_effect = lambda **kw: call_order.append("place")
+
+    def _place(**kw):
+        call_order.append("place")
+        return "new-stop-order-id"  # successful placement — must not be None
+
+    mock_broker.place_stop_order.side_effect = _place
     mock_broker.cancel_stop_order.side_effect = lambda t: call_order.append("cancel")
 
     portfolio.enforce_stop_losses(stop_loss_pct=15.0)
 
     assert call_order == ["place", "cancel"]
+
+
+def test_enforce_stop_losses_keeps_old_stop_when_new_placement_fails(mock_broker, db, mocker):
+    """place_stop_order returns None on failure. If the new (higher) stop fails
+    to place, the old resting stop must NOT be cancelled — otherwise the
+    position is left with zero resting stops. An alert must fire instead."""
+    from system.config import RiskConfig
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0)}
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    # Simulate broker-side placement failure.
+    mock_broker.place_stop_order.return_value = None
+
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    mock_broker.place_stop_order.assert_called_once()
+    # The old stop must survive — cancel_stop_order must NOT be called.
+    mock_broker.cancel_stop_order.assert_not_called()
+    mock_fire_alert.assert_called_once()
 
 
 def test_close_position_cancels_resting_stop(mock_broker, db):
