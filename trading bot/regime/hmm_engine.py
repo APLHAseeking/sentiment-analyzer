@@ -255,7 +255,8 @@ class HMMRegimeEngine:
         self,
         data: pd.DataFrame,
         feature_cfg: FeatureConfig | None = None,
-        update_recent_labels: bool = False,
+        *,
+        update_recent_labels: bool,
     ) -> list[RegimeState]:
         """Classify regimes for the given data using the fitted model.
 
@@ -267,13 +268,23 @@ class HMMRegimeEngine:
         Parameters
         ----------
         update_recent_labels:
-            If True, roll ``self._recent_labels`` forward bar-by-bar as this
-            call processes ``data`` — each bar's stability metrics are computed
-            against the history *as of that bar* and the final history (trimmed
-            to ``min_stable_bars * 3``) is written back to
-            ``self._recent_labels``. Used by the walk-forward backtest so
-            per-window stability tracking mirrors live bar-by-bar inference.
-            Default False leaves ``self._recent_labels`` untouched.
+            Required — there is no safe universal default. If True, roll
+            ``self._recent_labels`` forward bar-by-bar as this call processes
+            ``data`` — each bar's stability metrics are computed against the
+            history *as of that bar* and the final history (trimmed to
+            ``min_stable_bars * 3``) is written back to ``self._recent_labels``.
+            Used by the walk-forward backtest (and any other caller that wants
+            working ``is_stable`` output) so per-window stability tracking
+            mirrors live bar-by-bar inference. If False, ``self._recent_labels``
+            is left untouched and every returned state's ``is_stable`` reflects
+            whatever history (if any) the engine already has — used by
+            ``current_regime()``, which re-classifies the whole tail on every
+            call and does its own single-bar append, so it would corrupt
+            ``self._recent_labels`` if this replayed the full history instead.
+            A bare ``classify()`` call with no other tracking mechanism and
+            ``update_recent_labels=False`` will report ``is_stable=False`` for
+            every bar — that is the correct, if unhelpful, answer for that
+            choice; pass True if you want real stability tracking.
         """
         if self._result is None:
             raise RuntimeError("Call fit() before classify()")
@@ -339,7 +350,7 @@ class HMMRegimeEngine:
         self, data: pd.DataFrame, feature_cfg: FeatureConfig | None = None
     ) -> RegimeState:
         """Return the regime for the latest bar in data."""
-        states = self.classify(data, feature_cfg)
+        states = self.classify(data, feature_cfg, update_recent_labels=False)
         if not states:
             raise RuntimeError("No regime states computed — insufficient data")
         state = states[-1]

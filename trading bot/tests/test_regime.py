@@ -65,7 +65,7 @@ def test_regime_labels_are_strings(fitted_engine):
 def test_classify_returns_correct_length(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
-    states = engine.classify(data, feature_cfg)
+    states = engine.classify(data, feature_cfg, update_recent_labels=False)
     assert len(states) > 0
     assert all(isinstance(s, RegimeState) for s in states)
 
@@ -76,8 +76,8 @@ def test_no_look_ahead_bias(fitted_engine):
     engine, data, feature_cfg = fitted_engine
 
     cutoff = 300
-    states_truncated = engine.classify(data.iloc[:cutoff], feature_cfg)
-    states_full = engine.classify(data, feature_cfg)
+    states_truncated = engine.classify(data.iloc[:cutoff], feature_cfg, update_recent_labels=False)
+    states_full = engine.classify(data, feature_cfg, update_recent_labels=False)
 
     # The last state from the truncated run should match the state at the same date in full run
     # (we allow up to 1 regime difference due to HMM sequence effects at boundary)
@@ -92,7 +92,7 @@ def test_no_look_ahead_bias(fitted_engine):
 def test_confidence_is_valid_probability(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
-    states = engine.classify(data, feature_cfg)
+    states = engine.classify(data, feature_cfg, update_recent_labels=False)
     for s in states:
         assert 0.0 <= s.confidence <= 1.0 + 1e-6
         assert abs(sum(s.raw_posteriors) - 1.0) < 0.01
@@ -139,8 +139,8 @@ def test_model_save_load_roundtrip(tmp_path, fitted_engine):
 
     # Loaded model classifies the same on a slice with enough bars for features
     sample = data.iloc[:500]  # use the same training window
-    s1 = engine.classify(sample, feature_cfg)
-    s2 = engine2.classify(sample, feature_cfg)
+    s1 = engine.classify(sample, feature_cfg, update_recent_labels=False)
+    s2 = engine2.classify(sample, feature_cfg, update_recent_labels=False)
     if s1 and s2:
         assert s1[-1].regime_index == s2[-1].regime_index
 
@@ -149,7 +149,7 @@ def test_regime_index_is_within_bounds(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
     n = engine.n_regimes
-    states = engine.classify(data, feature_cfg)
+    states = engine.classify(data, feature_cfg, update_recent_labels=False)
     for s in states:
         assert 0 <= s.regime_index < n
 
@@ -169,7 +169,7 @@ def test_fit_raises_with_insufficient_data():
 def test_regime_state_has_instability_fields(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
-    states = engine.classify(data, feature_cfg)
+    states = engine.classify(data, feature_cfg, update_recent_labels=False)
     for s in states:
         assert hasattr(s, "transition_rate")
         assert hasattr(s, "instability_score")
@@ -570,13 +570,13 @@ def test_compute_stability_metrics_default_arg_unchanged():
     assert tr == pytest.approx(0.0)
 
 
-def test_classify_default_does_not_touch_recent_labels(fitted_engine):
-    """classify() with update_recent_labels=False (the default) must not
-    mutate _recent_labels — current_regime()/update_single() rely on this."""
+def test_classify_explicit_false_does_not_touch_recent_labels(fitted_engine):
+    """classify(update_recent_labels=False) must not mutate _recent_labels —
+    current_regime()/update_single() rely on this."""
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
     count_before = len(engine._recent_labels)
-    engine.classify(data.iloc[:500], feature_cfg)
+    engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=False)
     assert len(engine._recent_labels) == count_before
 
 
@@ -605,3 +605,49 @@ def test_classify_update_recent_labels_seeds_from_existing_history(fitted_engine
     window = engine._cfg.min_stable_bars * 3
     expected_tail = (history_after_first + [s.regime_index for s in states_second])[-window:]
     assert engine._recent_labels == expected_tail
+
+
+def test_classify_requires_explicit_update_recent_labels(fitted_engine):
+    """classify() must not silently default update_recent_labels — omitting it
+    is a TypeError, not a quiet fall-back to broken (never-stable) tracking.
+
+    update_recent_labels has no safe universal default: current_regime() needs
+    False (it re-classifies the *entire* history tail every call and does its
+    own single-bar append to _recent_labels — True would replay the whole
+    window into _recent_labels on every live tick), while a bare backtest-style
+    classify() over a whole period needs True to get working stability
+    tracking at all. Forcing every call site to say which one it means is the
+    fix; a wrong-but-silent default is not.
+    """
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    with pytest.raises(TypeError):
+        engine.classify(data.iloc[:500], feature_cfg)
+
+
+def test_classify_explicit_false_never_reports_stable_without_tracking():
+    """update_recent_labels=False with no prior history correctly yields
+    is_stable=False throughout (there is nothing to be stable against) —
+    this is expected behavior for that explicit choice, not a bug. Contrast
+    with update_recent_labels=True below, which builds real tracking."""
+    cfg = _MockRegimeCfg(min_stable_bars=3)
+    engine = HMMRegimeEngine(cfg)
+    data = _make_market_data(600)
+    from features.feature_pipeline import FeatureConfig
+    feature_cfg = FeatureConfig(vol_window=20, trend_window=50, min_history_bars=100)
+    engine.fit(data.iloc[:500], feature_cfg)
+
+    states = engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=False)
+    assert all(not s.is_stable for s in states)
+
+
+def test_classify_update_recent_labels_true_produces_varying_stability(fitted_engine):
+    """With update_recent_labels=True over a multi-bar run, stability tracking
+    actually works: is_stable is False early (insufficient history) and
+    becomes True once the regime has persisted for min_stable_bars, i.e. it
+    varies rather than being permanently False."""
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    states = engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=True)
+    stabilities = {s.is_stable for s in states}
+    assert stabilities == {True, False}

@@ -160,8 +160,11 @@ def build_regime_map(market_data: pd.DataFrame) -> dict[str, str]:
     )
     engine.fit(train_data, feat_cfg)
 
-    # Classify full period so test-period signals get a regime label
-    all_states = engine.classify(market_data, feat_cfg)
+    # Classify full period so test-period signals get a regime label.
+    # update_recent_labels=True so is_stable reflects real bar-by-bar tracking
+    # over this single full-history call (this script does not otherwise build
+    # _recent_labels incrementally the way the live orchestrator does).
+    all_states = engine.classify(market_data, feat_cfg, update_recent_labels=True)
     log.info("HMM classified %d states, n_regimes=%d", len(all_states), engine.n_regimes)
 
     regime_map = {s.date: (s.regime_label, s.confidence) for s in all_states}
