@@ -297,9 +297,15 @@ class RiskManager:
                     reason=f"Illiquid: {adv_pct:.1f}% of ADV (max {self._risk.max_adv_pct}%)",
                 )
         elif sector != "Hedge":
-            # Hedge ETFs have no meaningful ADV constraint; suppress noise for them.
+            # Hedge ETFs have no meaningful ADV constraint; exempt from the gate.
+            # For everything else, missing/zero ADV data is treated as illiquid
+            # and hard-vetoed rather than silently passed through.
             log.warning(
-                "%s: no ADV data (adv_usd=%r) — liquidity check skipped", ticker, adv_usd,
+                "%s: no ADV data (adv_usd=%r) — rejecting order", ticker, adv_usd,
+            )
+            return RiskVeto(
+                allowed=False,
+                reason=f"Illiquid: no ADV data for {ticker} (adv_usd={adv_usd!r})",
             )
 
         return RiskVeto(
