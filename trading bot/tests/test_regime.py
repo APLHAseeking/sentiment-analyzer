@@ -23,6 +23,11 @@ class _MockRegimeCfg:
     covariance_type: str = "diag"
     min_stable_bars: int = 3
     instability_penalty: float = 0.5
+    # Kept at 1 (not the production default of 5) so the function-scoped
+    # fitted_engine fixture — refit from scratch by ~30 tests — stays fast.
+    # n_restarts itself is exercised directly against GaussianHMM in the
+    # EM-restart tests below, not through this engine-level fixture.
+    n_restarts: int = 1
     label_maps: dict = field(default_factory=lambda: {
         3: ["bear", "neutral", "bull"],
     })
@@ -651,3 +656,97 @@ def test_classify_update_recent_labels_true_produces_varying_stability(fitted_en
     states = engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=True)
     stabilities = {s.is_stable for s in states}
     assert stabilities == {True, False}
+
+
+# ---------------------------------------------------------------------------
+# GaussianHMM EM restarts (avoid single-init local optima)
+# ---------------------------------------------------------------------------
+
+def _make_trimodal_trap_data(seed: int = 7) -> np.ndarray:
+    """2-regime sequence where one state alternates between two well-separated
+    sub-blobs. A 2-component diagonal-Gaussian HMM cannot represent that state
+    as bimodal, so depending on which random centroids the k-means-style init
+    happens to land on, single-restart EM can converge to a visibly worse local
+    optimum (confirmed empirically: random_state=28 reliably converges to a log-
+    likelihood of about -924 on this dataset, vs. about -623 for nearly every
+    other seed and for best-of-5 restarts starting from that same seed)."""
+    rng = np.random.default_rng(seed)
+    T = 300
+    state_seq: list[int] = []
+    sub_seq: list[int] = []
+    state = 0
+    for _ in range(T):
+        state_seq.append(state)
+        if state == 0:
+            sub_seq.append(0)
+            if rng.random() < 0.05:
+                state = 1
+        else:
+            sub_seq.append(1 + int(rng.integers(0, 2)))
+            if rng.random() < 0.3:
+                state = 0
+    sub_seq_arr = np.array(sub_seq)
+    X = np.zeros((T, 2))
+    for t in range(T):
+        if sub_seq_arr[t] == 0:
+            X[t] = rng.normal([0, 0], [0.5, 0.5])
+        elif sub_seq_arr[t] == 1:
+            X[t] = rng.normal([10, 0], [0.5, 0.5])
+        else:
+            X[t] = rng.normal([-10, 0], [0.5, 0.5])
+    return X
+
+
+def test_single_restart_can_land_in_bad_local_optimum():
+    """Sanity check on the repro itself: random_state=28 with a single EM run
+    (n_restarts=1) lands well below the optimum nearly every other seed finds.
+    This documents *why* restarts matter; it is not the regression test for
+    the fix."""
+    from regime.gaussian_hmm import GaussianHMM
+
+    X = _make_trimodal_trap_data()
+    model = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=1)
+    model.fit(X)
+    assert model._log_likelihood < -800  # the known-bad optimum (~-924)
+
+
+def test_n_restarts_achieves_at_least_as_good_log_likelihood():
+    """Fitting with n_restarts > 1 must never do worse than n_restarts=1 —
+    each restart is a candidate and the fit keeps the best by construction."""
+    from regime.gaussian_hmm import GaussianHMM
+
+    X = _make_trimodal_trap_data()
+    single = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=1)
+    single.fit(X)
+
+    multi = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=5)
+    multi.fit(X)
+
+    assert multi._log_likelihood >= single._log_likelihood
+
+
+def test_n_restarts_recovers_from_known_bad_seed():
+    """On the seed known to produce a bad single-restart result (random_state=28,
+    ll ~ -924), n_restarts=5 must recover the good optimum nearly every other
+    seed finds (ll ~ -623) — a strict, large improvement, not a marginal one."""
+    from regime.gaussian_hmm import GaussianHMM
+
+    X = _make_trimodal_trap_data()
+    multi = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=5)
+    multi.fit(X)
+    assert multi._log_likelihood > -700  # recovered the good optimum (~-623)
+
+
+def test_n_restarts_is_reproducible_given_same_random_state():
+    """Multi-restart fitting must stay deterministic given the same
+    random_state — restarts are derived seeds (e.g. random_state + i), not
+    fresh entropy each call."""
+    from regime.gaussian_hmm import GaussianHMM
+
+    X = _make_trimodal_trap_data()
+    m1 = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=5)
+    m1.fit(X)
+    m2 = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=5)
+    m2.fit(X)
+    assert m1._log_likelihood == m2._log_likelihood
+    np.testing.assert_array_equal(m1.means_, m2.means_)

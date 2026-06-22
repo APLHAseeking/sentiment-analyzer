@@ -19,6 +19,13 @@ import numpy as np
 from scipy.special import logsumexp
 
 
+# Default number of random-initialization restarts for fit(). A single
+# k-means-style init + EM run can converge to a poor local optimum (regime
+# count/labels unstable across rolling refits); best-of-N restarts trades a
+# constant-factor runtime cost for a materially better-and-more-stable fit.
+DEFAULT_N_RESTARTS = 5
+
+
 class GaussianHMM:
     """Gaussian HMM with diagonal covariance — pure NumPy implementation."""
 
@@ -29,12 +36,14 @@ class GaussianHMM:
         tol: float = 1e-4,
         random_state: int | None = None,
         covariance_type: str = "diag",  # accepted but only diag implemented
+        n_restarts: int = DEFAULT_N_RESTARTS,
     ) -> None:
         self.n_components = n_components
         self.n_iter = n_iter
         self.tol = tol
-        self._rng = np.random.default_rng(random_state)
+        self.random_state = random_state
         self.covariance_type = covariance_type
+        self.n_restarts = n_restarts
 
         # Parameters (set after fit)
         self.startprob_: np.ndarray | None = None   # (K,)
@@ -48,19 +57,50 @@ class GaussianHMM:
     # ------------------------------------------------------------------
 
     def fit(self, X: np.ndarray) -> "GaussianHMM":
-        """Fit by Baum-Welch EM. X shape: (T, D)."""
+        """Fit by Baum-Welch EM, keeping the best of ``n_restarts`` random
+        initializations (by final log-likelihood).
+
+        Each restart uses a derived seed (``random_state + restart_index``)
+        so the overall result is reproducible given the same random_state,
+        while different restarts explore different k-means-style inits.
+        """
+        n_restarts = max(1, self.n_restarts)
+        base_seed = self.random_state
+
+        best_params: dict | None = None
+        best_ll = -np.inf
+        for i in range(n_restarts):
+            seed = None if base_seed is None else base_seed + i
+            rng = np.random.default_rng(seed)
+            params, ll = self._fit_once(X, rng)
+            if ll > best_ll:
+                best_ll = ll
+                best_params = params
+
+        self.startprob_ = best_params["startprob_"]
+        self.transmat_ = best_params["transmat_"]
+        self.means_ = best_params["means_"]
+        self.covars_ = best_params["covars_"]
+        self._log_likelihood = best_ll
+        return self
+
+    def _fit_once(self, X: np.ndarray, rng: np.random.Generator) -> tuple[dict, float]:
+        """Single k-means-style init + Baum-Welch EM run.
+
+        Returns the fitted parameters (as a dict, so the caller can compare
+        candidates without mutating self) and the final log-likelihood.
+        """
         T, D = X.shape
         K = self.n_components
 
-        # --- Initialize ---
-        self._init_params(X)
+        startprob_, transmat_, means_, covars_ = self._init_params(X, rng)
 
         prev_ll = -np.inf
         for _ in range(self.n_iter):
             # E-step
-            log_emis = self._log_emission(X)         # (T, K)
-            log_alpha = self._forward(log_emis)      # (T, K)
-            log_beta = self._backward(log_emis)      # (T, K)
+            log_emis = self._log_emission(X, means_, covars_)  # (T, K)
+            log_alpha = self._forward(log_emis, startprob_, transmat_)  # (T, K)
+            log_beta = self._backward(log_emis, transmat_)      # (T, K)
             log_gamma = log_alpha + log_beta         # (T, K) unnormalised
             log_Z = logsumexp(log_gamma[-1])
             log_gamma -= log_Z                       # normalise: sum over K at each t = 1
@@ -69,7 +109,7 @@ class GaussianHMM:
             # xi: (T-1, K, K)
             log_xi = (
                 log_alpha[:-1, :, None]
-                + self.transmat_[None, :, :]
+                + transmat_[None, :, :]
                 + log_emis[1:, None, :]
                 + log_beta[1:, None, :]
             )
@@ -79,37 +119,45 @@ class GaussianHMM:
             gamma = np.exp(log_gamma)                # (T, K)
             xi = np.exp(log_xi)                      # (T-1, K, K)
 
-            self.startprob_ = np.clip(gamma[0] / gamma[0].sum(), 1e-300, None)
-            self.transmat_ = np.clip(
+            startprob_ = np.clip(gamma[0] / gamma[0].sum(), 1e-300, None)
+            transmat_ = np.clip(
                 xi.sum(0) / gamma[:-1].sum(0)[:, None], 1e-300, None
             )
-            self.transmat_ /= self.transmat_.sum(1, keepdims=True)
+            transmat_ /= transmat_.sum(1, keepdims=True)
 
             g_sum = gamma.sum(0)                     # (K,)
-            self.means_ = (gamma[:, :, None] * X[:, None, :]).sum(0) / g_sum[:, None]
-            diff = X[:, None, :] - self.means_[None, :, :]  # (T, K, D)
-            self.covars_ = (
+            means_ = (gamma[:, :, None] * X[:, None, :]).sum(0) / g_sum[:, None]
+            diff = X[:, None, :] - means_[None, :, :]  # (T, K, D)
+            covars_ = (
                 gamma[:, :, None] * diff ** 2
             ).sum(0) / g_sum[:, None]
-            self.covars_ = np.clip(self.covars_, 1e-6, None)
+            covars_ = np.clip(covars_, 1e-6, None)
 
             ll = float(log_Z)
             if abs(ll - prev_ll) < self.tol:
                 break
             prev_ll = ll
 
-        self._log_likelihood = prev_ll
-        return self
+        params = {
+            "startprob_": startprob_,
+            "transmat_": transmat_,
+            "means_": means_,
+            "covars_": covars_,
+        }
+        return params, prev_ll
 
-    def _init_params(self, X: np.ndarray) -> None:
+    def _init_params(
+        self, X: np.ndarray, rng: np.random.Generator
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         T, D = X.shape
         K = self.n_components
-        self.startprob_ = np.full(K, 1.0 / K)
-        self.transmat_ = np.full((K, K), 1.0 / K)
+        startprob_ = np.full(K, 1.0 / K)
+        transmat_ = np.full((K, K), 1.0 / K)
         # k-means-style init: pick K random centroids from data
-        indices = self._rng.choice(T, size=K, replace=False)
-        self.means_ = X[indices].copy()
-        self.covars_ = np.tile(X.var(0) + 1e-6, (K, 1))
+        indices = rng.choice(T, size=K, replace=False)
+        means_ = X[indices].copy()
+        covars_ = np.tile(X.var(0) + 1e-6, (K, 1))
+        return startprob_, transmat_, means_, covars_
 
     # ------------------------------------------------------------------
     # Inference
@@ -159,31 +207,58 @@ class GaussianHMM:
     # Internal algorithms
     # ------------------------------------------------------------------
 
-    def _log_emission(self, X: np.ndarray) -> np.ndarray:
-        """Diagonal Gaussian log-emission. Shape (T, K)."""
+    def _log_emission(
+        self,
+        X: np.ndarray,
+        means_: np.ndarray | None = None,
+        covars_: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Diagonal Gaussian log-emission. Shape (T, K).
+
+        means_/covars_ default to the fitted self.means_/self.covars_; a
+        restart candidate mid-fit() passes its own (not-yet-committed-to-self)
+        parameters explicitly instead.
+        """
+        if means_ is None:
+            means_ = self.means_
+        if covars_ is None:
+            covars_ = self.covars_
         T, D = X.shape
         K = self.n_components
         log_emis = np.zeros((T, K))
         for k in range(K):
-            diff = X - self.means_[k]               # (T, D)
-            log_det = np.log(self.covars_[k]).sum()  # scalar
-            maha = (diff ** 2 / self.covars_[k]).sum(1)  # (T,)
+            diff = X - means_[k]               # (T, D)
+            log_det = np.log(covars_[k]).sum()  # scalar
+            maha = (diff ** 2 / covars_[k]).sum(1)  # (T,)
             log_emis[:, k] = -0.5 * (D * np.log(2 * np.pi) + log_det + maha)
         return log_emis
 
-    def _forward(self, log_emis: np.ndarray) -> np.ndarray:
+    def _forward(
+        self,
+        log_emis: np.ndarray,
+        startprob_: np.ndarray | None = None,
+        transmat_: np.ndarray | None = None,
+    ) -> np.ndarray:
+        if startprob_ is None:
+            startprob_ = self.startprob_
+        if transmat_ is None:
+            transmat_ = self.transmat_
         T, K = log_emis.shape
         log_alpha = np.empty((T, K))
-        log_alpha[0] = np.log(self.startprob_ + 1e-300) + log_emis[0]
-        log_trans = np.log(self.transmat_ + 1e-300)
+        log_alpha[0] = np.log(startprob_ + 1e-300) + log_emis[0]
+        log_trans = np.log(transmat_ + 1e-300)
         for t in range(1, T):
             log_alpha[t] = logsumexp(log_alpha[t - 1, :, None] + log_trans, axis=0) + log_emis[t]
         return log_alpha
 
-    def _backward(self, log_emis: np.ndarray) -> np.ndarray:
+    def _backward(
+        self, log_emis: np.ndarray, transmat_: np.ndarray | None = None
+    ) -> np.ndarray:
+        if transmat_ is None:
+            transmat_ = self.transmat_
         T, K = log_emis.shape
         log_beta = np.zeros((T, K))
-        log_trans = np.log(self.transmat_ + 1e-300)
+        log_trans = np.log(transmat_ + 1e-300)
         for t in range(T - 2, -1, -1):
             log_beta[t] = logsumexp(
                 log_trans + log_emis[t + 1, None, :] + log_beta[t + 1, None, :], axis=1

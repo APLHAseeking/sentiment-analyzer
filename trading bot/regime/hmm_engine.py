@@ -24,7 +24,7 @@ import pandas as pd
 from scipy.special import logsumexp
 from sklearn.preprocessing import StandardScaler
 
-from regime.gaussian_hmm import GaussianHMM
+from regime.gaussian_hmm import DEFAULT_N_RESTARTS, GaussianHMM
 
 from features.feature_pipeline import (
     FeatureConfig,
@@ -176,6 +176,7 @@ class HMMRegimeEngine:
             covariance_type=self._cfg.covariance_type,
             n_iter=self._cfg.n_iter,
             random_state=self._cfg.random_state,
+            n_restarts=getattr(self._cfg, "n_restarts", DEFAULT_N_RESTARTS),
         )
         model.fit(X)
 
