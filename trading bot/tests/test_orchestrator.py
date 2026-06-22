@@ -860,6 +860,21 @@ def test_initialize_does_not_double_step_regime_engine(mocker, orch):
     assert orch._regime_state is state
 
 
+def test_initialize_rejects_non_paper_broker(mocker, orch):
+    """initialize() must enforce the paper-only invariant itself, not rely on
+    run_bot.py being the only caller that checks broker.is_paper. A broker
+    with is_paper=False must be rejected before any setup work happens."""
+    live_broker = mocker.MagicMock()
+    live_broker.is_paper = False
+
+    get_regime_data_spy = mocker.patch("orchestration.main_loop.get_regime_data")
+
+    with pytest.raises(RuntimeError, match="paper"):
+        orch.initialize(live_broker)
+
+    get_regime_data_spy.assert_not_called()
+
+
 def test_maybe_rolling_refit_does_not_double_step_regime_engine(mocker, orch_fitted):
     """_maybe_rolling_refit() must consume initialize_incremental()'s own
     RegimeState directly — same double-processing bug as initialize()."""

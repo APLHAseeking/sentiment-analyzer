@@ -163,6 +163,13 @@ class RegimeAwareOrchestrator:
 
     def initialize(self, broker) -> None:
         """Load data, fit/load model, initialize portfolio. Call before start()."""
+        if not getattr(broker, "is_paper", False):
+            raise RuntimeError(
+                "Orchestrator refuses to initialize with a non-paper broker "
+                "(broker.is_paper is not True) — this bot is paper-only. "
+                "This is a defense-in-depth check; run_bot.py should already "
+                "have refused to construct a live broker."
+            )
         setup_logging(self._cfg.log_level)
         emit_event(log, EventType.STARTUP, "Regime-aware orchestrator starting up")
 
