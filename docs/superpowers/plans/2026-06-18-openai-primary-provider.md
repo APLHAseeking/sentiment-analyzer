@@ -684,10 +684,14 @@ EOF
 
 ---
 
-## Task 8: Update `trading bot/CLAUDE.md`
+## Task 8: Update `trading bot/CLAUDE.md`, `.env.example`, and startup log
+
+> **Scope note added after Task 7's code-quality review:** the reviewer flagged two real gaps that Task 7 itself was correctly out-of-scope for, but that should land before this plan is considered done: `.env.example` never listed `OPENAI_API_KEY` at all (pre-existing gap, made acute now that it's required by default), and nothing logs which provider is active at startup for a change with this much blast radius. Both are folded into this task since it already touches secrets documentation.
 
 **Files:**
 - Modify: `trading bot/CLAUDE.md` (the "Stack at a glance" section)
+- Modify: `trading bot/.env.example` (add the missing key)
+- Modify: `trading bot/run_bot.py` (one log line at startup)
 
 - [ ] **Step 1: Update the AI line**
 

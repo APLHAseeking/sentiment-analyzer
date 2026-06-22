@@ -19,13 +19,13 @@ Single seam. Every existing scoring function (`score_entry`, `score_entry_with_d
 score_entry / score_entry_with_debate / review_exit / score_technical (unchanged)
   -> _call_with_retry(fn)  [catches anthropic.RateLimitError OR openai.RateLimitError]
     -> _llm_call(system_text, user_text, max_tokens)  [renamed from _claude_call]
-      -> settings.credentials.llm_provider == "openai" (default): OpenAI path
-      -> settings.credentials.llm_provider == "anthropic": today's exact code path
+      -> settings.llm_provider == "openai" (default): OpenAI path
+      -> settings.llm_provider == "anthropic": today's exact code path
 ```
 
 ## Component 1: Config (`system/config.py`)
 
-`Credentials` gains `llm_provider: str = "openai"` (co-located with `anthropic_api_key`/`openai_api_key`, since it governs which of the two is active — no new dataclass, matching the existing single-flag-on-existing-dataclass precedent set by `SizingConfig.enable_technical_gate`). `Settings.validate()` rejects any value outside `{"anthropic", "openai"}`.
+`Settings` gains `llm_provider: str = field(default_factory=lambda: _env("LLM_PROVIDER", "openai"))` — placed top-level alongside `db_path`/`log_level`/`timezone`, not inside `Credentials`. `Credentials` is documented as secrets-only ("Environment variables are loaded only for secrets (API keys)"); `llm_provider` is a behavior switch, not a secret, so it follows the `log_level` pattern instead (env-overridable, typed default). `Settings.validate()` rejects any value outside `{"anthropic", "openai"}`.
 
 ## Component 2: OpenAI client getter (`bot/ai_analyst.py`)
 
@@ -74,7 +74,7 @@ The "Stack at a glance" line currently reads: *"AI: Anthropic Claude (`claude-so
 
 | File | Change |
 |---|---|
-| `trading bot/system/config.py` | `Credentials.llm_provider: str = "openai"`; validation in `Settings.validate()` |
+| `trading bot/system/config.py` | `Settings.llm_provider: str = "openai"` (env-overridable); validation in `Settings.validate()` |
 | `trading bot/bot/ai_analyst.py` | `_claude_call` → `_llm_call` with provider branch; new `_get_openai_client`; `_call_with_retry` catches `openai.RateLimitError` too; five call sites updated |
 | `trading bot/tests/test_config.py` | Default-provider test, invalid-provider validation test |
 | `trading bot/tests/test_ai_analyst.py` | Anthropic-forcing fixture for existing tests; new OpenAI-path tests |
