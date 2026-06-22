@@ -392,16 +392,30 @@ def _llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
     from system.config import settings
     if settings.llm_provider == "openai":
         client = _get_openai_client()
-        resp = client.chat.completions.create(
-            model="gpt-5.4",
-            max_tokens=max_tokens,
-            temperature=0,
-            seed=0,
-            messages=[
-                {"role": "system", "content": system_text},
-                {"role": "user", "content": user_text},
-            ],
-        )
+        openai_messages = [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": user_text},
+        ]
+        try:
+            resp = client.chat.completions.create(
+                model="gpt-5.4",
+                max_tokens=max_tokens,
+                temperature=0,
+                seed=0,
+                messages=openai_messages,
+            )
+        except _openai.BadRequestError as exc:
+            if "unsupported parameter" not in str(exc).lower():
+                raise
+            log.warning(
+                "OpenAI model rejected temperature/seed (%s) — retrying without "
+                "them; determinism cannot be fully enforced for this model", exc,
+            )
+            resp = client.chat.completions.create(
+                model="gpt-5.4",
+                max_tokens=max_tokens,
+                messages=openai_messages,
+            )
         content = resp.choices[0].message.content
         if content is None:
             raise ValueError(

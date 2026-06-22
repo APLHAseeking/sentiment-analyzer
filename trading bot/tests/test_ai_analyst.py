@@ -734,3 +734,37 @@ def test_llm_call_anthropic_empty_content_raises_value_error(mocker):
     from bot.ai_analyst import _llm_call
     with pytest.raises(ValueError):
         _llm_call("system prompt", "user prompt")
+
+
+# ---------------------------------------------------------------------------
+# _llm_call retry-without-temperature/seed on reasoning-tier OpenAI models
+# that reject those sampling params with a 400.
+# ---------------------------------------------------------------------------
+
+def test_llm_call_openai_retries_without_temperature_seed_on_bad_request(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="openai"))
+
+    bad_request_err = _openai.BadRequestError(
+        "Unsupported parameter: 'temperature' is not supported with this model.",
+        response=MagicMock(status_code=400, headers={}),
+        body={},
+    )
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.side_effect = [
+        bad_request_err, _make_openai_resp("worked without temperature/seed"),
+    ]
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    result = _llm_call("system prompt", "user prompt")
+
+    assert result == "worked without temperature/seed"
+    assert mock_client.chat.completions.create.call_count == 2
+    first_kwargs = mock_client.chat.completions.create.call_args_list[0][1]
+    second_kwargs = mock_client.chat.completions.create.call_args_list[1][1]
+    assert "temperature" in first_kwargs
+    assert "seed" in first_kwargs
+    assert "temperature" not in second_kwargs
+    assert "seed" not in second_kwargs
