@@ -267,11 +267,15 @@ class RiskManager:
                 ),
             )
 
-        # Sector concentration
-        if sector_allocation.get(sector, 0.0) > self._risk.max_sector_pct:
+        # Sector concentration (existing allocation + incoming position)
+        projected_sector_pct = sector_allocation.get(sector, 0.0) + position_pct
+        if projected_sector_pct > self._risk.max_sector_pct:
             return RiskVeto(
                 allowed=False,
-                reason=f"Sector cap: {sector} at {sector_allocation.get(sector, 0):.1f}%",
+                reason=(
+                    f"Sector cap: {sector} would reach {projected_sector_pct:.1f}% "
+                    f"(max_sector_pct {self._risk.max_sector_pct:.1f}%)"
+                ),
             )
 
         # Aggregate invested-capital cap (checked per entry, not once per pipeline)
