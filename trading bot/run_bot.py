@@ -44,6 +44,7 @@ def run_paper(simulated: bool = False) -> None:
 
     log.info("=== Congressional Trading Bot — Paper Mode ===")
     log.info("Broker: %s", "SimulatedBroker" if simulated else "AlpacaBroker (paper)")
+    log.info("LLM provider: %s", settings.llm_provider)
 
     init_db()
     refresh_universe()
