@@ -402,7 +402,13 @@ def _llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
                 {"role": "user", "content": user_text},
             ],
         )
-        return resp.choices[0].message.content
+        content = resp.choices[0].message.content
+        if content is None:
+            raise ValueError(
+                "OpenAI response had no text content (refusal or pure tool-call) — "
+                "cannot parse as JSON"
+            )
+        return content
 
     client = _get_client()
     msg = client.messages.create(
@@ -416,6 +422,10 @@ def _llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
         }],
         messages=[{"role": "user", "content": user_text}],
     )
+    if not msg.content:
+        raise ValueError(
+            "Anthropic response had empty content list — cannot parse as JSON"
+        )
     return msg.content[0].text
 
 

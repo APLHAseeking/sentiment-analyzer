@@ -698,3 +698,39 @@ def test_call_with_retry_retries_on_openai_rate_limit(mocker):
 
     assert result == "worked on third try"
     assert mock_client.chat.completions.create.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# _llm_call missing/empty content handling (refusal / pure tool-call / empty
+# content block) — must raise ValueError so _call_with_retry can retry it,
+# instead of letting a raw TypeError/IndexError propagate and kill the run.
+# ---------------------------------------------------------------------------
+
+def test_llm_call_openai_none_content_raises_value_error(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="openai"))
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_openai_resp(None)
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    with pytest.raises(ValueError):
+        _llm_call("system prompt", "user prompt")
+
+
+def test_llm_call_anthropic_empty_content_raises_value_error(mocker):
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="anthropic"))
+
+    mock_client = MagicMock()
+    empty_resp = MagicMock()
+    empty_resp.content = []
+    mock_client.messages.create.return_value = empty_resp
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    with pytest.raises(ValueError):
+        _llm_call("system prompt", "user prompt")
