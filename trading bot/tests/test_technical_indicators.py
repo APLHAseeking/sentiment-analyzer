@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -466,6 +468,27 @@ class TestRsLineSlope:
         asset = pd.Series(np.linspace(100.0, 105.0, 40))
         bench = pd.Series(np.linspace(100.0, 150.0, 40))
         assert rs_line_slope(asset, bench, window=20) == "falling"
+
+    def test_zero_benchmark_value_returns_flat_without_runtime_warning(self):
+        """A zero benchmark value at the 'past' comparison point used to produce
+        asset_tail / bench_tail == inf (divide-by-zero) and a RuntimeWarning, plus
+        a nonsensical 'falling' result (finite 'now' < inf 'past'). Every other
+        division in this file guards explicitly (price_vs_sma_pct, pct_return);
+        this one should too, falling back to "flat" like the existing
+        insufficient-history guard a few lines above."""
+        window = 20
+        n = 40
+        asset = pd.Series(np.linspace(100.0, 150.0, n))
+        bench_vals = np.linspace(100.0, 110.0, n)
+        bench_vals[n - 1 - window] = 0.0  # zero at the 'past' index
+        bench = pd.Series(bench_vals)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = rs_line_slope(asset, bench, window=window)
+
+        assert result == "flat"
+        assert not any(issubclass(w.category, RuntimeWarning) for w in caught)
 
 
 from technical.indicators import TechnicalSnapshot, compute_snapshot

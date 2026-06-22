@@ -301,9 +301,14 @@ def rs_line_slope(asset_close: pd.Series, bench_close: pd.Series, window: int = 
         return "flat"
     asset_tail = asset_close.iloc[-n:].to_numpy()
     bench_tail = bench_close.iloc[-n:].to_numpy()
-    rs_line = asset_tail / bench_tail
-    past = rs_line[-1 - window]
-    now = rs_line[-1]
+    bench_past, bench_now = bench_tail[-1 - window], bench_tail[-1]
+    if bench_past == 0 or bench_now == 0:
+        return "flat"
+    # Only the two RS-line points we actually compare are computed (not the
+    # whole asset_tail / bench_tail array) so a zero elsewhere in bench_tail
+    # can't raise a spurious divide-by-zero RuntimeWarning either.
+    past = asset_tail[-1 - window] / bench_past
+    now = asset_tail[-1] / bench_now
     if now > past:
         return "rising"
     if now < past:
