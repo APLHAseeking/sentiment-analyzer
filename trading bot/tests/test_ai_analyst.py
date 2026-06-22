@@ -656,6 +656,26 @@ def test_llm_call_uses_anthropic_when_provider_is_anthropic(mocker):
     assert result == "anthropic response text"
 
 
+def test_llm_call_routes_to_openai_by_real_default(mocker):
+    """Regression guard: a fresh, unmodified Settings() (no provider override at
+    all) must route through the OpenAI branch — this is the actual behavior
+    change Task 7 made. Every other _llm_call test in this file pins the
+    provider explicitly, so none of them would catch a regression in the
+    default itself (e.g. _llm_call checking the wrong attribute)."""
+    from system.config import Settings
+    mocker.patch("system.config.settings", Settings())
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_openai_resp("default routed to openai")
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    result = _llm_call("system prompt", "user prompt")
+
+    assert result == "default routed to openai"
+    mock_client.chat.completions.create.assert_called_once()
+
+
 def test_call_with_retry_retries_on_openai_rate_limit(mocker):
     import dataclasses
     from system.config import settings as real_settings
