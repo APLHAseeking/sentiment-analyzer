@@ -112,7 +112,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # keep green (run from inside trading bot/)
+pytest                                 # 708 tests; keep green (run from inside trading bot/)
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 
