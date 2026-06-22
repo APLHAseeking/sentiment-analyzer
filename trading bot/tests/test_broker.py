@@ -176,3 +176,32 @@ def test_get_order_history_returns_empty_list_on_api_failure():
     mock_api.get_orders.side_effect = Exception("network error")
     broker = AlpacaBroker(api_client=mock_api)
     assert broker.get_order_history() == []
+
+
+def test_place_order_fires_alert_when_fill_poll_times_out(monkeypatch):
+    """If the order never reaches a terminal status within the poll retries,
+    the caller falls back to the pre-trade quote price. That fallback must not
+    be silent — an alert should fire so a human knows the recorded price may
+    not reflect the real fill."""
+    import time as time_module
+    monkeypatch.setattr(time_module, "sleep", lambda *_a, **_kw: None)
+
+    mock_api = MagicMock()
+    mock_api.submit_order.return_value.id = "order-timeout-1"
+    still_pending = MagicMock(
+        status="new", filled_qty="0", filled_avg_price="0", filled_at=None,
+    )
+    mock_api.get_order_by_id.return_value = still_pending
+
+    # fire_alert is imported into monitoring.logger; patch at that binding
+    # (matches the pattern used in tests/test_portfolio.py).
+    mock_fire_alert = MagicMock()
+    monkeypatch.setattr("monitoring.logger.fire_alert", mock_fire_alert)
+
+    broker = AlpacaBroker(api_client=mock_api)
+    order = broker.place_order(ticker="AAPL", side="buy", qty=10.0)
+
+    # Order never reached a terminal state — stays SUBMITTED (existing behavior).
+    assert order.status == OrderStatus.SUBMITTED
+    # But the timeout fallback must now be flagged.
+    mock_fire_alert.assert_called_once()
