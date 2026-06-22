@@ -11,8 +11,16 @@
 > cases, sizing-block dedup) landed 2026-06-19. OpenAI (`gpt-5.4`) became the default
 > scoring provider 2026-06-22 (Anthropic Claude still available via
 > `LLM_PROVIDER=anthropic`). A follow-up independent re-audit on 2026-06-22 found several
-> "fixed" issues were fix-in-name-only; the remediation pass for that audit is landing in
-> the same window (see `TRADING_BOT_REVIEW_2026-06-22.md` at repo root for the full list).
+> "fixed" issues from the above passes were fix-in-name-only (sector/ADV caps, stop-fill
+> booking, feature padding, and others) — see `TRADING_BOT_REVIEW_2026-06-22.md` at repo
+> root for the full list. The remediation pass for that audit landed the same day: sector
+> cap and ADV gate now real vetoes; ghost-position stop fills are booked into
+> `closed_positions`; fill-poll timeout and failed stop-replace now alert; feature padding
+> aligns by scaler column name; `GaussianHMM.fit()` runs best-of-`n_restarts` EM;
+> `classify()`'s stability tracking is no longer silently skippable; ATR/RSI/rs_line_slope
+> indicator edge cases fixed; `_llm_call` raises a retryable `ValueError` on missing/empty
+> response content and retries once without `temperature`/`seed` on a reasoning-tier-model
+> 400; Russell 1000 ticker fetch now normalizes class-share tickers too.
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 

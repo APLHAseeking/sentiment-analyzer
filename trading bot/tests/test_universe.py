@@ -69,3 +69,20 @@ def test_build_universe_normalizes_class_share_tickers(mocker):
 
     assert "BRK-B" in result
     assert "BRK.B" not in result
+
+
+def test_build_universe_normalizes_russell_only_class_share_tickers(mocker):
+    """A dotted class-share ticker present ONLY in the Russell 1000 source
+    (not in S&P 500) must still be normalized to its hyphenated form —
+    the Russell 1000 fetch path must apply _normalize_ticker the same way
+    the S&P 500 path does, or it silently zeroes the congressional signal
+    for that ticker (scraper output is always hyphenated)."""
+    sp500_df = pd.DataFrame({"Symbol": ["AAPL"]})
+    russell_df = pd.DataFrame({"Ticker": ["AAPL", "TEST.B"]})
+    mocker.patch("bot.universe._fetch_sp500", return_value=sp500_df)
+    mocker.patch("bot.universe._fetch_russell1000", return_value=russell_df)
+
+    result = _build_universe()
+
+    assert "TEST-B" in result
+    assert "TEST.B" not in result

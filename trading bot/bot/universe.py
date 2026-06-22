@@ -52,7 +52,7 @@ def _fetch_russell1000() -> pd.DataFrame:
 def _build_universe() -> set[str]:
     sp500 = {_normalize_ticker(t) for t in _fetch_sp500()["Symbol"].str.strip().str.upper()}
     try:
-        russell = set(_fetch_russell1000()["Ticker"].str.strip().str.upper())
+        russell = {_normalize_ticker(t) for t in _fetch_russell1000()["Ticker"].str.strip().str.upper()}
     except Exception as exc:
         log.warning(
             "Russell 1000 fetch failed (%s) — falling back to S&P 500 only (%d tickers)",
