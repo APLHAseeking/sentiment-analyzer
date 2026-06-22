@@ -69,7 +69,12 @@ def tsmom_composite(ret_1m_pct: float, ret_3m_pct: float, ret_12m_1m_pct: float)
 
 
 def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
-    """Wilder-smoothed RSI via ewm(alpha=1/window). Forced to 100 where avg_loss==0."""
+    """Wilder-smoothed RSI via ewm(alpha=1/window).
+
+    avg_loss==0 and avg_gain>0 (only ever rose) -> 100 (max overbought).
+    avg_loss==0 and avg_gain==0 (flat/halted, no movement at all) -> 50 (neutral) —
+    distinct from the all-gains case above, not max overbought.
+    """
     delta = close.diff()
     gain = delta.clip(lower=0.0)
     loss = -delta.clip(upper=0.0)
@@ -78,6 +83,8 @@ def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
     rs = avg_gain / avg_loss.replace(0.0, np.nan)
     rsi = 100.0 - (100.0 / (1.0 + rs))
     rsi = rsi.where(avg_loss != 0.0, 100.0)
+    flat = (avg_loss == 0.0) & (avg_gain == 0.0)
+    rsi = rsi.where(~flat, 50.0)
     return rsi
 
 
@@ -294,9 +301,14 @@ def rs_line_slope(asset_close: pd.Series, bench_close: pd.Series, window: int = 
         return "flat"
     asset_tail = asset_close.iloc[-n:].to_numpy()
     bench_tail = bench_close.iloc[-n:].to_numpy()
-    rs_line = asset_tail / bench_tail
-    past = rs_line[-1 - window]
-    now = rs_line[-1]
+    bench_past, bench_now = bench_tail[-1 - window], bench_tail[-1]
+    if bench_past == 0 or bench_now == 0:
+        return "flat"
+    # Only the two RS-line points we actually compare are computed (not the
+    # whole asset_tail / bench_tail array) so a zero elsewhere in bench_tail
+    # can't raise a spurious divide-by-zero RuntimeWarning either.
+    past = asset_tail[-1 - window] / bench_past
+    now = asset_tail[-1] / bench_now
     if now > past:
         return "rising"
     if now < past:

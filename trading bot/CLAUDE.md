@@ -10,7 +10,9 @@
 > fallback, data-completeness check, both-signal-type resolution, indicator edge
 > cases, sizing-block dedup) landed 2026-06-19. OpenAI (`gpt-5.4`) became the default
 > scoring provider 2026-06-22 (Anthropic Claude still available via
-> `LLM_PROVIDER=anthropic`) — 678 tests green.
+> `LLM_PROVIDER=anthropic`). A follow-up independent re-audit on 2026-06-22 found several
+> "fixed" issues were fix-in-name-only; the remediation pass for that audit is landing in
+> the same window (see `TRADING_BOT_REVIEW_2026-06-22.md` at repo root for the full list).
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -102,7 +104,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 678 tests; keep green (run from inside trading bot/)
+pytest                                 # keep green (run from inside trading bot/)
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 

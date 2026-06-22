@@ -111,9 +111,19 @@ class TestAtrPctFromOhlc:
         result = atr_pct_from_ohlc(high, low, close, window=14)
         assert result == pytest.approx(2.0, abs=0.1)
 
-    def test_insufficient_history_returns_fallback(self):
+    def test_insufficient_history_returns_conservative_default_fallback(self):
+        # Thin-history path (no exception involved): with NO explicit fallback
+        # override, the default must be conservative (10.0, matching
+        # orchestration/main_loop.py's _ATR_FALLBACK_PCT used on the
+        # fetch-exception path) — not the old optimistic 1.0, which fed into
+        # vol_target_size_pct produces close to the MAXIMUM position size for
+        # the thinnest-data names (the anti-conservative fallback bug).
         close = np.array([100.0, 101.0, 102.0])  # < window+1
-        assert atr_pct_from_ohlc(close + 1, close - 1, close, window=14) == pytest.approx(1.0)
+        assert atr_pct_from_ohlc(close + 1, close - 1, close, window=14) == pytest.approx(10.0)
+
+    def test_insufficient_history_respects_explicit_fallback_override(self):
+        close = np.array([100.0, 101.0, 102.0])  # < window+1
+        assert atr_pct_from_ohlc(close + 1, close - 1, close, window=14, fallback=1.0) == pytest.approx(1.0)
 
     def test_zero_last_price_returns_fallback(self):
         n = 20

@@ -96,7 +96,7 @@ def atr_pct_from_ohlc(
     low,
     close,
     window: int = 14,
-    fallback: float = 1.0,
+    fallback: float = 10.0,
 ) -> float:
     """Average True Range as a percentage of the latest close.
 
@@ -105,7 +105,11 @@ def atr_pct_from_ohlc(
     high, low, close : array-likes of equal length (oldest → newest).
     window : ATR lookback in bars.
     fallback : returned when there is insufficient history or a non-positive
-        last price (keeps sizing conservative rather than crashing).
+        last price (keeps sizing conservative rather than crashing). Default
+        matches orchestration/main_loop.py's _ATR_FALLBACK_PCT (10.0) so the
+        thin-history path is just as conservative as the fetch-exception path
+        — an optimistic default here previously fed vol_target_size_pct into
+        near-maximum position sizes for the names with the thinnest data.
     """
     high = np.asarray(high, dtype=float)
     low = np.asarray(low, dtype=float)
