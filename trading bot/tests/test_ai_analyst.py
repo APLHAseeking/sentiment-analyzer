@@ -9,6 +9,19 @@ from bot.ai_analyst import (
     _build_entry_system,
 )
 
+import dataclasses
+from system.config import settings as _real_settings
+
+
+@pytest.fixture(autouse=True)
+def _force_anthropic_provider(mocker):
+    """This file's tests assert Anthropic-specific behavior (model strings, error
+    types, cache_control). Force the provider regardless of Settings' real default
+    so they keep testing what they've always tested. OpenAI-path tests in this file
+    explicitly re-patch to "openai" inside their own body, which overrides this."""
+    mocker.patch("system.config.settings", dataclasses.replace(_real_settings, llm_provider="anthropic"))
+
+
 # ---------------------------------------------------------------------------
 # Anthropic mock helpers
 # ---------------------------------------------------------------------------
