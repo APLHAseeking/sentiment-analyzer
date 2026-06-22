@@ -23,6 +23,11 @@ class _MockRegimeCfg:
     covariance_type: str = "diag"
     min_stable_bars: int = 3
     instability_penalty: float = 0.5
+    # Kept at 1 (not the production default of 5) so the function-scoped
+    # fitted_engine fixture — refit from scratch by ~30 tests — stays fast.
+    # n_restarts itself is exercised directly against GaussianHMM in the
+    # EM-restart tests below, not through this engine-level fixture.
+    n_restarts: int = 1
     label_maps: dict = field(default_factory=lambda: {
         3: ["bear", "neutral", "bull"],
     })
@@ -65,7 +70,7 @@ def test_regime_labels_are_strings(fitted_engine):
 def test_classify_returns_correct_length(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
-    states = engine.classify(data, feature_cfg)
+    states = engine.classify(data, feature_cfg, update_recent_labels=False)
     assert len(states) > 0
     assert all(isinstance(s, RegimeState) for s in states)
 
@@ -76,8 +81,8 @@ def test_no_look_ahead_bias(fitted_engine):
     engine, data, feature_cfg = fitted_engine
 
     cutoff = 300
-    states_truncated = engine.classify(data.iloc[:cutoff], feature_cfg)
-    states_full = engine.classify(data, feature_cfg)
+    states_truncated = engine.classify(data.iloc[:cutoff], feature_cfg, update_recent_labels=False)
+    states_full = engine.classify(data, feature_cfg, update_recent_labels=False)
 
     # The last state from the truncated run should match the state at the same date in full run
     # (we allow up to 1 regime difference due to HMM sequence effects at boundary)
@@ -92,7 +97,7 @@ def test_no_look_ahead_bias(fitted_engine):
 def test_confidence_is_valid_probability(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
-    states = engine.classify(data, feature_cfg)
+    states = engine.classify(data, feature_cfg, update_recent_labels=False)
     for s in states:
         assert 0.0 <= s.confidence <= 1.0 + 1e-6
         assert abs(sum(s.raw_posteriors) - 1.0) < 0.01
@@ -139,8 +144,8 @@ def test_model_save_load_roundtrip(tmp_path, fitted_engine):
 
     # Loaded model classifies the same on a slice with enough bars for features
     sample = data.iloc[:500]  # use the same training window
-    s1 = engine.classify(sample, feature_cfg)
-    s2 = engine2.classify(sample, feature_cfg)
+    s1 = engine.classify(sample, feature_cfg, update_recent_labels=False)
+    s2 = engine2.classify(sample, feature_cfg, update_recent_labels=False)
     if s1 and s2:
         assert s1[-1].regime_index == s2[-1].regime_index
 
@@ -149,7 +154,7 @@ def test_regime_index_is_within_bounds(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
     n = engine.n_regimes
-    states = engine.classify(data, feature_cfg)
+    states = engine.classify(data, feature_cfg, update_recent_labels=False)
     for s in states:
         assert 0 <= s.regime_index < n
 
@@ -169,7 +174,7 @@ def test_fit_raises_with_insufficient_data():
 def test_regime_state_has_instability_fields(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
-    states = engine.classify(data, feature_cfg)
+    states = engine.classify(data, feature_cfg, update_recent_labels=False)
     for s in states:
         assert hasattr(s, "transition_rate")
         assert hasattr(s, "instability_score")
@@ -506,6 +511,47 @@ def test_pad_features_truncates_when_too_many_columns():
     assert padded.shape == (1, 2)
 
 
+def test_pad_features_aligns_by_name_when_middle_column_missing():
+    """A MIDDLE column missing (vix_level) must not shift LATER columns
+    (momentum, drawdown) into the wrong slots. Padding must be column-name
+    aware, not purely positional, when the scaler was fit on a named
+    DataFrame (feature_names_in_ populated)."""
+    full_cols = [
+        "ret_1d", "vol_20d", "trend_z", "vol_z",
+        "vix_level", "vix_change", "momentum", "drawdown",
+    ]
+    train_df = pd.DataFrame(
+        [
+            [0.01, 0.10, 0.5, 0.2, 18.0, 0.01, 0.05, -0.02],
+            [0.02, 0.12, 0.6, 0.3, 20.0, -0.02, 0.07, -0.03],
+            [0.00, 0.11, 0.4, 0.1, 19.0, 0.00, 0.06, -0.01],
+        ],
+        columns=full_cols,
+    )
+    scaler = StandardScaler().fit(train_df)
+    vix_level_mean = scaler.mean_[full_cols.index("vix_level")]
+
+    # Live input is missing the MIDDLE column "vix_level" but HAS the
+    # LATER columns momentum/drawdown with distinct, recognisable values.
+    live_cols = ["ret_1d", "vol_20d", "trend_z", "vol_z", "vix_change", "momentum", "drawdown"]
+    live_row = pd.DataFrame(
+        [[0.015, 0.115, 0.55, 0.25, 0.005, 0.123, 0.456]],
+        columns=live_cols,
+    )
+
+    padded = _pad_features_to_scaler(live_row, scaler)
+    assert padded.shape == (1, len(full_cols))
+
+    # momentum/drawdown's real values must land in momentum/drawdown's
+    # positions, not be shifted into vix_level's slot.
+    assert padded[0, full_cols.index("momentum")] == pytest.approx(0.123)
+    assert padded[0, full_cols.index("drawdown")] == pytest.approx(0.456)
+    # vix_level (the actually-missing middle column) gets the training mean.
+    assert padded[0, full_cols.index("vix_level")] == pytest.approx(vix_level_mean)
+    # vix_change (present in the input) keeps its real value, not a mean-fill.
+    assert padded[0, full_cols.index("vix_change")] == pytest.approx(0.005)
+
+
 def test_compute_stability_metrics_accepts_explicit_recent_labels():
     """An explicit recent_labels argument overrides self._recent_labels and
     does not mutate it."""
@@ -529,13 +575,13 @@ def test_compute_stability_metrics_default_arg_unchanged():
     assert tr == pytest.approx(0.0)
 
 
-def test_classify_default_does_not_touch_recent_labels(fitted_engine):
-    """classify() with update_recent_labels=False (the default) must not
-    mutate _recent_labels — current_regime()/update_single() rely on this."""
+def test_classify_explicit_false_does_not_touch_recent_labels(fitted_engine):
+    """classify(update_recent_labels=False) must not mutate _recent_labels —
+    current_regime()/update_single() rely on this."""
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
     count_before = len(engine._recent_labels)
-    engine.classify(data.iloc[:500], feature_cfg)
+    engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=False)
     assert len(engine._recent_labels) == count_before
 
 
@@ -564,3 +610,143 @@ def test_classify_update_recent_labels_seeds_from_existing_history(fitted_engine
     window = engine._cfg.min_stable_bars * 3
     expected_tail = (history_after_first + [s.regime_index for s in states_second])[-window:]
     assert engine._recent_labels == expected_tail
+
+
+def test_classify_requires_explicit_update_recent_labels(fitted_engine):
+    """classify() must not silently default update_recent_labels — omitting it
+    is a TypeError, not a quiet fall-back to broken (never-stable) tracking.
+
+    update_recent_labels has no safe universal default: current_regime() needs
+    False (it re-classifies the *entire* history tail every call and does its
+    own single-bar append to _recent_labels — True would replay the whole
+    window into _recent_labels on every live tick), while a bare backtest-style
+    classify() over a whole period needs True to get working stability
+    tracking at all. Forcing every call site to say which one it means is the
+    fix; a wrong-but-silent default is not.
+    """
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    with pytest.raises(TypeError):
+        engine.classify(data.iloc[:500], feature_cfg)
+
+
+def test_classify_explicit_false_never_reports_stable_without_tracking():
+    """update_recent_labels=False with no prior history correctly yields
+    is_stable=False throughout (there is nothing to be stable against) —
+    this is expected behavior for that explicit choice, not a bug. Contrast
+    with update_recent_labels=True below, which builds real tracking."""
+    cfg = _MockRegimeCfg(min_stable_bars=3)
+    engine = HMMRegimeEngine(cfg)
+    data = _make_market_data(600)
+    from features.feature_pipeline import FeatureConfig
+    feature_cfg = FeatureConfig(vol_window=20, trend_window=50, min_history_bars=100)
+    engine.fit(data.iloc[:500], feature_cfg)
+
+    states = engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=False)
+    assert all(not s.is_stable for s in states)
+
+
+def test_classify_update_recent_labels_true_produces_varying_stability(fitted_engine):
+    """With update_recent_labels=True over a multi-bar run, stability tracking
+    actually works: is_stable is False early (insufficient history) and
+    becomes True once the regime has persisted for min_stable_bars, i.e. it
+    varies rather than being permanently False."""
+    from features.feature_pipeline import FeatureConfig
+    engine, data, feature_cfg = fitted_engine
+    states = engine.classify(data.iloc[:500], feature_cfg, update_recent_labels=True)
+    stabilities = {s.is_stable for s in states}
+    assert stabilities == {True, False}
+
+
+# ---------------------------------------------------------------------------
+# GaussianHMM EM restarts (avoid single-init local optima)
+# ---------------------------------------------------------------------------
+
+def _make_trimodal_trap_data(seed: int = 7) -> np.ndarray:
+    """2-regime sequence where one state alternates between two well-separated
+    sub-blobs. A 2-component diagonal-Gaussian HMM cannot represent that state
+    as bimodal, so depending on which random centroids the k-means-style init
+    happens to land on, single-restart EM can converge to a visibly worse local
+    optimum (confirmed empirically: random_state=28 reliably converges to a log-
+    likelihood of about -924 on this dataset, vs. about -623 for nearly every
+    other seed and for best-of-5 restarts starting from that same seed)."""
+    rng = np.random.default_rng(seed)
+    T = 300
+    state_seq: list[int] = []
+    sub_seq: list[int] = []
+    state = 0
+    for _ in range(T):
+        state_seq.append(state)
+        if state == 0:
+            sub_seq.append(0)
+            if rng.random() < 0.05:
+                state = 1
+        else:
+            sub_seq.append(1 + int(rng.integers(0, 2)))
+            if rng.random() < 0.3:
+                state = 0
+    sub_seq_arr = np.array(sub_seq)
+    X = np.zeros((T, 2))
+    for t in range(T):
+        if sub_seq_arr[t] == 0:
+            X[t] = rng.normal([0, 0], [0.5, 0.5])
+        elif sub_seq_arr[t] == 1:
+            X[t] = rng.normal([10, 0], [0.5, 0.5])
+        else:
+            X[t] = rng.normal([-10, 0], [0.5, 0.5])
+    return X
+
+
+def test_single_restart_can_land_in_bad_local_optimum():
+    """Sanity check on the repro itself: random_state=28 with a single EM run
+    (n_restarts=1) lands well below the optimum nearly every other seed finds.
+    This documents *why* restarts matter; it is not the regression test for
+    the fix."""
+    from regime.gaussian_hmm import GaussianHMM
+
+    X = _make_trimodal_trap_data()
+    model = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=1)
+    model.fit(X)
+    assert model._log_likelihood < -800  # the known-bad optimum (~-924)
+
+
+def test_n_restarts_achieves_at_least_as_good_log_likelihood():
+    """Fitting with n_restarts > 1 must never do worse than n_restarts=1 —
+    each restart is a candidate and the fit keeps the best by construction."""
+    from regime.gaussian_hmm import GaussianHMM
+
+    X = _make_trimodal_trap_data()
+    single = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=1)
+    single.fit(X)
+
+    multi = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=5)
+    multi.fit(X)
+
+    assert multi._log_likelihood >= single._log_likelihood
+
+
+def test_n_restarts_recovers_from_known_bad_seed():
+    """On the seed known to produce a bad single-restart result (random_state=28,
+    ll ~ -924), n_restarts=5 must recover the good optimum nearly every other
+    seed finds (ll ~ -623) — a strict, large improvement, not a marginal one."""
+    from regime.gaussian_hmm import GaussianHMM
+
+    X = _make_trimodal_trap_data()
+    multi = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=5)
+    multi.fit(X)
+    assert multi._log_likelihood > -700  # recovered the good optimum (~-623)
+
+
+def test_n_restarts_is_reproducible_given_same_random_state():
+    """Multi-restart fitting must stay deterministic given the same
+    random_state — restarts are derived seeds (e.g. random_state + i), not
+    fresh entropy each call."""
+    from regime.gaussian_hmm import GaussianHMM
+
+    X = _make_trimodal_trap_data()
+    m1 = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=5)
+    m1.fit(X)
+    m2 = GaussianHMM(n_components=2, n_iter=100, random_state=28, n_restarts=5)
+    m2.fit(X)
+    assert m1._log_likelihood == m2._log_likelihood
+    np.testing.assert_array_equal(m1.means_, m2.means_)

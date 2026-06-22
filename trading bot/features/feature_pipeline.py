@@ -135,9 +135,59 @@ def build_feature_matrix(
             f"need at least {cfg.min_history_bars}"
         )
 
+    # Fit on the named DataFrame (not .values) so the scaler records
+    # feature_names_in_ — this lets align_features_to_scaler() pad/select
+    # missing columns by NAME later instead of by raw position.
     scaler = StandardScaler()
-    X = scaler.fit_transform(X_df.values)
+    X = scaler.fit_transform(X_df)
     return X, index, scaler
+
+
+def align_features_to_scaler(
+    X_df: pd.DataFrame,
+    scaler: StandardScaler,
+) -> np.ndarray:
+    """Align a feature DataFrame to the scaler's expected columns, by NAME.
+
+    For each column the scaler was trained on (``scaler.feature_names_in_``),
+    use the input's value if that named column is present in ``X_df``,
+    otherwise fall back to that column's training mean (so it standardises
+    to ~0 / neutral instead of a spurious z-score). This is the single
+    shared alignment path for both training-time inference
+    (``build_feature_matrix_with_scaler``) and live single-bar updates
+    (``regime/hmm_engine.py::_pad_features_to_scaler``) — it fixes the bug
+    where a MIDDLE column missing (e.g. vix_level) shifted LATER columns
+    (e.g. momentum, drawdown) into the wrong slots under purely positional
+    padding.
+
+    Falls back to positional alignment if the scaler has no
+    ``feature_names_in_`` (e.g. fit directly on a bare ndarray) — this
+    preserves behavior for scalers that were never fit on a named
+    DataFrame.
+
+    Returns a plain ndarray shaped (len(X_df), scaler.n_features_in_).
+    """
+    n_expected = scaler.n_features_in_
+    feature_names = getattr(scaler, "feature_names_in_", None)
+
+    if feature_names is None:
+        # No column names recorded on the scaler — fall back to positional
+        # padding/truncation (legacy behavior for bare-ndarray-fit scalers).
+        n_have = X_df.shape[1]
+        values = X_df.values if isinstance(X_df, pd.DataFrame) else np.asarray(X_df)
+        if n_have < n_expected:
+            means = np.tile(np.asarray(scaler.mean_)[n_have:n_expected], (len(X_df), 1))
+            return np.hstack([values, means])
+        return values[:, :n_expected]
+
+    n_rows = len(X_df)
+    out = np.empty((n_rows, n_expected), dtype=float)
+    for j, name in enumerate(feature_names):
+        if name in X_df.columns:
+            out[:, j] = X_df[name].values
+        else:
+            out[:, j] = scaler.mean_[j]
+    return out
 
 
 def build_feature_matrix_with_scaler(
@@ -168,16 +218,15 @@ def build_feature_matrix_with_scaler(
     X_df = feat_df[available].dropna()
     index = X_df.index
 
-    # Pad missing columns with the scaler's training mean (matches
-    # regime/hmm_engine.py::_pad_features_to_scaler) so padded columns
-    # standardise to ~0 (neutral) instead of a spurious z-score.
-    n_expected = scaler.n_features_in_
-    n_have = X_df.shape[1]
-    if n_have < n_expected:
-        means = np.tile(np.asarray(scaler.mean_)[n_have:n_expected], (len(X_df), 1))
-        X_raw = np.hstack([X_df.values, means])
-    else:
-        X_raw = X_df.values[:, :n_expected]
+    # Align by column NAME to the scaler's expected features (see
+    # align_features_to_scaler doc for why this must not be positional).
+    X_raw = align_features_to_scaler(X_df, scaler)
 
+    feature_names = getattr(scaler, "feature_names_in_", None)
+    if feature_names is not None:
+        # Pass named columns through to transform() to avoid sklearn's
+        # "X does not have valid feature names" warning (cosmetic only —
+        # alignment already happened above).
+        X_raw = pd.DataFrame(X_raw, columns=feature_names, index=index)
     X = scaler.transform(X_raw)
     return X, index

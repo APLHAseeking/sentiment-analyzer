@@ -88,6 +88,7 @@ class RegimeConfig:
     n_iter: int = 100                 # HMM EM iterations
     random_state: int = 42
     covariance_type: str = "diag"     # only "diag" is implemented; others fall back to diag with a warning
+    n_restarts: int = 5               # EM random-init restarts per candidate fit; best-of-N by log-likelihood
     # Stability filter
     min_stable_bars: int = 3          # regime must persist N bars before acting on it
     # Labels — assigned in order from lowest mean return to highest
