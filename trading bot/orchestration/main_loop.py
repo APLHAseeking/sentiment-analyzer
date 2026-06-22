@@ -58,7 +58,7 @@ from market_data.market_feed import get_regime_data
 from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
-from risk.risk_manager import RiskManager, RiskState
+from risk.risk_manager import HEDGE_SECTOR_LABEL, RiskManager, RiskState
 from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt, atr_pct_from_ohlc, structure_stop_size_pct
 from screener.factor_scorer import run_factor_screen, prefetch_screener_data, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
@@ -1065,7 +1065,7 @@ class RegimeAwareOrchestrator:
                     veto = self._risk.validate_order(
                         ticker=order.ticker,
                         position_pct=order.position_pct,
-                        sector="Hedge",
+                        sector=HEDGE_SECTOR_LABEL,
                         sector_allocation={},
                         position_size_usd=position_size_usd,
                         adv_usd=None,

@@ -211,7 +211,7 @@ def test_stale_data_cleared_allows_entries(tmp_path):
         sector="Technology",
         sector_allocation={},
         position_size_usd=5_000,
-        adv_usd=None,
+        adv_usd=1e9,
     )
     assert veto.allowed
 
@@ -240,40 +240,64 @@ def test_validate_order_allows_when_under_invested_cap(tmp_path):
 
 
 def test_validate_order_allows_sector_exactly_at_cap(tmp_path):
-    """A sector sitting exactly at max_sector_pct must not be rejected."""
+    """A sector landing exactly at max_sector_pct (not over) must not be rejected."""
     mgr = _make_manager(tmp_path, max_sector_pct=30.0)
     mgr.start_of_day(100_000)
     veto = mgr.validate_order(
-        ticker="AAPL", position_pct=5.0, sector="Technology",
-        sector_allocation={"Technology": 30.0},  # exactly at cap
-        position_size_usd=5_000, adv_usd=None,
+        ticker="AAPL", position_pct=1.0, sector="Technology",
+        sector_allocation={"Technology": 29.0},  # 29 + 1 = 30, exactly at cap
+        position_size_usd=5_000, adv_usd=1e9,
     )
     assert veto.allowed
 
 
-def test_validate_order_logs_warning_when_adv_missing(tmp_path, caplog):
-    import logging
-    mgr = _make_manager(tmp_path, max_adv_pct=10.0)
+def test_validate_order_rejects_when_incoming_position_pushes_sector_over_cap(tmp_path):
+    """A sector at 29% plus an incoming 8% position (cap 30%) must be rejected.
+
+    Regression guard for the off-by-one: the check must include the incoming
+    position's size, not just the sector's pre-existing allocation.
+    """
+    mgr = _make_manager(tmp_path, max_sector_pct=30.0)
     mgr.start_of_day(100_000)
-    with caplog.at_level(logging.WARNING, logger="risk.risk_manager"):
-        veto = mgr.validate_order(
-            ticker="AAPL", position_pct=5.0, sector="Technology",
-            sector_allocation={}, position_size_usd=5_000, adv_usd=None,
-        )
-    assert veto.allowed  # missing ADV data does not block the order
-    assert any("ADV" in rec.message or "liquidity" in rec.message.lower()
-               for rec in caplog.records)
+    veto = mgr.validate_order(
+        ticker="AAPL", position_pct=8.0, sector="Technology",
+        sector_allocation={"Technology": 29.0},  # 29 + 8 = 37 > 30
+        position_size_usd=5_000, adv_usd=None,
+    )
+    assert veto.allowed is False
+    assert "sector" in veto.reason.lower()
 
 
-def test_validate_order_logs_warning_when_adv_zero(tmp_path, caplog):
-    import logging
+def test_validate_order_rejects_when_adv_missing(tmp_path):
+    """Missing ADV data is a hard veto for ordinary (non-hedge) orders."""
     mgr = _make_manager(tmp_path, max_adv_pct=10.0)
     mgr.start_of_day(100_000)
-    with caplog.at_level(logging.WARNING, logger="risk.risk_manager"):
-        veto = mgr.validate_order(
-            ticker="AAPL", position_pct=5.0, sector="Technology",
-            sector_allocation={}, position_size_usd=5_000, adv_usd=0,
-        )
-    assert veto.allowed
-    assert any("ADV" in rec.message or "liquidity" in rec.message.lower()
-               for rec in caplog.records)
+    veto = mgr.validate_order(
+        ticker="AAPL", position_pct=5.0, sector="Technology",
+        sector_allocation={}, position_size_usd=5_000, adv_usd=None,
+    )
+    assert veto.allowed is False
+    assert "adv" in veto.reason.lower() or "liquid" in veto.reason.lower()
+
+
+def test_validate_order_rejects_when_adv_zero(tmp_path):
+    """Zero ADV data is a hard veto for ordinary (non-hedge) orders."""
+    mgr = _make_manager(tmp_path, max_adv_pct=10.0)
+    mgr.start_of_day(100_000)
+    veto = mgr.validate_order(
+        ticker="AAPL", position_pct=5.0, sector="Technology",
+        sector_allocation={}, position_size_usd=5_000, adv_usd=0,
+    )
+    assert veto.allowed is False
+    assert "adv" in veto.reason.lower() or "liquid" in veto.reason.lower()
+
+
+def test_validate_order_exempts_hedge_sector_from_missing_adv_veto(tmp_path):
+    """Hedge-sector orders are intentionally exempt from the ADV gate."""
+    mgr = _make_manager(tmp_path, max_adv_pct=10.0)
+    mgr.start_of_day(100_000)
+    veto = mgr.validate_order(
+        ticker="SH", position_pct=5.0, sector="Hedge",
+        sector_allocation={}, position_size_usd=5_000, adv_usd=None,
+    )
+    assert veto.allowed is True

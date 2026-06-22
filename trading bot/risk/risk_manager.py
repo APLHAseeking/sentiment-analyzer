@@ -26,6 +26,12 @@ from monitoring.logger import EventType, emit_event
 
 log = logging.getLogger(__name__)
 
+# Sector label used for inverse-ETF hedge orders. Hedge orders are exempt from
+# the ADV liquidity gate (see validate_order) since hedge ETFs have no
+# meaningful ADV constraint. Shared with orchestration/main_loop.py, which
+# constructs hedge orders with this same sector label — keep them in sync.
+HEDGE_SECTOR_LABEL = "Hedge"
+
 
 class RiskState(str, Enum):
     NORMAL = "normal"
@@ -267,11 +273,15 @@ class RiskManager:
                 ),
             )
 
-        # Sector concentration
-        if sector_allocation.get(sector, 0.0) > self._risk.max_sector_pct:
+        # Sector concentration (existing allocation + incoming position)
+        projected_sector_pct = sector_allocation.get(sector, 0.0) + position_pct
+        if projected_sector_pct > self._risk.max_sector_pct:
             return RiskVeto(
                 allowed=False,
-                reason=f"Sector cap: {sector} at {sector_allocation.get(sector, 0):.1f}%",
+                reason=(
+                    f"Sector cap: {sector} would reach {projected_sector_pct:.1f}% "
+                    f"(max_sector_pct {self._risk.max_sector_pct:.1f}%)"
+                ),
             )
 
         # Aggregate invested-capital cap (checked per entry, not once per pipeline)
@@ -292,10 +302,16 @@ class RiskManager:
                     allowed=False,
                     reason=f"Illiquid: {adv_pct:.1f}% of ADV (max {self._risk.max_adv_pct}%)",
                 )
-        elif sector != "Hedge":
-            # Hedge ETFs have no meaningful ADV constraint; suppress noise for them.
+        elif sector != HEDGE_SECTOR_LABEL:
+            # Hedge ETFs have no meaningful ADV constraint; exempt from the gate.
+            # For everything else, missing/zero ADV data is treated as illiquid
+            # and hard-vetoed rather than silently passed through.
             log.warning(
-                "%s: no ADV data (adv_usd=%r) — liquidity check skipped", ticker, adv_usd,
+                "%s: no ADV data (adv_usd=%r) — rejecting order", ticker, adv_usd,
+            )
+            return RiskVeto(
+                allowed=False,
+                reason=f"Illiquid: no ADV data for {ticker} (adv_usd={adv_usd!r})",
             )
 
         return RiskVeto(
