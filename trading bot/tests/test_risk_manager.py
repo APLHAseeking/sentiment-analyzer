@@ -60,11 +60,85 @@ def test_large_daily_loss_halts_entries(tmp_path):
 
 def test_weekly_loss_triggers_weekly_halt(tmp_path):
     mgr = _make_manager(tmp_path)
-    mgr.start_of_day(100_000)
+    # Today opens at 91.5k (week opened at 100k earlier): daily loss is only
+    # 0.5%, isolating the weekly condition. 9% weekly loss → exceeds weekly
+    # halt threshold (8%). (Previously this used day_start == week_start, which
+    # made the same drop a 9% *daily* loss that crosses the deleverage
+    # threshold too — masked only by the now-fixed weekly-before-deleverage
+    # early return.)
+    mgr.start_of_day(91_500)
     mgr._week_start_nav = 100_000
     mgr._peak_nav = 100_000
-    # 9% weekly loss → exceeds weekly halt threshold (8%)
     mgr.check_circuit_breakers(91_000)
+    assert mgr.state == RiskState.WEEKLY_HALT
+
+
+def test_deleverage_triggers_during_active_weekly_halt(tmp_path):
+    """A later day's independent deleverage-level daily loss must trigger
+    DELEVERAGE even while a weekly halt is already active.
+
+    Regression for the circuit-breaker ordering/guard bug: once WEEKLY_HALT
+    is active, the deleverage branch was never reached (it returned at the
+    weekly-halt branch), and even when reached its guard treated WEEKLY_HALT
+    as a reason to skip the DELEVERAGE transition — so the force-close path
+    (gated on state == DELEVERAGE) never ran for a catastrophic day inside an
+    already-halted week.
+    """
+    mgr = _make_manager(tmp_path)
+    # Week opened at 100k earlier; today opens at 91.5k and drifts to 91k.
+    # Daily loss = 0.5% (below all daily thresholds); weekly loss = 9% ≥ 8%
+    # → WEEKLY_HALT with no daily-severity escalation.
+    mgr.start_of_day(91_500)
+    mgr._week_start_nav = 100_000
+    mgr._peak_nav = 100_000
+    mgr.check_circuit_breakers(91_000)
+    assert mgr.state == RiskState.WEEKLY_HALT
+
+    # A later day in the SAME week: open at 92k, then a single-day crash to 86k.
+    # Daily loss = (92k-86k)/92k = 6.5% ≥ deleverage threshold (6%);
+    # weekly loss = (100k-86k)/100k = 14% (still ≥ 8% weekly, < 15% lockout).
+    import datetime
+    tomorrow = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    with patch("risk.risk_manager.date") as mock_date:
+        mock_date.today.return_value = datetime.date.fromisoformat(tomorrow)
+        mock_date.fromisoformat = datetime.date.fromisoformat
+        mgr.start_of_day(92_000)
+        mgr.check_circuit_breakers(86_000)
+
+    assert mgr.state == RiskState.DELEVERAGE
+
+
+def test_weekly_halt_restored_day_after_transient_deleverage(tmp_path):
+    """After a mid-week DELEVERAGE excursion resolves, the next day must fall
+    back into WEEKLY_HALT (still blocking entries), not silently NORMAL — a
+    transient deleverage day must not permanently erase the weekly halt.
+    """
+    mgr = _make_manager(tmp_path, daily_loss_deleverage_pct=6.0)
+    # Week opened at 100k; today opens at 91.5k → 0.5% daily, 9% weekly.
+    mgr.start_of_day(91_500)
+    mgr._week_start_nav = 100_000
+    mgr._peak_nav = 100_000
+    mgr.check_circuit_breakers(91_000)  # WEEKLY_HALT, no daily escalation
+    assert mgr.state == RiskState.WEEKLY_HALT
+
+    import datetime
+    day2 = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    with patch("risk.risk_manager.date") as mock_date:
+        mock_date.today.return_value = datetime.date.fromisoformat(day2)
+        mock_date.fromisoformat = datetime.date.fromisoformat
+        mgr.start_of_day(92_000)
+        mgr.check_circuit_breakers(86_000)  # DELEVERAGE
+    assert mgr.state == RiskState.DELEVERAGE
+
+    # Day 3, same week: daily loss back to normal (NAV flat on the day), but
+    # weekly loss still over threshold. Must be back in WEEKLY_HALT, not NORMAL.
+    day3 = (datetime.date.today() + datetime.timedelta(days=2)).isoformat()
+    with patch("risk.risk_manager.date") as mock_date:
+        mock_date.today.return_value = datetime.date.fromisoformat(day3)
+        mock_date.fromisoformat = datetime.date.fromisoformat
+        mgr.start_of_day(86_000)        # day opens at 86k
+        mgr.check_circuit_breakers(86_000)  # no intraday daily loss; weekly = 14%
+
     assert mgr.state == RiskState.WEEKLY_HALT
 
 

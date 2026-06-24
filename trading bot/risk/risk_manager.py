@@ -65,7 +65,14 @@ class RiskManager:
         cfg : system.config.Settings (or any object with .risk attribute)
         """
         self._risk = cfg.risk
+        # `_state` holds today's severity escalation (NORMAL / SIZES_REDUCED /
+        # ENTRIES_HALTED / DELEVERAGE) plus the LOCKED_OUT terminal state.
+        # The weekly-loss halt is tracked separately in `_weekly_entries_halted`
+        # because it is a week-scoped condition that must coexist with — and
+        # never suppress — a same-week DELEVERAGE escalation. The effective,
+        # outward-facing state is derived in the `state` property by precedence.
         self._state: RiskState = RiskState.NORMAL
+        self._weekly_entries_halted: bool = False
         self._peak_nav: float = 0.0
         self._week_start_nav: float = 0.0
         self._day_start_nav: float = 0.0
@@ -93,9 +100,9 @@ class RiskManager:
         if week_start != self._current_week_start:
             self._week_start_nav = current_nav
             self._current_week_start = week_start
-            if self._state == RiskState.WEEKLY_HALT:
+            if self._weekly_entries_halted:
                 log.info("Weekly halt cleared at start of new week")
-                self._state = RiskState.NORMAL
+                self._weekly_entries_halted = False
 
         if current_nav > self._peak_nav:
             self._peak_nav = current_nav
@@ -122,22 +129,26 @@ class RiskManager:
                 self._trigger_lockout(current_nav, drawdown_from_peak)
                 return
 
+            # Weekly halt is week-scoped and tracked independently of today's
+            # daily severity state. It blocks new entries for the rest of the
+            # week but must NOT suppress a same-week DELEVERAGE escalation — so
+            # we record it and fall through to the daily checks rather than
+            # returning here (the previous early return was the core bug).
             if weekly_loss >= self._risk.weekly_loss_halt_pct:
-                if self._state != RiskState.WEEKLY_HALT:
+                if not self._weekly_entries_halted:
                     log.warning(
                         "Weekly loss %.2f%% ≥ halt threshold %.2f%% — halting entries for week",
                         weekly_loss, self._risk.weekly_loss_halt_pct,
                     )
-                    self._state = RiskState.WEEKLY_HALT
+                    self._weekly_entries_halted = True
                     db.log_risk_event("weekly_halt", f"Weekly loss {weekly_loss:.2f}%",
                                       {"nav": current_nav, "loss_pct": weekly_loss})
                     emit_event(log, EventType.CIRCUIT_BREAKER,
                                f"Weekly loss {weekly_loss:.2f}% — entries halted",
                                alert=True)
-                return
 
             if daily_loss >= self._risk.daily_loss_deleverage_pct:
-                if self._state not in (RiskState.DELEVERAGE, RiskState.WEEKLY_HALT, RiskState.LOCKED_OUT):
+                if self._state != RiskState.DELEVERAGE:
                     log.warning(
                         "Daily loss %.2f%% ≥ deleverage threshold %.2f%% — forcing position close",
                         daily_loss, self._risk.daily_loss_deleverage_pct,
@@ -151,7 +162,7 @@ class RiskManager:
                 return
 
             if daily_loss >= self._risk.daily_loss_halt_pct:
-                if self._state not in (RiskState.ENTRIES_HALTED, RiskState.WEEKLY_HALT, RiskState.DELEVERAGE):
+                if self._state not in (RiskState.ENTRIES_HALTED, RiskState.DELEVERAGE):
                     log.warning(
                         "Daily loss %.2f%% ≥ halt threshold %.2f%% — stopping new entries",
                         daily_loss, self._risk.daily_loss_halt_pct,
@@ -230,10 +241,11 @@ class RiskManager:
             self._state = RiskState.LOCKED_OUT
             return RiskVeto(allowed=False, reason="Risk lockout active — delete lock file to resume")
 
-        if self._state in (RiskState.ENTRIES_HALTED, RiskState.WEEKLY_HALT, RiskState.LOCKED_OUT, RiskState.DELEVERAGE):
-            return RiskVeto(allowed=False, reason=f"Entries blocked by circuit breaker: {self._state}")
+        effective_state = self.state
+        if effective_state in (RiskState.ENTRIES_HALTED, RiskState.WEEKLY_HALT, RiskState.LOCKED_OUT, RiskState.DELEVERAGE):
+            return RiskVeto(allowed=False, reason=f"Entries blocked by circuit breaker: {effective_state}")
 
-        if self._state == RiskState.SIZES_REDUCED:
+        if effective_state == RiskState.SIZES_REDUCED:
             new_pct = proposed_pct * 0.5
             return RiskVeto(
                 allowed=True,
@@ -326,6 +338,20 @@ class RiskManager:
 
     @property
     def state(self) -> RiskState:
+        """Effective risk state by precedence.
+
+        `_state` carries today's daily severity (plus the LOCKED_OUT terminal
+        state); `_weekly_entries_halted` is the week-scoped entries halt. The
+        outward-facing state is the more severe of the two: a daily DELEVERAGE
+        or LOCKED_OUT outranks an active weekly halt (the force-close path is
+        gated on DELEVERAGE), while a weekly halt outranks the lesser daily
+        states (NORMAL / SIZES_REDUCED / ENTRIES_HALTED) so a transient
+        deleverage day cannot erase the weekly halt once it resolves.
+        """
+        if self._state in (RiskState.LOCKED_OUT, RiskState.DELEVERAGE):
+            return self._state
+        if self._weekly_entries_halted:
+            return RiskState.WEEKLY_HALT
         return self._state
 
     @property
@@ -334,7 +360,7 @@ class RiskManager:
 
     def status_dict(self) -> dict:
         return {
-            "state": self._state.value,
+            "state": self.state.value,
             "peak_nav": self._peak_nav,
             "day_start_nav": self._day_start_nav,
             "week_start_nav": self._week_start_nav,
