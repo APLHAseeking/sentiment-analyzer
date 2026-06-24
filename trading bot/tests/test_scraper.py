@@ -41,7 +41,7 @@ def test_parse_fields():
     assert t["id"] == "abc123"
     assert t["politician"] == "Nancy Pelosi"
     assert t["ticker"] == "NVDA"
-    assert t["transaction_type"] == "purchase"
+    assert t["transaction_type"] == "buy"
     assert t["transaction_date"] == "2026-04-01"
     assert t["disclosure_date"] == "2026-04-10"
     assert t["amount_range"] == "$50,001 - $100,000"
@@ -56,7 +56,7 @@ def test_validate_trade_passes_valid():
         "id": "abc123",
         "politician": "Nancy Pelosi",
         "ticker": "NVDA",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-01",
         "disclosure_date": "2026-04-10",
         "amount_range": "$50,001 - $100,000",
@@ -68,7 +68,7 @@ def test_validate_trade_passes_valid():
 def test_validate_trade_rejects_bad_date():
     trade = {
         "id": "abc123", "politician": "Nancy Pelosi", "ticker": "NVDA",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "April 1, 2026",
         "disclosure_date": "2026-04-10",
         "amount_range": "$50,001 - $100,000",
@@ -80,7 +80,7 @@ def test_validate_trade_rejects_bad_date():
 def test_validate_trade_rejects_empty_ticker():
     trade = {
         "id": "abc123", "politician": "Nancy Pelosi", "ticker": "",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
         "amount_range": "$50,001 - $100,000", "scraped_at": "2026-04-26T08:00:00",
     }
@@ -90,7 +90,7 @@ def test_validate_trade_rejects_empty_ticker():
 def test_validate_trade_rejects_non_alpha_ticker():
     trade = {
         "id": "abc123", "politician": "Nancy Pelosi", "ticker": "123XY",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
         "amount_range": "$50,001 - $100,000", "scraped_at": "2026-04-26T08:00:00",
     }
@@ -100,7 +100,7 @@ def test_validate_trade_rejects_non_alpha_ticker():
 def test_validate_trade_rejects_missing_id():
     trade = {
         "id": "", "politician": "Nancy Pelosi", "ticker": "NVDA",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
         "amount_range": "$50,001 - $100,000", "scraped_at": "2026-04-26T08:00:00",
     }

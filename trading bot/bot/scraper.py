@@ -15,6 +15,9 @@ _JSON_URL = "https://capitoltrades.com/api/trades"
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # Matches standard US tickers (AAPL) and class-share suffixes (BRK.B, BF.B)
 _TICKER_RE = re.compile(r"^[A-Z]{1,5}([.\-][A-Z])?$")
+# Capitol Trades' rendered HTML table uses "Purchase"/"Sale" labels, unlike the
+# JSON API which already returns "buy"/"sell" natively.
+_HTML_TX_TYPE_MAP = {"purchase": "buy", "sale": "sell"}
 
 
 def _normalize_ticker(raw: str) -> str:
@@ -128,11 +131,12 @@ def _parse_trades_page(html: str) -> list[dict]:
         ticker = _normalize_ticker(cells[2].get_text(strip=True).upper())
         if not trade_id or not ticker:
             continue
+        raw_tx_type = cells[3].get_text(strip=True).lower()
         trade = {
             "id": trade_id,
             "politician": cells[0].get_text(strip=True),
             "ticker": ticker,
-            "transaction_type": cells[3].get_text(strip=True).lower(),
+            "transaction_type": _HTML_TX_TYPE_MAP.get(raw_tx_type, raw_tx_type),
             "transaction_date": cells[4].get_text(strip=True),
             "disclosure_date": cells[5].get_text(strip=True),
             "amount_range": cells[6].get_text(strip=True),
