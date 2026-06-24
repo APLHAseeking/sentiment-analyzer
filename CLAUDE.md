@@ -12,11 +12,12 @@ trading bot and thesis scripts layered on top. Three things live here.
   root `requirements.txt` (flask, pandas, openpyxl, anthropic). Run: `python app.py`.
 - **`trading bot/`** — regime-aware paper trading system (primary active work).
   Full guidance in `trading bot/CLAUDE.md`. Run tests with `pytest` from inside
-  `trading bot/` (659 tests). Has its own deps and data caches.
+  `trading bot/` (721 tests). Has its own deps and data caches.
 - **`docs/superpowers/`** — `plans/` and `specs/` for past and current work.
 
 Thesis inputs at root: `stoxx600_constituents.csv`, `Thesis STOXX, and time
-series (1).xlsx`. `TRADING_BOT_REVIEW_PLAN.md` is a review plan for the bot.
+series (1).xlsx`. `TRADING_BOT_REVIEW_2026-06-23.md` is the latest full bug-audit
+of the bot (supersedes earlier review/plan docs, which were removed).
 
 ## Data not in this repo
 

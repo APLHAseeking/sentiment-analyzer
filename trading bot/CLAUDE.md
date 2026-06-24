@@ -31,7 +31,11 @@
 > scale, degrading regime persistence on realistic overlapping data; the HTML scraper
 > fallback never normalized `transaction_type` to `buy`/`sell`, silently losing all
 > congressional signal during a JSON-API outage. See `TRADING_BOT_REVIEW_2026-06-23.md` at
-> repo root for full findings (also 7 High / 13 Medium / 13 Low items not yet acted on).
+> repo root for full findings (also 7 High / 12 Medium / 13 Low items not yet acted on).
+> 2026-06-24: fixed one of those Medium items — `screener/factor_scorer.py`'s Phase 1
+> momentum score filled missing/NaN `mom_12m` (thin-history names) with `0` before
+> percentile ranking, landing them in the worst momentum percentile; now imputed at the
+> neutral midpoint (`fillna(0.5)`) instead.
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -123,7 +127,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 720 tests; keep green (run from inside trading bot/)
+pytest                                 # 721 tests; keep green (run from inside trading bot/)
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 
