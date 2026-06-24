@@ -61,6 +61,23 @@ def test_compute_composite_prefers_low_pe():
     assert scored.loc["CHEAP", "value_score"] > scored.loc["EXPENSIVE", "value_score"]
 
 
+def test_compute_composite_missing_momentum_scored_neutrally():
+    """Missing mom_12m (thin-history names) must not be scored as the worst
+    possible momentum (0) — it should land neutrally, between a real bad
+    performer and a real middling performer, not below either."""
+    infos = {t: _make_info() for t in ["MISSING", "WORST", "MID", "BEST"]}
+    momentum = {
+        "MISSING": (None, None),
+        "WORST": (5.0, -50.0),
+        "MID": (5.0, 0.0),
+        "BEST": (5.0, 100.0),
+    }
+    df = _build_factor_df(infos, momentum)
+    scored = _compute_composite(df)
+    assert scored.loc["MISSING", "momentum_score"] > scored.loc["WORST", "momentum_score"]
+    assert scored.loc["MISSING", "momentum_score"] < scored.loc["MID", "momentum_score"]
+
+
 def test_compute_composite_returns_scores_in_range():
     infos = {t: _make_info() for t in ["A", "B", "C"]}
     momentum = {t: (5.0, 10.0) for t in ["A", "B", "C"]}

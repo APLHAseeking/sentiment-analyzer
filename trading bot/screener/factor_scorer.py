@@ -217,8 +217,11 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
         ranked[["pe_inv", "pb_inv", "fcf_yield"]].mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
     # Use 12-month momentum only. 1-month is a mean-reversion effect.
+    # Missing mom_12m (thin-history names) is imputed at the neutral midpoint
+    # (0.5 pct rank), not 0 — 0 would land a name with no momentum data in the
+    # worst momentum percentile, indistinguishable from a real bad performer.
     df["momentum_score"] = (
-        ranked["mom_12m"].fillna(0) * 33
+        ranked["mom_12m"].fillna(0.5) * 33
     ).clip(0, 33).astype(int)
     df["quality_score"] = (
         ranked[["roe", "margin", "de_inv"]].mean(axis=1, skipna=True) * 33
