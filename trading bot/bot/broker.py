@@ -224,24 +224,48 @@ class AlpacaBroker(BrokerInterface):
             log.warning("Failed to place stop order for %s: %s", ticker, exc)
             return None
 
-    def cancel_stop_order(self, ticker: str) -> None:
-        """Cancel any open stop orders for ticker."""
+    @staticmethod
+    def _is_open_stop(o) -> bool:
+        """True if order ``o`` is an open (cancellable) resting STOP.
+
+        alpaca-py returns enum instances, so ``str(o.order_type)`` is
+        ``"OrderType.STOP"`` and ``str(o.status)`` is ``"OrderStatus.NEW"`` —
+        NOT ``"stop"`` / ``"new"``. Compare on the substring case-insensitively
+        so both real enums and any plain-string stand-ins match.
+        """
+        type_str = str(getattr(o, "order_type", "")).lower()
+        status_str = str(getattr(o, "status", "")).lower()
+        return "stop" in type_str and ("new" in status_str or "accepted" in status_str)
+
+    def cancel_stop_order(self, ticker: str, order_id: str | None = None) -> None:
+        """Cancel open stop order(s) for ticker.
+
+        With an ``order_id``, cancel ONLY that specific resting stop — the
+        trail-up path passes the OLD stop's id so the just-placed new (higher)
+        stop is left resting. With no ``order_id``, cancel every open stop for
+        the ticker (full close / reduce path, where no new stop was just placed).
+        """
         try:
             for o in self._api.get_orders():
-                if (o.symbol == ticker.upper()
-                        and str(o.order_type) == "stop"
-                        and str(o.status) in ("new", "accepted")):
-                    self._api.cancel_order_by_id(str(o.id))
+                if o.symbol != ticker.upper() or not self._is_open_stop(o):
+                    continue
+                if order_id is not None and str(o.id) != str(order_id):
+                    continue
+                self._api.cancel_order_by_id(str(o.id))
         except Exception as exc:
             log.warning("cancel_stop_order failed for %s: %s", ticker, exc)
 
-    def get_stop_orders(self) -> dict[str, tuple[float, float]]:
-        """Return {ticker: (stop_price, qty)} for open stop orders."""
-        result: dict[str, tuple[float, float]] = {}
+    def get_stop_orders(self) -> dict[str, tuple[float, float, str | None]]:
+        """Return {ticker: (stop_price, qty, order_id)} for open stop orders.
+
+        If a ticker has more than one open stop (e.g. transiently during a
+        trail-up), the last one returned by the API wins.
+        """
+        result: dict[str, tuple[float, float, str | None]] = {}
         try:
             for o in self._api.get_orders():
-                if str(o.order_type) == "stop" and str(o.status) in ("new", "accepted"):
-                    result[o.symbol] = (float(o.stop_price or 0), float(o.qty))
+                if self._is_open_stop(o):
+                    result[o.symbol] = (float(o.stop_price or 0), float(o.qty), str(o.id))
         except Exception as exc:
             log.warning("get_stop_orders failed: %s", exc)
         return result

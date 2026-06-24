@@ -42,8 +42,12 @@ class SimulatedBroker(BrokerInterface):
         self._positions: dict[str, Position] = {}
         # full order history
         self._orders: list[Order] = []
-        # resting stop orders: ticker → (stop_price, qty)
-        self._stop_orders: dict[str, tuple[float, float]] = {}
+        # resting stop orders: ticker → {order_id: (stop_price, qty)}.
+        # A ticker may hold more than one resting stop transiently during a
+        # trail-up (new placed before old is cancelled), so each stop has its
+        # own id and they don't overwrite each other.
+        self._stop_orders: dict[str, dict[str, tuple[float, float]]] = {}
+        self._stop_seq = 0  # monotonic counter for unique simulated stop ids
 
     # ------------------------------------------------------------------
     # BrokerInterface implementation
@@ -188,18 +192,49 @@ class SimulatedBroker(BrokerInterface):
     # ------------------------------------------------------------------
 
     def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
-        """Register a resting stop. The polled enforce_stop_losses() does the actual fill."""
-        self._stop_orders[ticker] = (stop_price, qty)
-        log.info("SimulatedBroker: stop registered %s qty=%.4f @ $%.2f", ticker, qty, stop_price)
-        return f"sim-stop-{ticker}"
+        """Register a resting stop. The polled enforce_stop_losses() does the actual fill.
 
-    def cancel_stop_order(self, ticker: str) -> None:
-        """Cancel the resting stop for ticker (no-op if none registered)."""
-        self._stop_orders.pop(ticker, None)
+        Returns a unique order id. Multiple stops can rest for the same ticker
+        at once (e.g. a new trail-up stop placed before the old one is cancelled);
+        each is keyed by its own id and does not overwrite the others.
+        """
+        self._stop_seq += 1
+        order_id = f"sim-stop-{ticker}-{self._stop_seq}"
+        self._stop_orders.setdefault(ticker, {})[order_id] = (stop_price, qty)
+        log.info("SimulatedBroker: stop registered %s qty=%.4f @ $%.2f id=%s",
+                 ticker, qty, stop_price, order_id)
+        return order_id
 
-    def get_stop_orders(self) -> dict[str, tuple[float, float]]:
-        """Return {ticker: (stop_price, qty)} for all registered stops."""
-        return dict(self._stop_orders)
+    def cancel_stop_order(self, ticker: str, order_id: str | None = None) -> None:
+        """Cancel resting stop(s) for ticker.
+
+        With an ``order_id``, cancel only that specific stop (the trail-up path
+        cancels exactly the OLD stop by id). With no ``order_id``, cancel every
+        resting stop for the ticker (full close / reduce path). No-op if none
+        match.
+        """
+        if order_id is None:
+            self._stop_orders.pop(ticker, None)
+            return
+        stops = self._stop_orders.get(ticker)
+        if stops is not None:
+            stops.pop(order_id, None)
+            if not stops:
+                self._stop_orders.pop(ticker, None)
+
+    def get_stop_orders(self) -> dict[str, tuple[float, float, str | None]]:
+        """Return {ticker: (stop_price, qty, order_id)} for resting stops.
+
+        If a ticker has more than one resting stop in flight, the most recently
+        placed one is reported (its id is the highest in insertion order).
+        """
+        result: dict[str, tuple[float, float, str | None]] = {}
+        for ticker, stops in self._stop_orders.items():
+            if not stops:
+                continue
+            order_id, (stop_price, qty) = next(reversed(stops.items()))
+            result[ticker] = (stop_price, qty, order_id)
+        return result
 
     # ------------------------------------------------------------------
     # Extra simulation utilities
