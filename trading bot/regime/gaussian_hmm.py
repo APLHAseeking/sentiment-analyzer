@@ -109,7 +109,7 @@ class GaussianHMM:
             # xi: (T-1, K, K)
             log_xi = (
                 log_alpha[:-1, :, None]
-                + transmat_[None, :, :]
+                + np.log(transmat_[None, :, :] + 1e-300)
                 + log_emis[1:, None, :]
                 + log_beta[1:, None, :]
             )
