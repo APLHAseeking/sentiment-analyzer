@@ -205,3 +205,90 @@ def test_place_order_fires_alert_when_fill_poll_times_out(monkeypatch):
     assert order.status == OrderStatus.SUBMITTED
     # But the timeout fallback must now be flagged.
     mock_fire_alert.assert_called_once()
+
+
+# ------------------------------------------------------------------
+# Stop order cancellation — uses REAL alpaca enums (not raw strings),
+# because str(OrderType.STOP) == "OrderType.STOP", not "stop".
+# ------------------------------------------------------------------
+
+def _alpaca_stop_order(symbol, stop_price, qty, order_id, status):
+    """Build a mock Alpaca order carrying REAL enum instances for type/status."""
+    from alpaca.trading.enums import OrderType as AlpacaOrderType
+    o = MagicMock()
+    o.symbol = symbol
+    o.order_type = AlpacaOrderType.STOP
+    o.status = status
+    o.stop_price = stop_price
+    o.qty = qty
+    o.id = order_id
+    return o
+
+
+def test_get_stop_orders_matches_real_enum_orders():
+    """get_stop_orders must recognise resting stops whose order_type/status are
+    real alpaca enums (OrderType.STOP / OrderStatus.NEW), not the literal
+    strings 'stop'/'new'. With the old str()=='stop' filter this returned {}."""
+    from alpaca.trading.enums import OrderStatus as AlpacaOrderStatus
+    o = _alpaca_stop_order("AAPL", stop_price=90.0, qty=10.0,
+                           order_id="stop-1", status=AlpacaOrderStatus.NEW)
+    mock_api = MagicMock()
+    mock_api.get_orders.return_value = [o]
+    broker = AlpacaBroker(api_client=mock_api)
+
+    stops = broker.get_stop_orders()
+    assert "AAPL" in stops
+    assert stops["AAPL"][0] == 90.0
+    assert stops["AAPL"][1] == 10.0
+    assert stops["AAPL"][2] == "stop-1"  # order id exposed
+
+
+def test_cancel_stop_order_by_id_targets_only_that_order():
+    """When given an order_id, cancel_stop_order must cancel ONLY that stop,
+    leaving any other resting stop for the same ticker (e.g. the just-placed
+    new trail-up stop) untouched."""
+    from alpaca.trading.enums import OrderStatus as AlpacaOrderStatus
+    old = _alpaca_stop_order("AAPL", 90.0, 10.0, "old-stop", AlpacaOrderStatus.NEW)
+    new = _alpaca_stop_order("AAPL", 102.0, 10.0, "new-stop", AlpacaOrderStatus.NEW)
+    mock_api = MagicMock()
+    mock_api.get_orders.return_value = [old, new]
+    broker = AlpacaBroker(api_client=mock_api)
+
+    broker.cancel_stop_order("AAPL", order_id="old-stop")
+
+    mock_api.cancel_order_by_id.assert_called_once_with("old-stop")
+
+
+def test_cancel_stop_order_no_id_cancels_all_resting_stops():
+    """With no order_id (full close / reduce path), cancel_stop_order cancels
+    every resting stop for the ticker."""
+    from alpaca.trading.enums import OrderStatus as AlpacaOrderStatus
+    s = _alpaca_stop_order("AAPL", 90.0, 10.0, "stop-1", AlpacaOrderStatus.NEW)
+    mock_api = MagicMock()
+    mock_api.get_orders.return_value = [s]
+    broker = AlpacaBroker(api_client=mock_api)
+
+    broker.cancel_stop_order("AAPL")
+
+    mock_api.cancel_order_by_id.assert_called_once_with("stop-1")
+
+
+def test_cancel_stop_order_ignores_non_stop_and_terminal_orders():
+    """Only open (new/accepted) STOP orders are cancellable; filled/other-type
+    orders must be left alone."""
+    from alpaca.trading.enums import (
+        OrderStatus as AlpacaOrderStatus, OrderType as AlpacaOrderType,
+    )
+    filled_stop = _alpaca_stop_order("AAPL", 90.0, 10.0, "filled", AlpacaOrderStatus.FILLED)
+    market = MagicMock()
+    market.symbol = "AAPL"
+    market.order_type = AlpacaOrderType.MARKET
+    market.status = AlpacaOrderStatus.NEW
+    market.id = "market-1"
+    mock_api = MagicMock()
+    mock_api.get_orders.return_value = [filled_stop, market]
+    broker = AlpacaBroker(api_client=mock_api)
+
+    broker.cancel_stop_order("AAPL")
+
+    mock_api.cancel_order_by_id.assert_not_called()

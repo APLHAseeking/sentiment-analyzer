@@ -673,8 +673,28 @@ def test_trailing_up_replaces_resting_stop(mock_broker, db):
 
     portfolio.enforce_stop_losses(stop_loss_pct=15.0)
 
-    mock_broker.cancel_stop_order.assert_called_once_with("AAPL")
+    # No pre-existing stop → cancel targets order_id=None (nothing to cancel).
+    mock_broker.cancel_stop_order.assert_called_once_with("AAPL", order_id=None)
     mock_broker.place_stop_order.assert_called_once()
+
+
+def test_enforce_stop_losses_cancels_old_stop_by_id_not_ticker(mock_broker, db):
+    """On a trail-up with a pre-existing stop, the OLD stop must be cancelled by
+    its specific order id — NOT ticker-only — so the just-placed new stop (which
+    shares ticker/type/status) survives."""
+    from system.config import RiskConfig
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    # get_stop_orders now returns (stop_price, qty, order_id).
+    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0, "old-stop-id")}
+    mock_broker.place_stop_order.return_value = "new-stop-id"
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    mock_broker.cancel_stop_order.assert_called_once_with("AAPL", order_id="old-stop-id")
 
 
 def test_enforce_stop_losses_places_new_stop_before_cancelling_old(mock_broker, db):
@@ -682,7 +702,7 @@ def test_enforce_stop_losses_places_new_stop_before_cancelling_old(mock_broker, 
     is cancelled, so the position is never left without a resting stop."""
     from system.config import RiskConfig
     portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
-    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0)}
+    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0, "old-stop-id")}
     mock_broker.get_positions.return_value = [{
         "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
     }]
@@ -695,7 +715,7 @@ def test_enforce_stop_losses_places_new_stop_before_cancelling_old(mock_broker, 
         return "new-stop-order-id"  # successful placement — must not be None
 
     mock_broker.place_stop_order.side_effect = _place
-    mock_broker.cancel_stop_order.side_effect = lambda t: call_order.append("cancel")
+    mock_broker.cancel_stop_order.side_effect = lambda t, order_id=None: call_order.append("cancel")
 
     portfolio.enforce_stop_losses(stop_loss_pct=15.0)
 
@@ -710,7 +730,7 @@ def test_enforce_stop_losses_keeps_old_stop_when_new_placement_fails(mock_broker
     mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
 
     portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
-    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0)}
+    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0, "old-stop-id")}
     mock_broker.get_positions.return_value = [{
         "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
     }]
@@ -930,3 +950,34 @@ def test_enforce_stop_losses_honors_stored_zero_peak_price(mock_broker, db):
     closed = portfolio.enforce_stop_losses(stop_loss_pct=15.0)
 
     assert "AAPL" not in closed
+
+
+def test_trailing_up_leaves_exactly_one_resting_stop_real_simulated_broker(db):
+    """End-to-end against the REAL SimulatedBroker (not a MagicMock): a trail-up
+    through Portfolio.enforce_stop_losses must leave EXACTLY ONE resting stop, at
+    the new (higher) price — not zero. Regression for the bug where placing the
+    new stop overwrote the old, then cancel_stop_order(ticker) popped the new one,
+    leaving the position with no resting stop at all."""
+    from execution.paper_broker import SimulatedBroker
+    from system.config import RiskConfig
+
+    broker = SimulatedBroker(initial_cash=100_000.0, slippage_bps=0.0)
+    # Seed a position directly into the broker's in-memory book.
+    from execution.broker_interface import Position
+    broker._positions["AAPL"] = Position(
+        ticker="AAPL", qty=10.0, avg_entry_price=100.0, current_price=100.0
+    )
+    # Initial resting stop at 15% below entry (=85).
+    broker.place_stop_order("AAPL", qty=10.0, stop_price=85.0)
+    assert len(broker.get_stop_orders()) == 1
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    # Price rallies to 120 → new stop should trail up to 102 (15% below 120).
+    broker.set_position_price("AAPL", 120.0)
+    portfolio = Portfolio(broker=broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    stops = broker.get_stop_orders()
+    assert len(stops) == 1, f"expected exactly one resting stop, got {stops}"
+    assert stops["AAPL"][0] == pytest.approx(102.0)  # new (higher) stop, old gone

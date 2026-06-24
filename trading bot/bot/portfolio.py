@@ -382,11 +382,18 @@ class Portfolio:
             # placing the new one so brokers (Alpaca) don't accumulate duplicates.
             new_stop = current * (1 - pct / 100)
             existing_stop = 0.0
+            existing_stop_id: str | None = None
             try:
                 if hasattr(self.broker, "get_stop_orders"):
                     _stops = self.broker.get_stop_orders()
                     if isinstance(_stops, dict):
-                        existing_stop = float(_stops.get(ticker, (0.0,))[0])
+                        _resting = _stops.get(ticker)
+                        if _resting is not None:
+                            existing_stop = float(_resting[0])
+                            # 3-tuple (price, qty, order_id); tolerate the old
+                            # 2-tuple shape from any stale mock by guarding length.
+                            if len(_resting) > 2:
+                                existing_stop_id = _resting[2]
             except Exception:
                 pass
             if new_stop > existing_stop:
@@ -397,7 +404,11 @@ class Portfolio:
                 )
                 if new_stop_id is not None:
                     if hasattr(self.broker, "cancel_stop_order"):
-                        self.broker.cancel_stop_order(ticker)
+                        # Cancel the OLD stop by its specific id, never by ticker —
+                        # the new stop shares the same ticker/type/status, so a
+                        # ticker-only cancel would kill the just-placed new stop too,
+                        # leaving the position with zero resting stops.
+                        self.broker.cancel_stop_order(ticker, order_id=existing_stop_id)
                 else:
                     # Placement failed — keep the old stop resting rather than
                     # cancelling it and leaving the position with zero stops.

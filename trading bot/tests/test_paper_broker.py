@@ -139,43 +139,68 @@ def test_is_paper_is_true(broker):
 
 def test_place_stop_order_registers_stop(broker):
     order_id = broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
-    assert order_id == "sim-stop-AAPL"
+    assert order_id.startswith("sim-stop-AAPL")
     stops = broker.get_stop_orders()
     assert "AAPL" in stops
-    assert stops["AAPL"] == (90.0, 10.0)
+    # (stop_price, qty, order_id)
+    assert stops["AAPL"][:2] == (90.0, 10.0)
+    assert stops["AAPL"][2] == order_id
 
 
 def test_place_stop_order_returns_id(broker):
     result = broker.place_stop_order("MSFT", qty=5.0, stop_price=200.0)
-    assert result == "sim-stop-MSFT"
+    assert result.startswith("sim-stop-MSFT")
+
+
+def test_place_stop_order_returns_unique_ids(broker):
+    """Two stops for the same ticker must get distinct ids so the trail-up
+    path can cancel exactly one by id without touching the other."""
+    id1 = broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
+    id2 = broker.place_stop_order("AAPL", qty=10.0, stop_price=95.0)
+    assert id1 != id2
 
 
 def test_get_stop_orders_empty_initially(broker):
     assert broker.get_stop_orders() == {}
 
 
-def test_place_stop_order_overwrites_existing(broker):
+def test_place_stop_order_reports_latest_when_multiple(broker):
+    """Two coexisting stops for a ticker (trail-up in flight): get_stop_orders
+    reports the most recently placed one."""
     broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
     broker.place_stop_order("AAPL", qty=10.0, stop_price=95.0)  # trail up
     stops = broker.get_stop_orders()
     assert stops["AAPL"][0] == 95.0  # latest stop_price
 
 
-def test_cancel_stop_order_removes_entry(broker):
+def test_cancel_stop_order_no_id_removes_all_entries(broker):
     broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
-    broker.cancel_stop_order("AAPL")
+    broker.place_stop_order("AAPL", qty=10.0, stop_price=95.0)
+    broker.cancel_stop_order("AAPL")  # no id → cancel all
     assert "AAPL" not in broker.get_stop_orders()
+
+
+def test_cancel_stop_order_by_id_removes_only_that_stop(broker):
+    """Cancelling the OLD stop by id must leave the NEW stop resting."""
+    old_id = broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
+    new_id = broker.place_stop_order("AAPL", qty=10.0, stop_price=95.0)
+    broker.cancel_stop_order("AAPL", order_id=old_id)
+    stops = broker.get_stop_orders()
+    assert "AAPL" in stops  # the new stop survives
+    assert stops["AAPL"][0] == 95.0
+    assert stops["AAPL"][2] == new_id
 
 
 def test_cancel_stop_order_noop_if_not_registered(broker):
     # Should not raise even when ticker has no stop
     broker.cancel_stop_order("NONEXISTENT")
+    broker.cancel_stop_order("NONEXISTENT", order_id="whatever")
 
 
 def test_get_stop_orders_returns_copy(broker):
     broker.place_stop_order("AAPL", qty=10.0, stop_price=90.0)
     stops = broker.get_stop_orders()
-    stops["AAPL"] = (0.0, 0.0)  # mutate the returned dict
+    stops["AAPL"] = (0.0, 0.0, None)  # mutate the returned dict
     # Original should be unchanged
     assert broker.get_stop_orders()["AAPL"][0] == 90.0
 
@@ -185,5 +210,5 @@ def test_multiple_tickers_tracked_independently(broker):
     broker.place_stop_order("MSFT", qty=5.0, stop_price=200.0)
     stops = broker.get_stop_orders()
     assert len(stops) == 2
-    assert stops["AAPL"] == (90.0, 10.0)
-    assert stops["MSFT"] == (200.0, 5.0)
+    assert stops["AAPL"][:2] == (90.0, 10.0)
+    assert stops["MSFT"][:2] == (200.0, 5.0)

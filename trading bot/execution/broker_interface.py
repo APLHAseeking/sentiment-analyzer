@@ -103,6 +103,31 @@ class BrokerInterface(ABC):
         """
         return None
 
+    def cancel_stop_order(self, ticker: str, order_id: str | None = None) -> None:
+        """Cancel a resting stop order.
+
+        When ``order_id`` is given, cancel only that specific stop order — used
+        by the trail-up path, which places the new (higher) stop first and must
+        then cancel exactly the OLD stop by id, not every stop for the ticker
+        (otherwise it would cancel the just-placed new one too). When
+        ``order_id`` is None, cancel whatever stops are resting for the ticker —
+        used on full close / reduce, where no new stop was just placed.
+
+        No-op default. Concrete brokers with native stops override this.
+        """
+        return None
+
+    def get_stop_orders(self) -> dict[str, tuple[float, float, str | None]]:
+        """Return ``{ticker: (stop_price, qty, order_id)}`` for resting stops.
+
+        ``order_id`` identifies the specific resting stop so the trail-up path
+        can capture the OLD stop's id before placing the new one and then cancel
+        exactly that order. If a ticker has more than one resting stop in flight
+        (transiently, mid-trail-up), the most recently placed one is reported.
+        No-op default returns an empty mapping.
+        """
+        return {}
+
     @property
     @abstractmethod
     def is_paper(self) -> bool: ...
