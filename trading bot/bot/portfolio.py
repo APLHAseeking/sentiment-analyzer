@@ -403,11 +403,15 @@ class Portfolio:
                     ticker=ticker, qty=pos["qty"], stop_price=new_stop
                 )
                 if new_stop_id is not None:
-                    if hasattr(self.broker, "cancel_stop_order"):
-                        # Cancel the OLD stop by its specific id, never by ticker —
-                        # the new stop shares the same ticker/type/status, so a
-                        # ticker-only cancel would kill the just-placed new stop too,
-                        # leaving the position with zero resting stops.
+                    # Cancel the OLD stop by its specific id, never by ticker —
+                    # the new stop shares the same ticker/type/status, so a
+                    # ticker-only cancel (order_id=None) would catch the
+                    # just-placed new stop too, leaving zero resting stops.
+                    # When there's no KNOWN prior stop id (e.g. a fresh broker
+                    # after a restart — get_stop_orders() found nothing for
+                    # this ticker), there's nothing to cancel; skip the call
+                    # entirely rather than sweeping the ticker.
+                    if existing_stop_id is not None and hasattr(self.broker, "cancel_stop_order"):
                         self.broker.cancel_stop_order(ticker, order_id=existing_stop_id)
                 else:
                     # Placement failed — keep the old stop resting rather than

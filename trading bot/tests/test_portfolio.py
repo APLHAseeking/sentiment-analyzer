@@ -661,8 +661,11 @@ def test_reduce_position_rejected_sell_does_not_change_shares(mock_broker, db):
 
 
 def test_trailing_up_replaces_resting_stop(mock_broker, db):
-    """On a trail-up, both the new stop placement and the old stop cancellation
-    must happen (ordering covered by test_enforce_stop_losses_places_new_stop_before_cancelling_old)."""
+    """On a trail-up with no KNOWN existing stop id, the new stop is placed and
+    cancel_stop_order must NOT be called at all — there's nothing to cancel, and
+    a ticker-wide sweep (order_id=None) would risk catching the just-placed new
+    stop too (see test_trailing_up_with_no_known_prior_stop_keeps_the_new_stop
+    for the real-broker regression this guards against)."""
     from system.config import RiskConfig
     portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
     mock_broker.get_stop_orders.return_value = {}  # no existing stop → will place
@@ -673,8 +676,7 @@ def test_trailing_up_replaces_resting_stop(mock_broker, db):
 
     portfolio.enforce_stop_losses(stop_loss_pct=15.0)
 
-    # No pre-existing stop → cancel targets order_id=None (nothing to cancel).
-    mock_broker.cancel_stop_order.assert_called_once_with("AAPL", order_id=None)
+    mock_broker.cancel_stop_order.assert_not_called()
     mock_broker.place_stop_order.assert_called_once()
 
 
@@ -981,3 +983,35 @@ def test_trailing_up_leaves_exactly_one_resting_stop_real_simulated_broker(db):
     stops = broker.get_stop_orders()
     assert len(stops) == 1, f"expected exactly one resting stop, got {stops}"
     assert stops["AAPL"][0] == pytest.approx(102.0)  # new (higher) stop, old gone
+
+
+def test_trailing_up_with_no_known_prior_stop_keeps_the_new_stop(db):
+    """Post-restart scenario against the REAL SimulatedBroker: the broker has NO
+    resting stop registered for the ticker (fresh in-memory broker after a
+    restart), but the position is real and open in the DB. A trail-up must
+    still leave the just-placed new stop resting — get_stop_orders() returning
+    nothing for this ticker must NOT be read as "cancel everything for this
+    ticker" (order_id=None), or the just-placed new stop is immediately wiped
+    out by that ticker-wide sweep, leaving zero resting stops."""
+    from execution.paper_broker import SimulatedBroker
+    from system.config import RiskConfig
+    from execution.broker_interface import Position
+
+    broker = SimulatedBroker(initial_cash=100_000.0, slippage_bps=0.0)
+    broker._positions["AAPL"] = Position(
+        ticker="AAPL", qty=10.0, avg_entry_price=100.0, current_price=100.0
+    )
+    # No stop registered with the broker at all — simulates a fresh broker
+    # instance (e.g. after a bot restart) for a position that already exists
+    # in the persistent DB.
+    assert broker.get_stop_orders() == {}
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    broker.set_position_price("AAPL", 120.0)
+    portfolio = Portfolio(broker=broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    stops = broker.get_stop_orders()
+    assert len(stops) == 1, f"expected the just-placed new stop to survive, got {stops}"
+    assert stops["AAPL"][0] == pytest.approx(102.0)
