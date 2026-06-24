@@ -21,6 +21,17 @@
 > indicator edge cases fixed; `_llm_call` raises a retryable `ValueError` on missing/empty
 > response content and retries once without `temperature`/`seed` on a reasoning-tier-model
 > 400; Russell 1000 ticker fetch now normalizes class-share tickers too.
+> A fresh full re-review on 2026-06-23 re-verified all 18 items above as genuinely fixed,
+> then found and fixed 5 new pre-existing Critical bugs the same day: trail-stop cancel now
+> targets the old stop's specific order id (both brokers were cancelling/leaving the wrong
+> stop); `AlpacaBroker`'s stop cancel/lookup compared `str(enum)` against real `alpaca-py`
+> enums and never matched anything; the weekly-loss circuit breaker could suppress same-week
+> `DELEVERAGE` detection (now tracked as an independent flag, see `RiskManager.state`);
+> `GaussianHMM.fit()`'s Baum-Welch E-step added `transmat_` in linear scale instead of log
+> scale, degrading regime persistence on realistic overlapping data; the HTML scraper
+> fallback never normalized `transaction_type` to `buy`/`sell`, silently losing all
+> congressional signal during a JSON-API outage. See `TRADING_BOT_REVIEW_2026-06-23.md` at
+> repo root for full findings (also 7 High / 13 Medium / 13 Low items not yet acted on).
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -112,7 +123,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 708 tests; keep green (run from inside trading bot/)
+pytest                                 # 720 tests; keep green (run from inside trading bot/)
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 
