@@ -64,6 +64,9 @@ class Portfolio:
         if order.filled_avg_price > 0 and order.filled_qty > 0:
             actual_shares = order.filled_qty
             actual_entry_price = order.filled_avg_price
+            # Recompute position_pct from actual fill value / current NAV so that
+            # downstream consumers get the real allocation, not the pre-slippage estimate.
+            position_pct = actual_shares * actual_entry_price / nav * 100
 
         entry_commission = actual_shares * self.broker.get_commission_per_share()
         try:
@@ -99,30 +102,40 @@ class Portfolio:
 
     def close_position(self, ticker: str, shares: float, exit_price: float,
                        exit_reason: str, signal_id: int | None, entry_price: float,
-                       entry_date: str, signal_source: str = "congressional") -> None:
+                       entry_date: str, signal_source: str = "congressional") -> bool:
+        """Returns True if the position was booked closed, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
         order = self._place_sell_with_retry(ticker, shares)
-        if order.status == OrderStatus.REJECTED:
+        _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
+        if order.status in _NON_FILL:
+            reason = order.reject_reason or order.status.value
             emit_event(
                 log, EventType.ORDER_REJECTED,
-                f"Sell for {ticker} REJECTED after retries ({order.reject_reason}) — "
+                f"Sell for {ticker} {order.status.value} after retries ({reason}) — "
                 "position left intact for next reconcile/poll",
-                data={"ticker": ticker, "reason": order.reject_reason},
+                data={"ticker": ticker, "reason": reason, "status": order.status.value},
                 level=logging.ERROR,
                 alert=True,
             )
-            return
-        exit_commission = order.filled_qty * self.broker.get_commission_per_share()
+            return False
+        actual_filled = order.filled_qty if order.filled_qty > 0 else shares
+        if order.filled_qty <= 0:
+            log.warning(
+                "close_position: order.filled_qty=0 for %s — falling back to caller shares=%.4f",
+                ticker, shares,
+            )
+        exit_commission = actual_filled * self.broker.get_commission_per_share()
         self._book_closed_position(
             ticker=ticker,
             entry_price=entry_price,
             exit_price=exit_price,
-            shares=shares,
+            shares=actual_filled,
             entry_date=entry_date,
             exit_reason=exit_reason,
             signal_id=signal_id,
             signal_source=signal_source,
             exit_commission=exit_commission,
         )
+        return True
 
     def _book_closed_position(self, ticker: str, entry_price: float, exit_price: float,
                               shares: float, entry_date: str, exit_reason: str,
@@ -170,31 +183,40 @@ class Portfolio:
 
     def reduce_position(self, ticker: str, shares: float, exit_price: float,
                         signal_id: int | None, entry_price: float, entry_date: str,
-                        signal_source: str = "congressional") -> None:
+                        signal_source: str = "congressional") -> bool:
+        """Returns True if the partial close was booked, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
         sell_qty = shares / 2
         order = self._place_sell_with_retry(ticker, sell_qty)
-        if order.status == OrderStatus.REJECTED:
+        _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
+        if order.status in _NON_FILL:
+            reason = order.reject_reason or order.status.value
             emit_event(
                 log, EventType.ORDER_REJECTED,
-                f"Reduce sell for {ticker} REJECTED after retries ({order.reject_reason}) — "
+                f"Reduce sell for {ticker} {order.status.value} after retries ({reason}) — "
                 "shares left unchanged",
-                data={"ticker": ticker, "reason": order.reject_reason},
+                data={"ticker": ticker, "reason": reason, "status": order.status.value},
                 level=logging.ERROR,
                 alert=True,
             )
-            return
-        exit_commission = order.filled_qty * self.broker.get_commission_per_share()
+            return False
+        actual_filled = order.filled_qty if order.filled_qty > 0 else sell_qty
+        if order.filled_qty <= 0:
+            log.warning(
+                "reduce_position: order.filled_qty=0 for %s — falling back to sell_qty=%.4f",
+                ticker, sell_qty,
+            )
+        exit_commission = actual_filled * self.broker.get_commission_per_share()
         entry_commission = 0.0
         for pos in db.get_open_positions():
             if pos["ticker"] == ticker:
                 full_entry_comm = pos["entry_commission"] if pos["entry_commission"] is not None else 0.0
-                entry_commission = full_entry_comm * (sell_qty / shares) if shares > 0 else 0.0
+                entry_commission = full_entry_comm * (actual_filled / shares) if shares > 0 else 0.0
                 break
         db.log_closed_position(
             ticker=ticker,
             entry_price=entry_price,
             exit_price=exit_price,
-            shares=sell_qty,
+            shares=actual_filled,
             entry_date=entry_date,
             exit_date=date.today().isoformat(),
             exit_reason="reduce",
@@ -203,11 +225,12 @@ class Portfolio:
             costs=exit_commission,
             entry_commission=entry_commission,
         )
-        db.update_position_shares(ticker, shares - sell_qty)
+        db.update_position_shares(ticker, shares - actual_filled)
         # Cancel the stale full-qty stop; the next enforce_stop_losses poll re-places
         # a fresh trailing stop for the reduced share count.
         if hasattr(self.broker, "cancel_stop_order"):
             self.broker.cancel_stop_order(ticker)
+        return True
 
     def _find_matching_fill(self, ticker: str):
         """Look for a filled sell order for `ticker` in the broker's order history.
@@ -433,7 +456,7 @@ class Portfolio:
                 continue
             drop_from_peak = (peak - current) / peak * 100
             if drop_from_peak >= pct:
-                self.close_position(
+                if self.close_position(
                     ticker=ticker,
                     shares=pos["qty"],
                     exit_price=current,
@@ -442,8 +465,8 @@ class Portfolio:
                     entry_price=meta.get("entry_price") or pos["avg_entry_price"],
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=meta.get("signal_source", "congressional"),
-                )
-                closed.append(ticker)
+                ):
+                    closed.append(ticker)
         return closed
 
     def enforce_take_profits(
@@ -476,7 +499,7 @@ class Portfolio:
 
             if gain_pct >= he_pct:
                 # Hard exit: full close
-                self.close_position(
+                if self.close_position(
                     ticker=ticker,
                     shares=pos["qty"],
                     exit_price=current,
@@ -485,11 +508,11 @@ class Portfolio:
                     entry_price=entry,
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=source,
-                )
-                reduced.append(ticker)
+                ):
+                    reduced.append(ticker)
             elif gain_pct >= tp_pct and not meta.get("take_profit_taken", 0):
                 # Partial reduce: sell 50%, mark flag so we don't reduce again
-                self.reduce_position(
+                if self.reduce_position(
                     ticker=ticker,
                     shares=pos["qty"],
                     exit_price=current,
@@ -497,9 +520,9 @@ class Portfolio:
                     entry_price=entry,
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=source,
-                )
-                db.mark_take_profit_taken(ticker)
-                reduced.append(ticker)
+                ):
+                    db.mark_take_profit_taken(ticker)
+                    reduced.append(ticker)
         return reduced
 
     @staticmethod

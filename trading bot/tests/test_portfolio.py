@@ -211,10 +211,15 @@ def test_open_position_defaults_source_to_congressional(mock_broker, db):
 # --- Stop-loss DB write test ---
 
 def test_stop_loss_writes_closed_position_record(portfolio, mock_broker, db):
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
     mock_broker.get_positions.return_value = [{
         "ticker": "TSLA", "qty": 5.0,
         "current_price": 80.0, "avg_entry_price": 100.0,
     }]
+    _filled = Order(ticker="TSLA", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    _filled.status = OrderStatus.FILLED
+    _filled.filled_qty = 5.0
+    mock_broker.place_order.return_value = _filled
     db.insert_disclosures([{
         "id": "sl-wr-001", "politician": "J", "ticker": "TSLA",
         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
@@ -1015,3 +1020,248 @@ def test_trailing_up_with_no_known_prior_stop_keeps_the_new_stop(db):
     stops = broker.get_stop_orders()
     assert len(stops) == 1, f"expected the just-placed new stop to survive, got {stops}"
     assert stops["AAPL"][0] == pytest.approx(102.0)
+
+
+# ------------------------------------------------------------------
+# HIGH #3: CANCELLED / SUBMITTED sells are no-ops (like REJECTED)
+# ------------------------------------------------------------------
+
+def test_close_position_cancelled_is_noop(mock_broker, db):
+    """A CANCELLED sell must leave DB position intact and book nothing."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    cancelled = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    cancelled.status = OrderStatus.CANCELLED
+    mock_broker.place_order.return_value = cancelled
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    result = portfolio.close_position(
+        "AAPL", 10.0, exit_price=110.0, exit_reason="ai_exit",
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    assert result is False
+    assert any(p["ticker"] == "AAPL" for p in db.get_open_positions())
+    assert db.get_closed_positions() == []
+
+
+def test_close_position_submitted_is_noop(mock_broker, db):
+    """A SUBMITTED (poll-timeout) sell must leave DB position intact and book nothing."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    submitted = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    submitted.status = OrderStatus.SUBMITTED
+    mock_broker.place_order.return_value = submitted
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    result = portfolio.close_position(
+        "AAPL", 10.0, exit_price=110.0, exit_reason="ai_exit",
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    assert result is False
+    assert any(p["ticker"] == "AAPL" for p in db.get_open_positions())
+    assert db.get_closed_positions() == []
+
+
+def test_reduce_position_cancelled_is_noop(mock_broker, db):
+    """A CANCELLED partial sell must not change DB shares or book a trade."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    cancelled = Order(ticker="AAPL", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    cancelled.status = OrderStatus.CANCELLED
+    mock_broker.place_order.return_value = cancelled
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    result = portfolio.reduce_position(
+        "AAPL", 10.0, exit_price=110.0,
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    assert result is False
+    pos = [p for p in db.get_open_positions() if p["ticker"] == "AAPL"][0]
+    assert pos["shares"] == pytest.approx(10.0)
+    assert db.get_closed_positions() == []
+
+
+def test_reduce_position_submitted_is_noop(mock_broker, db):
+    """A SUBMITTED (poll-timeout) partial sell must not change DB shares or book a trade."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    submitted = Order(ticker="AAPL", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    submitted.status = OrderStatus.SUBMITTED
+    mock_broker.place_order.return_value = submitted
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    result = portfolio.reduce_position(
+        "AAPL", 10.0, exit_price=110.0,
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    assert result is False
+    pos = [p for p in db.get_open_positions() if p["ticker"] == "AAPL"][0]
+    assert pos["shares"] == pytest.approx(10.0)
+    assert db.get_closed_positions() == []
+
+
+# ------------------------------------------------------------------
+# HIGH #1 / HIGH #2: enforce methods gate on actual fill
+# ------------------------------------------------------------------
+
+def test_enforce_take_profits_rejected_not_marked_taken(mock_broker, db):
+    """If reduce_position's sell is REJECTED, take_profit_taken must NOT be set,
+    and the ticker must NOT appear in the returned reduced list."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    from system.config import RiskConfig
+    rejected = Order(ticker="XOM", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(take_profit_pct=25.0))
+    mock_broker.get_positions.return_value = [{
+        "ticker": "XOM", "qty": 10.0, "current_price": 130.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "tp-rej-01", "politician": "J", "ticker": "XOM",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("tp-rej-01", "XOM", 8, 5.0, "Good", [])
+    db.insert_position("XOM", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+
+    reduced = p.enforce_take_profits(take_profit_pct=25.0)
+
+    assert "XOM" not in reduced
+    pos = [pos2 for pos2 in db.get_open_positions() if pos2["ticker"] == "XOM"][0]
+    assert dict(pos).get("take_profit_taken", 0) == 0
+
+
+def test_enforce_stop_losses_rejected_not_in_closed_list(mock_broker, db):
+    """If close_position's sell is REJECTED, the ticker must NOT appear in the closed list."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    from system.config import RiskConfig
+    rejected = Order(ticker="TSLA", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": 5.0, "current_price": 80.0, "avg_entry_price": 100.0,
+    }]
+    mock_broker.get_stop_orders.return_value = {}
+    db.insert_position("TSLA", 100.0, 5.0, 5.0, "2026-04-01", None, "Test", stop_pct=15.0)
+
+    closed = p.enforce_stop_losses(stop_loss_pct=15.0)
+
+    assert "TSLA" not in closed
+    assert any(pos["ticker"] == "TSLA" for pos in db.get_open_positions())
+
+
+def test_enforce_take_profits_hard_exit_rejected_not_in_reduced_list(mock_broker, db):
+    """If close_position's sell is REJECTED for a hard exit, ticker must NOT be in reduced list."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    from system.config import RiskConfig
+    rejected = Order(ticker="XOM", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(hard_exit_pct=50.0))
+    mock_broker.get_positions.return_value = [{
+        "ticker": "XOM", "qty": 10.0, "current_price": 160.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_disclosures([{
+        "id": "he-rej-01", "politician": "J", "ticker": "XOM",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
+        "transaction_type": "purchase", "amount_range": "$50,001 - $100,000",
+        "scraped_at": "2026-04-26T08:00:00",
+    }])
+    sid = db.insert_signal("he-rej-01", "XOM", 8, 5.0, "Good", [])
+    db.insert_position("XOM", 100.0, 10.0, 5.0, "2026-04-01", sid, "Test")
+
+    reduced = p.enforce_take_profits(hard_exit_pct=50.0)
+
+    assert "XOM" not in reduced
+
+
+# ------------------------------------------------------------------
+# MEDIUM #1: Partial fills booked at order.filled_qty, not caller shares
+# ------------------------------------------------------------------
+
+def test_close_position_uses_filled_qty_not_caller_shares(mock_broker, db):
+    """On a partial fill, close_position must book order.filled_qty, not caller-supplied shares."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    partial = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    partial.status = OrderStatus.FILLED
+    partial.filled_qty = 8.0  # broker only filled 8 of the 10 requested
+    mock_broker.place_order.return_value = partial
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    portfolio.close_position(
+        "AAPL", 10.0, exit_price=110.0, exit_reason="ai_exit",
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    rows = db.get_closed_positions()
+    assert len(rows) == 1
+    assert rows[0]["shares"] == pytest.approx(8.0)  # actual fill, not caller-supplied 10
+
+
+def test_reduce_position_uses_filled_qty_not_caller_shares(mock_broker, db):
+    """On a partial reduce fill, use order.filled_qty; remaining shares = original - filled_qty."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    partial = Order(ticker="AAPL", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    partial.status = OrderStatus.FILLED
+    partial.filled_qty = 3.0  # broker only filled 3 of 5 sell_qty
+    mock_broker.place_order.return_value = partial
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    portfolio.reduce_position(
+        "AAPL", 10.0, exit_price=110.0,
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    rows = db.get_closed_positions()
+    assert len(rows) == 1
+    assert rows[0]["shares"] == pytest.approx(3.0)  # actual fill, not sell_qty=5
+
+    remaining = [p for p in db.get_open_positions() if p["ticker"] == "AAPL"]
+    assert remaining[0]["shares"] == pytest.approx(7.0)  # 10 - 3
+
+
+# ------------------------------------------------------------------
+# MEDIUM #2: position_pct recomputed from actual fill
+# ------------------------------------------------------------------
+
+def test_open_position_recomputes_position_pct_from_actual_fill(mock_broker, db):
+    """position_pct stored in DB must reflect actual fill value / NAV, not pre-slippage estimate."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+
+    filled_order = Order(
+        ticker="AAPL", side=OrderSide.BUY, qty=50.0, order_type=OrderType.MARKET,
+    )
+    filled_order.status = OrderStatus.FILLED
+    filled_order.filled_qty = 45.0
+    filled_order.filled_avg_price = 102.0
+    mock_broker.place_order.return_value = filled_order
+    mock_broker.get_positions.return_value = []
+
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("AAPL", 5.0, None, "test", entry_price=100.0)
+
+    # NAV = 100_000 (all cash, no positions)
+    # Actual fill value = 45 * 102.0 = 4590
+    # Expected position_pct = 4590 / 100_000 * 100 = 4.59
+    pos = db.get_open_positions()[0]
+    assert pos["position_pct"] == pytest.approx(4.59)
