@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, UTC
@@ -151,6 +152,10 @@ def get_conn():
     finally:
         conn.close()
 
+_ADD_COLUMN_RE = re.compile(
+    r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)", re.IGNORECASE
+)
+
 _MIGRATIONS: list[tuple[int, str, str]] = [
     (
         1,
@@ -191,22 +196,25 @@ def _migrate_db() -> None:
         for version, description, sql in _MIGRATIONS:
             if version in applied:
                 continue
-            try:
-                conn.execute(sql)
-                conn.execute(
-                    "INSERT INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)",
-                    (version, description, datetime.now(UTC).isoformat()),
-                )
-            except Exception as exc:
-                if "duplicate column" in str(exc).lower():
+            m = _ADD_COLUMN_RE.search(sql)
+            if m:
+                table_name, col_name = m.group(1), m.group(2)
+                existing_cols = {
+                    row[1] for row in conn.execute(
+                        f"PRAGMA table_info({table_name})"
+                    ).fetchall()
+                }
+                if col_name in existing_cols:
                     conn.execute(
                         "INSERT OR IGNORE INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)",
                         (version, f"{description} (retroactive)", datetime.now(UTC).isoformat()),
                     )
-                else:
-                    raise RuntimeError(
-                        f"Migration {version} ('{description}') failed: {exc}"
-                    ) from exc
+                    continue
+            conn.execute(sql)
+            conn.execute(
+                "INSERT INTO schema_version (version, description, applied_at) VALUES (?, ?, ?)",
+                (version, description, datetime.now(UTC).isoformat()),
+            )
 
 
 def init_db() -> None:

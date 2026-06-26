@@ -189,3 +189,24 @@ def test_build_feature_matrix_with_scaler_aligns_by_name_for_middle_column():
     # vix_level/vix_change (the actually-missing middle columns) standardise to ~0.
     assert np.allclose(X[:, 4], 0.0, atol=1e-8)
     assert np.allclose(X[:, 5], 0.0, atol=1e-8)
+
+
+def test_vol_z_uses_cfg_vol_window():
+    """vol_z must respect cfg.vol_window, not hardcode a 20-bar window."""
+    rng = np.random.default_rng(0)
+    n = 15
+    dates = pd.date_range("2020-01-01", periods=n, freq="B")
+    close = 100 * np.cumprod(1 + rng.normal(0.0003, 0.01, n))
+    volume = rng.integers(1_000_000, 10_000_000, n).astype(float)
+    data = pd.DataFrame({"close": close, "volume": volume}, index=dates)
+
+    cfg = FeatureConfig(vol_window=10, trend_window=10)
+    feat = compute_features(data, cfg)
+
+    # With vol_window=10 (min_periods=5): all rows surviving the core dropna should
+    # have non-NaN vol_z.  A hardcoded 20-bar window (min_periods=10) leaves the
+    # first few surviving rows as NaN.
+    assert feat["vol_z"].isna().sum() == 0, (
+        "vol_z contains NaN — likely still using hardcoded 20-bar window "
+        "instead of cfg.vol_window"
+    )

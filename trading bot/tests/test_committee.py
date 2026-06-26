@@ -124,3 +124,33 @@ def test_build_committee_map_from_yaml(mocker):
     result = cm._build_committee_map()
     assert "jane smith" in result
     assert "Senate Banking, Housing, and Urban Affairs" in result["jane smith"]
+
+
+def test_fallback_name_match_strips_jr_suffix(mocker):
+    """Fallback must match 'John Smith Jr.' against map entry 'John Smith'."""
+    import bot.committee as cm
+    cm._committee_map_cache = None
+    mocker.patch("bot.committee._build_committee_map", return_value={
+        "john smith": ["Senate Banking"],
+    })
+    from bot.committee import _fetch_committees_from_yaml
+    result = _fetch_committees_from_yaml("John Smith Jr.")
+    assert result == ("Senate Banking",), (
+        f"Expected ('Senate Banking',) but got {result!r}; "
+        "suffix 'Jr.' should be stripped before name comparison"
+    )
+
+
+def test_fallback_name_match_strips_roman_numeral_suffix(mocker):
+    """Fallback must match 'Jane Doe III' against map entry 'Jane Doe'."""
+    import bot.committee as cm
+    cm._committee_map_cache = None
+    mocker.patch("bot.committee._build_committee_map", return_value={
+        "jane doe": ["House Ways and Means"],
+    })
+    from bot.committee import _fetch_committees_from_yaml
+    result = _fetch_committees_from_yaml("Jane Doe III")
+    assert result == ("House Ways and Means",), (
+        f"Expected ('House Ways and Means',) but got {result!r}; "
+        "suffix 'III' should be stripped before name comparison"
+    )
