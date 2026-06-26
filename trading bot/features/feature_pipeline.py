@@ -70,8 +70,8 @@ def compute_features(
 
     # --- Volume z-score (relative volume) --------------------------------
     df["vol_z"] = (
-        df["volume"] - df["volume"].rolling(20, min_periods=10).mean()
-    ) / (df["volume"].rolling(20, min_periods=10).std() + 1e-8)
+        df["volume"] - df["volume"].rolling(cfg.vol_window, min_periods=cfg.vol_window // 2).mean()
+    ) / (df["volume"].rolling(cfg.vol_window, min_periods=cfg.vol_window // 2).std() + 1e-8)
 
     # --- VIX level -------------------------------------------------------
     if cfg.use_vix and "vix" in df.columns:

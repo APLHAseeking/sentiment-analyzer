@@ -13,6 +13,16 @@ log = logging.getLogger(__name__)
 
 _CACHE_TTL_SECONDS = 30 * 24 * 3600  # 30 days — committee memberships change slowly
 
+# Honorific suffixes to strip before fuzzy name comparison
+_NAME_SUFFIXES: frozenset[str] = frozenset({"jr", "sr", "ii", "iii", "iv", "v"})
+
+
+def _strip_name_suffixes(parts: list[str]) -> list[str]:
+    """Remove trailing honorific suffixes (Jr., III, etc.) from a split name token list."""
+    while parts and parts[-1].rstrip(".") in _NAME_SUFFIXES:
+        parts = parts[:-1]
+    return parts
+
 COMMITTEE_SECTOR_MAP: dict[str, list[str]] = {
     "Senate Banking": ["Financial Services", "Real Estate"],
     "House Financial Services": ["Financial Services", "Real Estate"],
@@ -139,13 +149,13 @@ def _fetch_committees_from_yaml(name: str) -> tuple[str, ...]:
     committees = committee_map.get(key, [])
     if committees:
         return tuple(committees)
-    # Fallback: strict full first + last name match
+    # Fallback: first + last name match after stripping suffixes and ignoring middle initials
     name_lower = name.strip().lower()
-    name_parts = name_lower.split()
+    name_parts = _strip_name_suffixes(name_lower.split())
     for map_name, map_committees in committee_map.items():
         if map_name.lower() == name_lower:
             return tuple(map_committees)
-        map_parts = map_name.lower().split()
+        map_parts = _strip_name_suffixes(map_name.lower().split())
         if (len(name_parts) >= 2 and len(map_parts) >= 2
                 and name_parts[-1] == map_parts[-1]
                 and name_parts[0] == map_parts[0]):

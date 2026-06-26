@@ -188,6 +188,40 @@ def test_log_regime_transition(db):
     assert int(rows[0]["n_regimes"]) == 3
 
 
+def test_migration_idempotent_column_already_exists(tmp_path, monkeypatch):
+    """If a migration column already exists (partial migration), _migrate_db() must not raise.
+
+    This simulates a DB where the column was added outside the migration system
+    (e.g. a manual ALTER TABLE or a schema rebuild), so the column is present but
+    schema_version has no record of the migration.  The fix uses PRAGMA table_info
+    instead of catching 'duplicate column' exception text.
+    """
+    import importlib
+    import sqlite3
+
+    monkeypatch.setenv("DB_PATH", str(tmp_path / "migrate_test.db"))
+    import bot.db
+    importlib.reload(bot.db)
+
+    # Build the base schema (tables only, no migrations applied yet).
+    db_path = str(tmp_path / "migrate_test.db")
+    conn = sqlite3.connect(db_path)
+    conn.executescript(bot.db._SCHEMA)
+    conn.commit()
+
+    # Manually add the column that migration v5 would add — simulating a partial migration
+    # where the column exists in the DB but schema_version has no record of v5.
+    # (v5 = stop_pct; confirmed absent from the base _SCHEMA CREATE TABLE.)
+    conn.execute(
+        "ALTER TABLE positions ADD COLUMN stop_pct REAL NOT NULL DEFAULT 15.0"
+    )
+    conn.commit()
+    conn.close()
+
+    # init_db() must not raise even though v5's column already exists.
+    bot.db.init_db()
+
+
 def test_get_regime_transitions_empty(db):
     rows = db.get_regime_transitions(days=90)
     assert rows == []
