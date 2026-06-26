@@ -104,7 +104,7 @@ def format_research_for_prompt(report: ResearchReport) -> str:
         if report.sentiment_themes:
             sentiment_str += f" — themes: {', '.join(report.sentiment_themes)}"
         out += f"Sentiment ({report.sentiment_news_count} headlines, AI-scored): {sentiment_str}\n"
-    out += f"Recent headlines:\n{headline_lines}\n---"
+    out += f"Recent headlines:\n<external_data>\n{headline_lines}\n</external_data>\n---"
     return out
 
 
@@ -232,8 +232,8 @@ def gather_research(
         # Build rich block (title + summary) for sentiment scoring
         news_texts = []
         for item in news_items:
-            title = item.get("content", {}).get("title", "")
-            summary = item.get("content", {}).get("summary", "")
+            title = (item.get("content") or {}).get("title", "")
+            summary = (item.get("content") or {}).get("summary", "")
             if title:
                 entry = f"- {title}"
                 if summary:
@@ -244,9 +244,9 @@ def gather_research(
 
         # headlines field: titles only (first 8, for prompt display)
         headlines = tuple(
-            item.get("content", {}).get("title", "")
+            (item.get("content") or {}).get("title", "")
             for item in news_items[:8]
-            if item.get("content", {}).get("title")
+            if (item.get("content") or {}).get("title")
         )
 
         sentiment_label, sentiment_strength, sentiment_themes = (

@@ -29,7 +29,10 @@ def _force_anthropic_provider(mocker):
 def _make_anthropic_resp(text: str):
     """Build a mock that mimics anthropic.Message with .content[0].text."""
     resp = MagicMock()
-    resp.content = [MagicMock(text=text)]
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    resp.content = [block]
     return resp
 
 
@@ -768,3 +771,134 @@ def test_llm_call_openai_retries_without_temperature_seed_on_bad_request(mocker)
     assert "seed" in first_kwargs
     assert "temperature" not in second_kwargs
     assert "seed" not in second_kwargs
+
+
+# ============================================================
+# HIGH #4: parse_*_response KeyError/TypeError → ValueError
+# ============================================================
+
+def test_parse_entry_missing_conviction_raises_value_error():
+    """KeyError on missing 'conviction' must become ValueError so
+    _call_with_retry can retry rather than propagate an unexpected exception."""
+    raw = json.dumps({"entry": "buy", "position_pct": 4.5,
+                      "rationale": "Ok", "risk_flags": []})
+    with pytest.raises(ValueError, match="conviction"):
+        parse_entry_response(raw)
+
+
+def test_parse_entry_null_conviction_raises_value_error():
+    """TypeError when float(None) must become ValueError (not kill the pipeline)."""
+    raw = json.dumps({"conviction": None, "entry": "buy", "position_pct": 4.5,
+                      "rationale": "Ok", "risk_flags": []})
+    with pytest.raises(ValueError, match="conviction"):
+        parse_entry_response(raw)
+
+
+def test_parse_exit_missing_action_raises_value_error():
+    """Missing 'action' must raise ValueError, not KeyError."""
+    raw = json.dumps({"rationale": "Hold the position"})
+    with pytest.raises(ValueError):
+        parse_exit_response(raw)
+
+
+def test_parse_technical_missing_conviction_raises_value_error():
+    """Missing 'conviction' in technical response must raise ValueError."""
+    raw = json.dumps({
+        "entry": "buy", "setup_type": "breakout",
+        "trend_alignment": "bullish", "momentum_state": "rising",
+        "volume_confirmation": "confirmed", "relative_strength": "outperforming",
+        "entry_trigger": "breakout", "invalidation_price": 95.0,
+        "target_price": 115.0, "reward_risk": 3.0, "key_levels": "95, 115",
+        "conflicts": [], "rationale": "Clean setup", "risk_flags": [],
+    })
+    with pytest.raises(ValueError, match="conviction"):
+        parse_technical_response(raw, last_close=100.0)
+
+
+# ============================================================
+# HIGH #5: Prompt injection — external_data XML tags
+# ============================================================
+
+def test_entry_system_prompt_contains_external_data_warning():
+    """Relevant system prompts must include the untrusted data instruction."""
+    system = _build_entry_system("congressional", has_disclosure=True)
+    assert "untrusted" in system.lower()
+
+
+def test_exit_system_prompt_contains_external_data_warning():
+    """_EXIT_SYSTEM must include the untrusted data instruction."""
+    from bot.ai_analyst import _EXIT_SYSTEM
+    assert "untrusted" in _EXIT_SYSTEM.lower()
+
+
+# ============================================================
+# MEDIUM #5: Anthropic content[0] — find first text block
+# ============================================================
+
+def test_llm_call_anthropic_returns_text_when_thinking_block_is_first(mocker):
+    """When content[0] is a thinking block (type != 'text'), skip it and return
+    the first text block."""
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings",
+                 dataclasses.replace(real_settings, llm_provider="anthropic"))
+
+    thinking_block = MagicMock()
+    thinking_block.type = "thinking"
+
+    text_block = MagicMock()
+    text_block.type = "text"
+    text_block.text = "actual response"
+
+    resp = MagicMock()
+    resp.content = [thinking_block, text_block]
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = resp
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    result = _llm_call("system prompt", "user prompt")
+    assert result == "actual response"
+
+
+def test_llm_call_anthropic_raises_value_error_when_no_text_block(mocker):
+    """If Anthropic returns only non-text blocks, raise ValueError so
+    _call_with_retry can retry."""
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings",
+                 dataclasses.replace(real_settings, llm_provider="anthropic"))
+
+    thinking_block = MagicMock()
+    thinking_block.type = "thinking"
+
+    resp = MagicMock()
+    resp.content = [thinking_block]
+
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = resp
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+
+    from bot.ai_analyst import _llm_call
+    with pytest.raises(ValueError, match="no text block"):
+        _llm_call("system prompt", "user prompt")
+
+
+# ============================================================
+# MEDIUM #7: conviction round(float()) not int()
+# ============================================================
+
+def test_parse_entry_conviction_rounds_float_up():
+    """round(float(7.9)) should give conviction=8, not int(7.9)=7."""
+    raw = json.dumps({"conviction": 7.9, "position_pct": 4.5,
+                      "rationale": "Good", "entry": "buy", "risk_flags": []})
+    score = parse_entry_response(raw)
+    assert score.conviction == 8
+
+
+def test_parse_technical_conviction_rounds_float_up():
+    """round(float(7.9)) in parse_technical_response gives conviction=8."""
+    payload = _technical_payload(conviction=7.9)
+    score = parse_technical_response(payload, last_close=100.0)
+    assert score.conviction == 8

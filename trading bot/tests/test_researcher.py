@@ -272,3 +272,44 @@ def test_gather_research_batch_handles_unexpected_exception(mocker):
     result = gather_research_batch(["AAPL", "FAIL"])
     assert result["FAIL"] is None
     assert "AAPL" in result
+
+
+# ============================================================
+# MEDIUM #6: item["content"] can be None
+# ============================================================
+
+def test_gather_research_handles_none_content_in_news_item(mocker):
+    """A news item where content=None must not crash gather_research.
+    The None item should be silently skipped; the rest should be processed."""
+    mock_ticker = _make_mock_ticker(mocker)
+    mock_ticker.news = [
+        {"content": None},
+        {"content": {"title": "Valid headline", "summary": "Valid summary"}},
+    ]
+    report = gather_research("AAPL")
+    assert report is not None
+    assert "Valid headline" in report.headlines
+
+
+# ============================================================
+# HIGH #5 (researcher side): format_research_for_prompt external_data tags
+# ============================================================
+
+def test_format_research_headlines_wrapped_in_external_data_tags():
+    """format_research_for_prompt must wrap the headline block in
+    <external_data>...</external_data> to guard against prompt injection."""
+    report = ResearchReport(
+        ticker="AAPL", company_name="Apple Inc.", sector="Technology",
+        market_cap=3e12, pe_trailing=28.0, pe_forward=24.0, pb_ratio=45.0,
+        ps_ratio=8.5, peg_ratio=2.1, ev_ebitda=22.0, roe=1.45, roa=0.28,
+        profit_margin=0.25, debt_to_equity=150.0, current_ratio=0.99,
+        free_cash_flow=9e10, revenue_growth=0.08, earnings_growth=0.12,
+        beta=1.2, week52_high=200.0, week52_low=120.0,
+        momentum_1m=2.0, momentum_3m=5.0, short_interest_pct=0.8,
+        avg_daily_volume_usd=1e10, analyst_target=210.0, analyst_rating="Buy",
+        num_analysts=40, headlines=("Apple reports record earnings",),
+    )
+    formatted = format_research_for_prompt(report)
+    assert "<external_data>" in formatted
+    assert "</external_data>" in formatted
+    assert "Apple reports record earnings" in formatted
