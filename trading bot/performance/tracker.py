@@ -28,10 +28,14 @@ class PerformanceTracker:
         closed = db.get_closed_positions()
         if not closed:
             return pd.Series(dtype=float)
+        # Use realized_pnl (net of both-side commissions) divided by entry cost so
+        # the return is commission-inclusive, matching backtesting/simulation.py.
+        # realized_pnl is stored as: (exit_price * shares - exit_commission)
+        #                           - (entry_price * shares + entry_commission)
         rets = [
-            (float(r["exit_price"]) - float(r["entry_price"])) / float(r["entry_price"])
+            float(r["realized_pnl"]) / (float(r["entry_price"]) * float(r["shares"]))
             for r in closed
-            if float(r["entry_price"]) > 0
+            if float(r["entry_price"]) > 0 and float(r["shares"]) > 0
         ]
         return pd.Series(rets, name="trade_return")
 

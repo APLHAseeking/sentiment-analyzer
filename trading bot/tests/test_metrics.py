@@ -253,3 +253,40 @@ def test_compute_all_no_attribution_without_benchmark():
     result = compute_all(eq)
     for key in ("beta", "alpha_annualized_pct", "information_ratio", "downside_beta"):
         assert key not in result, f"Unexpected key: {key}"
+
+
+def test_sortino_ratio_textbook_formula():
+    """Sortino must use sqrt(mean(min(r-target,0)^2)) over ALL obs, not std of neg subset.
+
+    5-day series: [0.01, 0.02, -0.01, -0.02, 0.005], target=0 (risk_free=0).
+
+    Old (wrong) formula: downside_dev = std([-0.01, -0.02]) = 0.00707...
+      sortino = mean / 0.00707 * sqrt(252) = 2.24...
+
+    Correct formula: downside_sq = [0, 0, 1e-4, 4e-4, 0]
+      downside_dev = sqrt(mean) = sqrt(1e-4) = 0.01
+      sortino = mean / 0.01 * sqrt(252) = 0.001 / 0.01 * 15.875... = 1.5875...
+    """
+    import math
+    daily = [0.01, 0.02, -0.01, -0.02, 0.005]
+    # Build an equity curve from these daily returns
+    equity_vals = [100.0]
+    for r in daily:
+        equity_vals.append(equity_vals[-1] * (1 + r))
+    eq = _equity(equity_vals)
+
+    result = sortino_ratio(eq, risk_free=0.0, trading_days=252)
+
+    # Hand-computed correct value
+    import numpy as np
+    r = np.array(daily)
+    target = 0.0
+    downside_sq = np.minimum(r - target, 0.0) ** 2
+    downside_dev = np.sqrt(downside_sq.mean())
+    expected = float((r.mean() - target) / downside_dev * np.sqrt(252))
+
+    assert result == pytest.approx(expected, rel=1e-6), (
+        f"Sortino={result:.6f} but textbook formula gives {expected:.6f}. "
+        "Likely using std of negative-return subset instead of downside deviation "
+        "over all observations."
+    )

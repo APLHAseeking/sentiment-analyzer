@@ -98,9 +98,18 @@ def attribute_returns(
     """
     # Align all series on common dates (inner join)
     combined = pd.concat([strategy_daily_returns.rename("_strat"), factor_returns], axis=1).dropna()
-    if len(combined) < len(factor_returns.columns) + 2:
+    n_factors = len(factor_returns.columns)
+    regression_min = n_factors + 2  # minimum for OLS to be identified
+    _LOW_SAMPLE_THRESHOLD = 30      # below this, HAC dof (n-k-1) ≤ 28; warn but still compute
+    if len(combined) < regression_min:
         log.warning("Too few aligned observations (%d) for attribution — returning zeros", len(combined))
         return _empty_result(factor_returns.columns.tolist())
+    low_sample_warning = len(combined) < _LOW_SAMPLE_THRESHOLD
+    if low_sample_warning:
+        log.warning(
+            "Attribution has only %d observations (< %d); HAC t-statistics are unreliable.",
+            len(combined), _LOW_SAMPLE_THRESHOLD,
+        )
 
     excess_strat = combined["_strat"]
     if not isinstance(risk_free_daily, (int, float)):
@@ -168,6 +177,7 @@ def attribute_returns(
         "r_squared": round(r2, 4),
         "factors": factor_results,
         "n_obs": n,
+        "low_sample_warning": low_sample_warning,
     }
 
 
@@ -180,4 +190,5 @@ def _empty_result(factor_names: list[str]) -> dict:
         "r_squared": 0.0,
         "factors": {f: {"beta": 0.0, "tstat": 0.0} for f in factor_names},
         "n_obs": 0,
+        "low_sample_warning": True,
     }
