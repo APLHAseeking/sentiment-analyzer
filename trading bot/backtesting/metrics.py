@@ -51,14 +51,16 @@ def sortino_ratio(equity: pd.Series, risk_free: float = 0.04, trading_days: int 
     rets = daily_returns(equity)
     if len(rets) < 2:
         return 0.0
-    excess = rets - risk_free / trading_days
-    neg_rets = rets[rets < 0]
-    if len(neg_rets) == 0:
-        return 0.0  # no downside — undefined; return 0 rather than NaN
-    downside = neg_rets.std()
-    if downside == 0 or pd.isna(downside):
+    r = np.asarray(rets)
+    target = risk_free / trading_days
+    # Textbook downside deviation: sqrt(mean(min(r - target, 0)^2)) over ALL obs,
+    # not std of the negative-return subset (which is centred on the subset mean
+    # and inflates Sortino by ~40%).
+    downside_sq = np.minimum(r - target, 0.0) ** 2
+    downside_dev = np.sqrt(downside_sq.mean())
+    if downside_dev == 0:
         return 0.0
-    return float(excess.mean() / downside * np.sqrt(trading_days))
+    return float((r.mean() - target) / downside_dev * np.sqrt(trading_days))
 
 
 def max_drawdown(equity: pd.Series) -> float:

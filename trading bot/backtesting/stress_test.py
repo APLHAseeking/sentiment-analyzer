@@ -183,6 +183,10 @@ def apply_stress_scenario(
     n_bars = max((len(s) for s in stressed.values()), default=0)
     start_idx = max(1, n_bars // 4)
 
+    # NOTE: when both crash_pct and vol_multiplier are set, the combined effect is
+    # order-dependent: applying the crash first then amplifying log-returns gives a
+    # different outcome than the reverse.  DEFAULT_STRESS_SCENARIOS intentionally
+    # avoids combining them so each scenario tests exactly one stressor at a time.
     if scenario.crash_pct is not None:
         stressed = _apply_crash(stressed, scenario.crash_pct,
                                 start_idx, scenario.crash_duration_days)

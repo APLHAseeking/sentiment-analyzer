@@ -529,3 +529,205 @@ def test_fill_delay_one_enters_on_next_bar():
     )
     # Entry should be at the 2026-01-05 price (110), not 2026-01-02 (100)
     assert sim.trades[0].entry_price == pytest.approx(110.0)
+
+
+# ---------------------------------------------------------------------------
+# HIGH #6: benchmarks.py random_allocation commission double-penalty
+# ---------------------------------------------------------------------------
+
+def test_random_allocation_commission_deducted_once():
+    """Commission must be charged as an explicit separate cost, not embedded in share count.
+
+    With commission embedded in shares (buggy): shares = (alloc - commission) / price.
+    With commission as explicit cost (correct): shares = alloc / price, cash -= alloc + commission.
+
+    Both versions yield the same equity at flat prices, but differ over a round-trip.
+    Correct round-trip cost = 2 * alloc * commission_pct/100.
+    Buggy round-trip cost = 2 * alloc * commission_pct/100 - commission^2/alloc
+                          ≈ 2*commission - 1  (for 1% commission on $10k alloc).
+
+    The test uses the SAME seed for both runs so the entry fires on the same bar,
+    making the comparison seed-independent.
+    """
+    from backtesting.benchmarks import random_allocation
+    import pandas as pd
+
+    initial_cash = 200_000.0
+    position_pct = 5.0         # alloc = $10,000
+    commission_pct = 1.0       # 1% → $100 per entry, $100 per exit at flat price
+
+    dates = pd.date_range("2020-01-01", periods=50, freq="B")
+    price_series = pd.Series([100.0] * 50, index=dates)  # flat, 1 entry fires
+
+    eq_no_comm = random_allocation(
+        price_series, n_signals=1, avg_hold_days=20,
+        position_pct=position_pct, initial_cash=initial_cash,
+        seed=42, slippage_bps=0.0, commission_pct=0.0,
+    )
+    eq_with_comm = random_allocation(
+        price_series, n_signals=1, avg_hold_days=20,
+        position_pct=position_pct, initial_cash=initial_cash,
+        seed=42, slippage_bps=0.0, commission_pct=commission_pct,
+    )
+
+    alloc = initial_cash * position_pct / 100  # = 10,000
+    expected_round_trip_cost = 2 * alloc * commission_pct / 100  # = 200.0
+
+    final_diff = float(eq_no_comm.iloc[-1]) - float(eq_with_comm.iloc[-1])
+
+    assert final_diff == pytest.approx(expected_round_trip_cost, abs=1e-6), (
+        f"Round-trip commission cost should be {expected_round_trip_cost:.2f} "
+        f"(commission charged as explicit cost). Got diff={final_diff:.6f}. "
+        f"Embedding commission in share count gives a smaller diff "
+        f"({expected_round_trip_cost - (alloc * commission_pct / 100) ** 2 / alloc:.2f}) "
+        f"because fewer shares means smaller exit commission."
+    )
+
+
+# ---------------------------------------------------------------------------
+# HIGH #7: tracker.py trade_returns ignores commission
+# ---------------------------------------------------------------------------
+
+def test_tracker_trade_returns_net_of_commission():
+    """PerformanceTracker.trade_returns() must return net-of-commission returns.
+
+    When a position is closed with a realized_pnl that includes commission,
+    the return should be realized_pnl / (entry_price * shares), not
+    (exit_price - entry_price) / entry_price.
+    """
+    import sqlite3
+    from unittest.mock import patch
+    from performance.tracker import PerformanceTracker
+
+    # Simulate a closed position:
+    # entry_price=100, exit_price=110, shares=10 → gross return = 10%
+    # realized_pnl = (110*10 - exit_commission) - (100*10 + entry_commission)
+    # With entry_commission=$1 and exit_commission=$1.10 (0.1% each):
+    # gross_proceeds = 110*10 - 1.10 = 1098.90
+    # entry_cost = 100*10 + 1.00 = 1001.00
+    # realized_pnl = 1098.90 - 1001.00 = 97.90
+    # Net return = 97.90 / (100 * 10) = 0.0979 (9.79%)
+    # Gross return (ignoring commission) = (110 - 100) / 100 = 0.10 (10%)
+    entry_price = 100.0
+    exit_price = 110.0
+    shares = 10.0
+    entry_commission = 1.00
+    exit_commission = 1.10
+    realized_pnl = (exit_price * shares - exit_commission) - (entry_price * shares + entry_commission)
+    expected_net_return = realized_pnl / (entry_price * shares)
+    gross_return = (exit_price - entry_price) / entry_price  # 0.10
+
+    # Build a fake Row-like dict
+    fake_row = {
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "shares": shares,
+        "realized_pnl": realized_pnl,
+    }
+
+    class FakeRow(dict):
+        def __getitem__(self, key):
+            return super().__getitem__(key)
+
+    fake_closed = [FakeRow(fake_row)]
+
+    with patch("performance.tracker.db.get_closed_positions", return_value=fake_closed):
+        tracker = PerformanceTracker()
+        result = tracker.trade_returns()
+
+    assert len(result) == 1
+    assert result.iloc[0] == pytest.approx(expected_net_return, rel=1e-6), (
+        f"Expected net return {expected_net_return:.6f} (commission-adjusted), "
+        f"got {result.iloc[0]:.6f}. Gross (ignoring commission) = {gross_return:.6f}."
+    )
+    # Must NOT equal the gross return (which ignores commission)
+    assert result.iloc[0] != pytest.approx(gross_return, rel=1e-6), (
+        "trade_returns is returning the gross (commission-ignoring) return, "
+        "not the net return. This breaks live-vs-backtest comparability."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Test audit: single-variable slippage companion test
+# ---------------------------------------------------------------------------
+
+def test_market_impact_vary_position_pct_only():
+    """Companion to test_market_impact_slippage_larger_order_incurs_more_slippage.
+
+    Holds adv_usd constant at $1,000,000 and varies only position_pct.
+    A larger position_pct → larger order → larger fraction of ADV → more slippage.
+    This guards against formulas that pass when BOTH variables move together.
+    """
+    dates = pd.date_range("2020-01-01", periods=5, freq="B")
+    price_data = {"AAPL": pd.Series([100.0] * 5, index=dates)}
+    adv_usd = 1_000_000.0  # constant
+
+    # Small position: 1% of NAV → $1,000 order → 0.1% of ADV
+    signals_small = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                      "conviction": 7, "position_pct": 1.0, "regime_label": "bull",
+                      "adv_usd": adv_usd}]
+    # Large position: 8% of NAV → $8,000 order → 0.8% of ADV
+    signals_large = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                      "conviction": 7, "position_pct": 8.0, "regime_label": "bull",
+                      "adv_usd": adv_usd}]
+
+    sim_small = simulate_portfolio(
+        signals_small, price_data, initial_cash=100_000,
+        slippage_bps=10.0, commission_pct=0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+        slippage_model="market_impact",
+    )
+    sim_large = simulate_portfolio(
+        signals_large, price_data, initial_cash=100_000,
+        slippage_bps=10.0, commission_pct=0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+        slippage_model="market_impact",
+    )
+
+    assert sim_small.trades and sim_large.trades
+    small_entry = sim_small.trades[0].entry_price
+    large_entry = sim_large.trades[0].entry_price
+    assert large_entry > small_entry, (
+        f"Larger position_pct should incur more market-impact slippage. "
+        f"large={large_entry}, small={small_entry}"
+    )
+
+
+def test_market_impact_vary_adv_only():
+    """Companion: holds position_pct constant, varies only adv_usd.
+
+    A smaller ADV makes the same order a larger fraction of ADV → more slippage.
+    """
+    dates = pd.date_range("2020-01-01", periods=5, freq="B")
+    price_data = {"AAPL": pd.Series([100.0] * 5, index=dates)}
+    position_pct = 5.0  # constant
+
+    # Large ADV: order is tiny fraction → minimal extra slippage
+    signals_large_adv = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                          "conviction": 7, "position_pct": position_pct,
+                          "regime_label": "bull", "adv_usd": 10_000_000.0}]
+    # Small ADV: order is large fraction → significant extra slippage
+    signals_small_adv = [{"date": str(dates[0].date()), "ticker": "AAPL",
+                          "conviction": 7, "position_pct": position_pct,
+                          "regime_label": "bull", "adv_usd": 50_000.0}]
+
+    sim_large_adv = simulate_portfolio(
+        signals_large_adv, price_data, initial_cash=100_000,
+        slippage_bps=10.0, commission_pct=0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+        slippage_model="market_impact",
+    )
+    sim_small_adv = simulate_portfolio(
+        signals_small_adv, price_data, initial_cash=100_000,
+        slippage_bps=10.0, commission_pct=0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+        slippage_model="market_impact",
+    )
+
+    assert sim_large_adv.trades and sim_small_adv.trades
+    large_adv_entry = sim_large_adv.trades[0].entry_price
+    small_adv_entry = sim_small_adv.trades[0].entry_price
+    assert small_adv_entry > large_adv_entry, (
+        f"Smaller ADV should cause more market-impact slippage. "
+        f"small_adv_entry={small_adv_entry}, large_adv_entry={large_adv_entry}"
+    )

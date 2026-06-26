@@ -58,8 +58,20 @@ def _get_price(series: pd.Series, day_str: str) -> float | None:
         if val is None:
             # try string directly as fallback
             val = series.get(day_str)
-        return float(val) if val is not None and not pd.isna(val) else None
+        if val is None or pd.isna(val):
+            log.warning(
+                "_get_price: no price for %s in series '%s' "
+                "(index type=%s, len=%d) — returning None",
+                day_str, getattr(series, "name", "<unnamed>"),
+                type(series.index).__name__, len(series),
+            )
+            return None
+        return float(val)
     except Exception:
+        log.warning(
+            "_get_price: exception looking up %s in series '%s' — returning None",
+            day_str, getattr(series, "name", "<unnamed>"),
+        )
         return None
 
 

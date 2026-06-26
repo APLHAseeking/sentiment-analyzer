@@ -61,10 +61,14 @@ def _compute_pit_momentum(
             continue
         current = float(prices.iloc[-1])
         p1m = float(prices.iloc[max(0, len(prices) - 21)])
-        p12m = float(prices.iloc[0])
+        # 12-month momentum requires exactly 252 trading bars back.
+        # Using iloc[0] of whatever window is available gives a return over
+        # ~405 days (lookback_days + 40) rather than 252 days and is wrong
+        # when the history is thinner than that.
+        p12m = float(prices.iloc[-252]) if len(prices) >= 252 else None
         result[ticker] = (
             (current / p1m - 1) * 100 if p1m > 0 else None,
-            (current / p12m - 1) * 100 if p12m > 0 else None,
+            (current / p12m - 1) * 100 if p12m is not None and p12m > 0 else None,
         )
     return result
 

@@ -127,8 +127,17 @@ def random_allocation(
         # Open new position if this is a signal date and we have cash
         if i in entry_indices and cash > 0:
             alloc = cash * position_pct / 100
-            _, shares = _apply_entry_cost(alloc, price, slippage_bps, commission_pct)
-            cash -= alloc
+            # Commission is an explicit separate cost on top of the stock purchase.
+            # shares = alloc / fill so the full allocation buys stock; commission is
+            # NOT embedded in the share count (which would reduce shares and charge
+            # a smaller exit commission later, double-penalising the benchmark).
+            fill_price = price * (1 + slippage_bps / 10_000)
+            commission = alloc * commission_pct / 100
+            shares = alloc / fill_price
+            total_cost = alloc + commission
+            if total_cost > cash:
+                continue
+            cash -= total_cost
             exit_idx = min(i + avg_hold_days, len(dates) - 1)
             positions[exit_idx] = {"shares": shares, "entry_price": price}
 
