@@ -1026,6 +1026,11 @@ class RegimeAwareOrchestrator:
         try:
             positions = self._broker.get_positions()
             cash = self._broker.get_cash()
+            # NAV is captured once here and reused for every hedge order in the loop below.
+            # If multiple hedges are placed in the same pass, later orders use the pre-pass
+            # NAV rather than the live NAV after each fill — a minor approximation that is
+            # intentional (one extra broker round-trip per order would add latency with
+            # negligible sizing benefit given hedge ETF sizes).
             nav = cash + sum(p["qty"] * p["current_price"] for p in positions) if positions else cash
 
             # Sector allocation from long positions only (exclude hedges)

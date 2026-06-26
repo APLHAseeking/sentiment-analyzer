@@ -30,7 +30,7 @@ def test_morning_no_signals(mocker):
 def test_morning_opens_on_buy_signal(mocker, db):
     disc = {
         "id": "x1", "politician": "Jane Doe", "ticker": "XOM",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
         "amount_range": "$50,001 - $100,000",
     }
@@ -55,7 +55,7 @@ def test_exit_review_closes_on_exit(mocker, db):
     db.insert_disclosures([{
         "id": "pos1", "politician": "Jane", "ticker": "AAPL",
         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
-        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "transaction_type": "buy", "amount_range": "$15,001 - $50,000",
         "scraped_at": "2026-04-22T08:00:00",
     }])
     sid = db.insert_signal("pos1", "AAPL", 8, 5.0, "Good", [])
@@ -74,7 +74,7 @@ def test_exit_review_closes_on_exit(mocker, db):
 def test_morning_calls_gather_research_per_qualified_signal(mocker, db):
     disc = {
         "id": "x1", "politician": "Jane Doe", "ticker": "XOM",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
         "amount_range": "$50,001 - $100,000",
     }
@@ -102,7 +102,7 @@ def test_exit_review_calls_gather_research(mocker, db):
     db.insert_disclosures([{
         "id": "pos1", "politician": "Jane", "ticker": "AAPL",
         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-05",
-        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "transaction_type": "buy", "amount_range": "$15,001 - $50,000",
         "scraped_at": "2026-04-22T08:00:00",
     }])
     sid = db.insert_signal("pos1", "AAPL", 8, 5.0, "Good", [])
@@ -138,7 +138,7 @@ def test_eod_snapshot(mocker, db):
 def test_morning_pipeline_skips_sector_capped_trade(mocker, db):
     disc = {
         "id": "sc-001", "politician": "Jane Doe", "ticker": "NVDA",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
         "amount_range": "$50,001 - $100,000",
     }
@@ -163,7 +163,7 @@ def test_morning_pipeline_skips_sector_capped_trade(mocker, db):
 def test_morning_pipeline_passes_cluster_count_to_score_entry(mocker, db):
     disc = {
         "id": "cl-001", "politician": "Jane Doe", "ticker": "MSFT",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
         "amount_range": "$50,001 - $100,000",
     }
@@ -195,7 +195,7 @@ def test_morning_pipeline_skips_illiquid_trade(mocker, db):
     from bot.researcher import ResearchReport
     disc = {
         "id": "lq-001", "politician": "Jane Doe", "ticker": "ILLIQ",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
         "amount_range": "$50,001 - $100,000",
     }
@@ -284,7 +284,7 @@ def test_phase2_uses_both_signal_type_when_congress_skipped(mocker, db):
     from screener.factor_scorer import FactorCandidate
     disc = {
         "id": "both-001", "politician": "Jane Doe", "ticker": "AAPL",
-        "transaction_type": "purchase",
+        "transaction_type": "buy",
         "transaction_date": "2026-04-20", "disclosure_date": "2026-04-22",
         "amount_range": "$50,001 - $100,000",
     }

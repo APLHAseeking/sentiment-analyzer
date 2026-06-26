@@ -95,7 +95,7 @@ class AlpacaBroker(BrokerInterface):
 
     def place_order(self, ticker: str, side: str, qty: float) -> Order:
         if side not in ("buy", "sell"):
-            order = Order(ticker=ticker.upper(), side=OrderSide("buy"), qty=qty, order_type=OrderType.MARKET)
+            order = Order(ticker=ticker.upper(), side=side, qty=qty, order_type=OrderType.MARKET)
             order.status = OrderStatus.REJECTED
             order.reject_reason = f"Invalid side: {side!r}"
             return order
