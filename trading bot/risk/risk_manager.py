@@ -246,7 +246,6 @@ class RiskManager:
             return RiskVeto(allowed=False, reason=f"Entries blocked by circuit breaker: {effective_state}")
 
         if effective_state == RiskState.SIZES_REDUCED:
-            new_pct = proposed_pct * 0.5
             return RiskVeto(
                 allowed=True,
                 reason=f"Size reduced 50% due to daily loss circuit breaker",

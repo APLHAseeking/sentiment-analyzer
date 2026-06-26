@@ -375,3 +375,44 @@ def test_validate_order_exempts_hedge_sector_from_missing_adv_veto(tmp_path):
         sector_allocation={}, position_size_usd=5_000, adv_usd=None,
     )
     assert veto.allowed is True
+
+
+# ---------------------------------------------------------------------------
+# DELEVERAGE circuit breaker coverage
+# ---------------------------------------------------------------------------
+
+def test_daily_loss_triggers_deleverage(tmp_path):
+    """Daily loss ≥ daily_loss_deleverage_pct (6%) must transition state to DELEVERAGE."""
+    mgr = _make_manager(tmp_path)  # daily_loss_deleverage_pct defaults to 6.0
+    mgr.start_of_day(100_000)
+    mgr._peak_nav = 100_000
+    # 7% daily loss → strictly above deleverage threshold (6%)
+    mgr.check_circuit_breakers(93_000)
+    assert mgr.state == RiskState.DELEVERAGE
+
+
+def test_deleverage_state_takes_precedence_over_weekly_halt_in_state_property(tmp_path):
+    """When both _weekly_entries_halted is True and _state is DELEVERAGE, the
+    state property must return DELEVERAGE — not WEEKLY_HALT.
+
+    Regression for the ordering guard in RiskManager.state: DELEVERAGE must
+    outrank the weekly halt flag so the force-close path is not silently
+    bypassed during a catastrophic day inside an already-halted week.
+    """
+    mgr = _make_manager(tmp_path)
+    mgr._weekly_entries_halted = True
+    mgr._state = RiskState.DELEVERAGE
+    assert mgr.state == RiskState.DELEVERAGE
+
+
+def test_veto_new_entry_blocked_during_deleverage(tmp_path):
+    """veto_new_entry must block all new entries when state is DELEVERAGE."""
+    mgr = _make_manager(tmp_path)
+    mgr.start_of_day(100_000)
+    mgr._peak_nav = 100_000
+    # Trigger deleverage (7% > 6% threshold)
+    mgr.check_circuit_breakers(93_000)
+    assert mgr.state == RiskState.DELEVERAGE
+    veto = mgr.veto_new_entry("AAPL", 5.0)
+    assert not veto.allowed
+    assert "DELEVERAGE" in veto.reason or "circuit breaker" in veto.reason.lower()

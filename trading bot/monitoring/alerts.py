@@ -56,7 +56,12 @@ class LogAlertSender(AlertSender):
     """Fallback sender — writes to the standard log as WARNING."""
 
     def send(self, event: str, message: str, data: dict[str, Any]) -> None:
-        log.warning("[ALERT] %s | %s | %s", event, message, json.dumps(data))
+        try:
+            data_str = json.dumps(data)
+        except TypeError:
+            log.warning("Alert data serialization failed for event %s — falling back to str()", event)
+            data_str = str(data)
+        log.warning("[ALERT] %s | %s | %s", event, message, data_str)
 
 
 # Mutable single-element list so tests can reset and patch it easily.

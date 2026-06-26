@@ -76,22 +76,28 @@ def test_classify_returns_correct_length(fitted_engine):
 
 
 def test_no_look_ahead_bias(fitted_engine):
-    """Classification at time t must not change when we add data after t."""
-    from features.feature_pipeline import FeatureConfig
+    """Classification at time t must not change when we add data after t.
+
+    The scaler is frozen at fit time and predict_proba_filtered is a forward-only
+    pass — so the regime label at date T is fully determined by observations up to T
+    and must not shift when future bars are appended.
+    """
     engine, data, feature_cfg = fitted_engine
 
     cutoff = 300
     states_truncated = engine.classify(data.iloc[:cutoff], feature_cfg, update_recent_labels=False)
     states_full = engine.classify(data, feature_cfg, update_recent_labels=False)
 
-    # The last state from the truncated run should match the state at the same date in full run
-    # (we allow up to 1 regime difference due to HMM sequence effects at boundary)
     last_trunc = states_truncated[-1]
     full_at_same_date = next((s for s in states_full if s.date == last_trunc.date), None)
 
-    # We can't guarantee identical labels (HMM is probabilistic), but we verify
-    # the classification path does not use future data by checking the scaler is frozen
-    assert True  # Look-ahead bias is verified at feature level (test_features.py)
+    assert full_at_same_date is not None, (
+        f"Date {last_trunc.date} from truncated run not found in full run"
+    )
+    assert last_trunc.regime_index == full_at_same_date.regime_index, (
+        f"Look-ahead bias: regime at {last_trunc.date} is {last_trunc.regime_index} "
+        f"(truncated run) vs {full_at_same_date.regime_index} (full run — future data changed past label)"
+    )
 
 
 def test_confidence_is_valid_probability(fitted_engine):
