@@ -31,11 +31,22 @@
 > scale, degrading regime persistence on realistic overlapping data; the HTML scraper
 > fallback never normalized `transaction_type` to `buy`/`sell`, silently losing all
 > congressional signal during a JSON-API outage. See `TRADING_BOT_REVIEW_2026-06-23.md` at
-> repo root for full findings (also 7 High / 12 Medium / 13 Low items not yet acted on).
-> 2026-06-24: fixed one of those Medium items — `screener/factor_scorer.py`'s Phase 1
-> momentum score filled missing/NaN `mom_12m` (thin-history names) with `0` before
-> percentile ranking, landing them in the worst momentum percentile; now imputed at the
-> neutral midpoint (`fillna(0.5)`) instead.
+> repo root for full findings.
+> 2026-06-24: fixed Phase 1 momentum — `screener/factor_scorer.py` filled missing/NaN
+> `mom_12m` with `0` (worst percentile); now imputed at the neutral midpoint (`fillna(0.5)`).
+> 2026-06-26: full remediation pass — all 7 High, 12 Medium, and 13 Low findings from the
+> 2026-06-23 review are now fixed. Test count: **755** (was 721; +34 new tests). Key fixes:
+> `close/reduce_position` treats CANCELLED/SUBMITTED as no-ops (like REJECTED); partial fills
+> use `order.filled_qty`; `position_pct` recomputed from actual fill; `parse_*_response`
+> KeyError/TypeError re-raised as `ValueError` so `_call_with_retry` retries them; external
+> headlines wrapped in `<external_data>` XML for prompt-injection defence; Anthropic response
+> parser finds first text block instead of assuming `content[0]`; textbook Sortino formula
+> (`sqrt(mean(min(r,0)²))` over all obs); `random_allocation` commission no longer
+> double-deducted; `tracker.py` returns commission-net; `mom_12m` uses 252-bar lookback;
+> attribution sample gate raised to 30; `vol_z` uses `cfg.vol_window`; committee name-match
+> strips suffixes; DB migrations use `PRAGMA table_info`; DELEVERAGE circuit-breaker tests
+> added; broker tests use real alpaca enums; regime causal-test made non-vacuous. No open
+> findings remain from any prior review.
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -127,7 +138,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 721 tests; keep green (run from inside trading bot/)
+pytest                                 # 755 tests; keep green (run from inside trading bot/)
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 
