@@ -50,14 +50,14 @@ def _compute_pit_momentum(
     tickers: list[str],
     as_of: date,
     lookback_days: int = 365,
-) -> dict[str, tuple[float | None, float | None]]:
-    """Compute (mom_1m, mom_12m) from PIT prices for each ticker."""
+) -> dict[str, tuple[float | None, float | None, float | None, float | None]]:
+    """Compute (mom_1m, mom_12m, mom_6m, high52_ratio) from PIT prices for each ticker."""
     start = as_of - timedelta(days=lookback_days + 40)
-    result: dict[str, tuple[float | None, float | None]] = {}
+    result: dict[str, tuple[float | None, float | None, float | None, float | None]] = {}
     for ticker in tickers:
         prices = provider.prices(ticker, start, as_of)
         if len(prices) < _MIN_MOMENTUM_BARS:
-            result[ticker] = (None, None)
+            result[ticker] = (None, None, None, None)
             continue
         current = float(prices.iloc[-1])
         p1m = float(prices.iloc[max(0, len(prices) - 21)])
@@ -66,9 +66,22 @@ def _compute_pit_momentum(
         # ~405 days (lookback_days + 40) rather than 252 days and is wrong
         # when the history is thinner than that.
         p12m = float(prices.iloc[-252]) if len(prices) >= 252 else None
+        # 6-1 momentum: return from ~6 months ago to ~1 month ago (skip last month)
+        p6m_start = float(prices.iloc[-126]) if len(prices) >= 126 else None
+        p6m_end = float(prices.iloc[max(0, len(prices) - 21)])
+        mom_6m = (
+            (p6m_end / p6m_start - 1) * 100
+            if p6m_start is not None and p6m_start > 0
+            else None
+        )
+        # 52-week high ratio: proximity to 52-week high
+        high52 = float(prices.max())
+        high52_ratio = current / high52 if high52 > 0 else None
         result[ticker] = (
             (current / p1m - 1) * 100 if p1m > 0 else None,
             (current / p12m - 1) * 100 if p12m is not None and p12m > 0 else None,
+            mom_6m,
+            high52_ratio,
         )
     return result
 

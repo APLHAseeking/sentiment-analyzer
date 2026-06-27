@@ -70,10 +70,12 @@ def _fetch_all_infos(tickers: list[str]) -> dict[str, dict | None]:
 
 def _fetch_momentum_batch(
     tickers: list[str],
-) -> dict[str, tuple[float | None, float | None]]:
-    """Fetch momentum signals. Returns (mom_1m, mom_12m) per ticker.
+) -> dict[str, tuple[float | None, float | None, float | None, float | None]]:
+    """Fetch momentum signals. Returns (mom_1m, mom_12m, mom_6m, high52_ratio) per ticker.
 
     mom_12m is 12-month total return — the academically valid momentum signal.
+    mom_6m is 6-month return skipping the last month (avoids short-term reversal).
+    high52_ratio is current price / 52-week high (George & Hwang 2004 breakout signal).
     mom_1m is 1-month return (mean-reverting; kept for research display only,
     NOT used in the composite score). Tickers with fewer than _MIN_MOMENTUM_BARS
     of history are excluded (momentum is unreliable on thin data).
@@ -91,27 +93,36 @@ def _fetch_momentum_batch(
                 close.columns = tickers  # name the single column with the ticker
         else:
             log.warning("_fetch_momentum_batch: unexpected columns %s — skipping", raw.columns.tolist())
-            return {t: (None, None) for t in tickers}
+            return {t: (None, None, None, None) for t in tickers}
 
-        result: dict[str, tuple[float | None, float | None]] = {}
+        result: dict[str, tuple[float | None, float | None, float | None, float | None]] = {}
         for t in tickers:
             try:
                 col = close[t].dropna() if t in close.columns else pd.Series(dtype=float)
                 if len(col) < _MIN_MOMENTUM_BARS:
-                    result[t] = (None, None)
+                    result[t] = (None, None, None, None)
                     continue
                 current = float(col.iloc[-1])
                 p1m = float(col.iloc[max(0, len(col) - 21)])
                 p12m = float(col.iloc[0])  # ~12 months ago
+                # 6-1 momentum: return from ~6 months ago to ~1 month ago (skip last month)
+                p6m_start = float(col.iloc[max(0, len(col) - 126)])
+                p6m_end = float(col.iloc[max(0, len(col) - 21)])
+                mom_6m = (p6m_end / p6m_start - 1) * 100 if p6m_start > 0 else None
+                # 52-week high ratio: how close current price is to the 52-week high
+                high52 = float(col.max())
+                high52_ratio = current / high52 if high52 > 0 else None
                 result[t] = (
                     (current / p1m - 1) * 100 if p1m > 0 else None,   # 1m (display only)
                     (current / p12m - 1) * 100 if p12m > 0 else None,  # 12m (used in score)
+                    mom_6m,                                              # 6-1m (used in score)
+                    high52_ratio,                                        # proximity to 52w high
                 )
             except Exception:
-                result[t] = (None, None)
+                result[t] = (None, None, None, None)
         return result
     except Exception:
-        return {t: (None, None) for t in tickers}
+        return {t: (None, None, None, None) for t in tickers}
 
 
 def _build_factor_df(
@@ -131,7 +142,12 @@ def _build_factor_df(
             margin = _to_float(info.get("profitMargins"))
             de = _to_float(info.get("debtToEquity"))
             fcf_yield = fcf / mcap if fcf and mcap and mcap > 0 else None
-            mom1m, mom12m = momentum.get(ticker, (None, None))
+            # New signals from yfinance.info
+            evebitda = _to_float(info.get("enterpriseToEbitda"))
+            gross_margin = _to_float(info.get("grossMargins"))
+            current_ratio = _to_float(info.get("currentRatio"))
+            earnings_growth = _to_float(info.get("earningsGrowth"))
+            mom1m, mom12m, mom6m, high52 = momentum.get(ticker, (None, None, None, None))
             sector = (info.get("sector") or "Unknown").strip() or "Unknown"
 
             rows.append({
@@ -140,11 +156,17 @@ def _build_factor_df(
                 "pe_inv": -pe if pe and pe > 0 else None,
                 "pb_inv": -pb if pb and pb > 0 else None,
                 "fcf_yield": fcf_yield,
+                "evebitda_inv": -evebitda if evebitda and evebitda > 0 else None,
                 "roe": roe,
+                "gross_margin": gross_margin,
                 "margin": margin,
                 "de_inv": -de if de is not None and de >= 0 else None,
+                "current_ratio": current_ratio,
+                "earnings_growth": earnings_growth,
                 "mom_1m": mom1m,
                 "mom_12m": mom12m,
+                "mom_6m": mom6m,
+                "high52_ratio": high52,
             })
         except Exception:
             log.debug("Skipping %s in factor_df build", ticker, exc_info=True)
@@ -209,22 +231,28 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
 
     # Sector-normalized ranking: removes cross-sector bias (low P/E utilities vs
     # growth tech). Sectors with < _MIN_SECTOR_SIZE members fall back to universe rank.
-    score_cols = ["pe_inv", "pb_inv", "fcf_yield", "roe", "margin", "de_inv", "mom_12m"]
+    score_cols = [
+        "pe_inv", "pb_inv", "fcf_yield", "evebitda_inv",          # value
+        "roe", "gross_margin", "margin", "de_inv",                  # quality
+        "current_ratio", "earnings_growth",                          # quality (cont.)
+        "mom_12m", "mom_6m", "high52_ratio",                        # momentum
+    ]
     available_cols = [c for c in score_cols if c in df.columns]
     ranked = _sector_rank(df, available_cols)
 
+    # Value: P/E, P/B, FCF yield, EV/EBITDA (4 sub-signals; skipna so missing evebitda ok)
     df["value_score"] = (
-        ranked[["pe_inv", "pb_inv", "fcf_yield"]].mean(axis=1, skipna=True) * 33
+        ranked[["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv"]].mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
-    # Use 12-month momentum only. 1-month is a mean-reversion effect.
-    # Missing mom_12m (thin-history names) is imputed at the neutral midpoint
-    # (0.5 pct rank), not 0 — 0 would land a name with no momentum data in the
-    # worst momentum percentile, indistinguishable from a real bad performer.
+    # Momentum: 12-1m, 6-1m, 52-week-high ratio (3 sub-signals).
+    # Missing signals imputed at neutral 0.5 — same logic as original mom_12m.
     df["momentum_score"] = (
-        ranked["mom_12m"].fillna(0.5) * 33
+        ranked[["mom_12m", "mom_6m", "high52_ratio"]].fillna(0.5).mean(axis=1) * 33
     ).clip(0, 33).astype(int)
+    # Quality: ROE, gross margin (Novy-Marx), net margin, D/E, current ratio, earnings growth
     df["quality_score"] = (
-        ranked[["roe", "margin", "de_inv"]].mean(axis=1, skipna=True) * 33
+        ranked[["roe", "gross_margin", "margin", "de_inv", "current_ratio", "earnings_growth"]]
+        .mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
 
     wv, wm, wq = _REGIME_WEIGHTS.get(regime_label or "", _DEFAULT_WEIGHTS)
@@ -267,7 +295,7 @@ def prefetch_screener_data(tickers: list[str]) -> dict:
     log.info(
         "Pre-fetch complete: %d infos, %d momentum entries",
         sum(1 for v in infos.values() if v is not None),
-        sum(1 for v in momentum.values() if v != (None, None)),
+        sum(1 for v in momentum.values() if v != (None, None, None, None)),
     )
     return result
 
@@ -300,9 +328,9 @@ def run_factor_screen(
         infos = _fetch_all_infos(tickers)
         momentum = _fetch_momentum_batch(tickers)
 
-    if momentum and all(v == (None, None) for v in momentum.values()):
+    if momentum and all(v == (None, None, None, None) for v in momentum.values()):
         log.error(
-            "Momentum batch fetch returned (None, None) for all %d tickers — "
+            "Momentum batch fetch returned (None, None, None, None) for all %d tickers — "
             "momentum_score will be zero for every candidate. Check yfinance connectivity.",
             len(tickers),
         )

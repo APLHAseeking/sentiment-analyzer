@@ -129,6 +129,10 @@ class AllocationConfig:
     # Size multiplier applied when the regime has been switching rapidly.
     # AllocationEngine reads this from AllocationConfig (not RegimeConfig).
     instability_penalty: float = 0.5      # multiply position size by this when regime is unstable
+    # Halloween seasonality overlay (Jacobsen et al.; Nov–Apr historically stronger)
+    enable_seasonality: bool = True
+    halloween_mult_active: float = 1.10   # Nov 1 – Apr 30
+    halloween_mult_inactive: float = 0.90  # May 1 – Oct 31
 
 
 # ---------------------------------------------------------------------------

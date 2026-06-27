@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, UTC
 from typing import Any
 
 from regime.hmm_engine import RegimeState
@@ -22,7 +23,8 @@ class AllocationDecision:
     regime_multiplier: float        # from regime label
     confidence_multiplier: float    # from regime confidence
     stability_multiplier: float     # 1.0 if stable, instability_penalty if not
-    final_position_pct: float       # base × regime × confidence × stability
+    seasonal_multiplier: float      # Halloween effect (1.1 Nov–Apr, 0.9 May–Oct)
+    final_position_pct: float       # base × regime × confidence × stability × seasonal
     rationale: str
     regime_label: str
     regime_confidence: float
@@ -42,11 +44,21 @@ class AllocationEngine:
         self._alloc_cfg = cfg.allocation
         self._risk_cfg = cfg.risk
 
+    def _seasonality_mult(self, date: datetime | None = None) -> float:
+        """Halloween effect overlay: position sizes are 10% larger Nov–Apr, 10% smaller May–Oct."""
+        if not self._alloc_cfg.enable_seasonality:
+            return 1.0
+        month = (date or datetime.now(UTC)).month
+        if month in (11, 12, 1, 2, 3, 4):
+            return self._alloc_cfg.halloween_mult_active
+        return self._alloc_cfg.halloween_mult_inactive
+
     def compute(
         self,
         ticker: str,
         ai_position_pct: float,
         regime_state: RegimeState,
+        date: datetime | None = None,
     ) -> AllocationDecision:
         """Apply regime scaling to the AI-recommended position size.
 
@@ -80,15 +92,19 @@ class AllocationEngine:
         # --- Stability penalty -------------------------------------------
         stab_mult = 1.0 if is_stable else self._alloc_cfg.instability_penalty
 
+        # --- Seasonality multiplier (Halloween effect) -------------------
+        seasonal = self._seasonality_mult(date)
+
         # --- Final size (capped at risk config max) ----------------------
-        final = ai_position_pct * regime_mult * conf_mult * stab_mult
+        final = ai_position_pct * regime_mult * conf_mult * stab_mult * seasonal
         final = min(final, self._risk_cfg.max_position_pct)
         final = max(final, 0.0)
 
         rationale = (
             f"regime={label} (mult={regime_mult:.2f}) × "
             f"conf={confidence:.2f} (mult={conf_mult:.2f}) × "
-            f"stability={'OK' if is_stable else f'UNSTABLE ({stab_mult:.2f})'} "
+            f"stability={'OK' if is_stable else f'UNSTABLE ({stab_mult:.2f})'} × "
+            f"seasonal={seasonal:.2f} "
             f"→ {ai_position_pct:.1f}% → {final:.1f}%"
         )
 
@@ -104,6 +120,7 @@ class AllocationEngine:
             regime_multiplier=regime_mult,
             confidence_multiplier=conf_mult,
             stability_multiplier=stab_mult,
+            seasonal_multiplier=seasonal,
             final_position_pct=final,
             rationale=rationale,
             regime_label=label,
@@ -124,6 +141,7 @@ class AllocationEngine:
             regime_multiplier=0.0,
             confidence_multiplier=0.0,
             stability_multiplier=0.0,
+            seasonal_multiplier=1.0,
             final_position_pct=0.0,
             rationale=reason,
             regime_label=regime_state.regime_label,
