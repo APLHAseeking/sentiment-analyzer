@@ -36,6 +36,7 @@ class FactorCandidate:
     momentum_score: int
     quality_score: int
     research: ResearchReport | None
+    low_vol_score: int = 0
 
 
 def _fetch_info_with_retry(ticker: str) -> tuple[str, dict | None]:
@@ -68,8 +69,42 @@ def _fetch_all_infos(tickers: list[str]) -> dict[str, dict | None]:
     return results
 
 
+def _extract_close(raw: pd.DataFrame, tickers: list[str]) -> pd.DataFrame | None:
+    """Pull a Close DataFrame (columns = tickers) from a yf.download result.
+
+    Handles both the MultiIndex layout (multi-ticker) and the flat layout
+    (single-ticker / older yfinance). Returns None if no Close data is present.
+    """
+    if isinstance(raw.columns, pd.MultiIndex):
+        return raw["Close"]
+    if "Close" in raw.columns:
+        close = raw[["Close"]]
+        if len(tickers) == 1:
+            close.columns = tickers  # name the single column with the ticker
+        return close
+    log.warning("_extract_close: unexpected columns %s", raw.columns.tolist())
+    return None
+
+
+def _fetch_spy_close() -> pd.Series | None:
+    """Download SPY daily close (12mo) for beta / residual-momentum computation.
+
+    One download per screen, shared across the whole universe. Returns None on
+    failure (callers degrade to neutral for the beta-based factors)."""
+    try:
+        raw = yf.download("SPY", period="12mo", auto_adjust=True, progress=False)
+        close = _extract_close(raw, ["SPY"])
+        if close is None or close.empty:
+            return None
+        col = close["SPY"] if "SPY" in close.columns else close.iloc[:, 0]
+        return col.dropna()
+    except Exception:
+        return None
+
+
 def _fetch_momentum_batch(
     tickers: list[str],
+    close: pd.DataFrame | None = None,
 ) -> dict[str, tuple[float | None, float | None, float | None, float | None]]:
     """Fetch momentum signals. Returns (mom_1m, mom_12m, mom_6m, high52_ratio) per ticker.
 
@@ -79,20 +114,17 @@ def _fetch_momentum_batch(
     mom_1m is 1-month return (mean-reverting; kept for research display only,
     NOT used in the composite score). Tickers with fewer than _MIN_MOMENTUM_BARS
     of history are excluded (momentum is unreliable on thin data).
+
+    `close` may be a pre-downloaded Close DataFrame (shared with the price-factor
+    fetch to avoid downloading the universe twice); when None it is fetched here.
     """
     if not tickers:
         return {}
     try:
-        raw = yf.download(tickers, period="12mo", auto_adjust=True, progress=False)
-        if isinstance(raw.columns, pd.MultiIndex):
-            close = raw["Close"]
-        elif "Close" in raw.columns:
-            # Single-ticker or older yfinance: flat DataFrame
-            close = raw[["Close"]]
-            if len(tickers) == 1:
-                close.columns = tickers  # name the single column with the ticker
-        else:
-            log.warning("_fetch_momentum_batch: unexpected columns %s — skipping", raw.columns.tolist())
+        if close is None:
+            raw = yf.download(tickers, period="12mo", auto_adjust=True, progress=False)
+            close = _extract_close(raw, tickers)
+        if close is None:
             return {t: (None, None, None, None) for t in tickers}
 
         result: dict[str, tuple[float | None, float | None, float | None, float | None]] = {}
@@ -125,10 +157,70 @@ def _fetch_momentum_batch(
         return {t: (None, None, None, None) for t in tickers}
 
 
+def _fetch_price_factors_batch(
+    tickers: list[str],
+    close: pd.DataFrame | None = None,
+    spy_close: pd.Series | None = None,
+) -> dict[str, tuple[float | None, float | None, float | None]]:
+    """Fetch price-based factor signals. Returns (realized_vol, beta, resid_mom).
+
+    realized_vol — annualized stdev of daily returns (%), the low-volatility signal
+        (lower is better). beta — OLS slope of stock daily returns vs SPY, the
+        Betting-Against-Beta signal (lower/negative is better). resid_mom — cumulative
+        residual return (%) of (stock_ret − beta·spy_ret) over months −12..−1 (skips
+        the last ~21 bars to avoid short-term reversal), the idiosyncratic-momentum
+        signal. All zero-cost: computed from the same price history as momentum plus a
+        single SPY download. Missing/thin data yields None (ranked neutrally upstream).
+    """
+    if not tickers:
+        return {}
+    try:
+        if close is None:
+            raw = yf.download(tickers, period="12mo", auto_adjust=True, progress=False)
+            close = _extract_close(raw, tickers)
+        if close is None:
+            return {t: (None, None, None) for t in tickers}
+        if spy_close is None:
+            spy_close = _fetch_spy_close()
+        spy_ret = spy_close.pct_change().dropna() if spy_close is not None else None
+
+        result: dict[str, tuple[float | None, float | None, float | None]] = {}
+        for t in tickers:
+            try:
+                col = close[t].dropna() if t in close.columns else pd.Series(dtype=float)
+                if len(col) < _MIN_MOMENTUM_BARS:
+                    result[t] = (None, None, None)
+                    continue
+                ret = col.pct_change().dropna()
+                vol = float(ret.std() * (252 ** 0.5) * 100) if ret.std() and ret.std() > 0 else None
+                beta: float | None = None
+                resid_mom: float | None = None
+                if spy_ret is not None and len(spy_ret) > 0:
+                    aligned = pd.concat([ret, spy_ret], axis=1, join="inner").dropna()
+                    aligned.columns = ["stock", "spy"]
+                    spy_var = aligned["spy"].var()
+                    if len(aligned) >= _MIN_MOMENTUM_BARS and spy_var and spy_var > 0:
+                        beta = float(aligned["stock"].cov(aligned["spy"]) / spy_var)
+                        resid = aligned["stock"] - beta * aligned["spy"]
+                        # Skip the last ~21 bars (1 month) to avoid short-term reversal,
+                        # mirroring the 6-1 momentum convention.
+                        resid_window = resid.iloc[:max(0, len(resid) - 21)]
+                        if len(resid_window) > 0:
+                            resid_mom = float(((1 + resid_window).prod() - 1) * 100)
+                result[t] = (vol, beta, resid_mom)
+            except Exception:
+                result[t] = (None, None, None)
+        return result
+    except Exception:
+        return {t: (None, None, None) for t in tickers}
+
+
 def _build_factor_df(
     infos: dict[str, dict | None],
     momentum: dict[str, tuple[float | None, float | None]],
+    price_factors: dict[str, tuple[float | None, float | None, float | None]] | None = None,
 ) -> pd.DataFrame:
+    price_factors = price_factors or {}
     rows = []
     for ticker, info in infos.items():
         if info is None:
@@ -148,6 +240,7 @@ def _build_factor_df(
             current_ratio = _to_float(info.get("currentRatio"))
             earnings_growth = _to_float(info.get("earningsGrowth"))
             mom1m, mom12m, mom6m, high52 = momentum.get(ticker, (None, None, None, None))
+            vol, beta, resid_mom = price_factors.get(ticker, (None, None, None))
             sector = (info.get("sector") or "Unknown").strip() or "Unknown"
 
             rows.append({
@@ -167,6 +260,10 @@ def _build_factor_df(
                 "mom_12m": mom12m,
                 "mom_6m": mom6m,
                 "high52_ratio": high52,
+                # Price-based factors: invert so "lower is better" ranks higher.
+                "vol_inv": -vol if vol is not None and vol > 0 else None,
+                "beta_inv": -beta if beta is not None else None,
+                "resid_mom": resid_mom,
             })
         except Exception:
             log.debug("Skipping %s in factor_df build", ticker, exc_info=True)
@@ -204,19 +301,20 @@ def _sector_rank(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return result
 
 
-# Regime-specific factor weights (value, momentum, quality must sum to 1.0).
-# In bear/crash: favour value + quality (defensive, mean-reversion).
-# In bull/euphoria: favour momentum (trend-following works in rising markets).
-_REGIME_WEIGHTS: dict[str, tuple[float, float, float]] = {
-    "crash":     (0.45, 0.10, 0.45),
-    "deep-bear": (0.45, 0.10, 0.45),
-    "bear":      (0.40, 0.15, 0.45),
-    "neutral":   (0.33, 0.33, 0.34),
-    "bull":      (0.20, 0.50, 0.30),
-    "euphoria":  (0.25, 0.45, 0.30),
-    "melt-up":   (0.25, 0.50, 0.25),
+# Regime-specific factor weights (value, momentum, quality, low_vol must sum to 1.0).
+# In bear/crash: favour value + quality + low-vol (defensive, mean-reversion).
+# In bull/euphoria: favour momentum (trend-following works in rising markets) and
+# de-weight low-vol (low-beta names lag in strong rallies).
+_REGIME_WEIGHTS: dict[str, tuple[float, float, float, float]] = {
+    "crash":     (0.40, 0.10, 0.35, 0.15),
+    "deep-bear": (0.40, 0.10, 0.35, 0.15),
+    "bear":      (0.35, 0.15, 0.35, 0.15),
+    "neutral":   (0.30, 0.30, 0.30, 0.10),
+    "bull":      (0.20, 0.45, 0.25, 0.10),
+    "euphoria":  (0.25, 0.45, 0.25, 0.05),
+    "melt-up":   (0.25, 0.45, 0.25, 0.05),
 }
-_DEFAULT_WEIGHTS: tuple[float, float, float] = (0.33, 0.33, 0.34)
+_DEFAULT_WEIGHTS: tuple[float, float, float, float] = (0.30, 0.30, 0.30, 0.10)
 
 
 def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.DataFrame:
@@ -235,32 +333,46 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
         "pe_inv", "pb_inv", "fcf_yield", "evebitda_inv",          # value
         "roe", "gross_margin", "margin", "de_inv",                  # quality
         "current_ratio", "earnings_growth",                          # quality (cont.)
-        "mom_12m", "mom_6m", "high52_ratio",                        # momentum
+        "mom_12m", "mom_6m", "high52_ratio", "resid_mom",          # momentum
+        "vol_inv", "beta_inv",                                       # low-vol / BAB
     ]
     available_cols = [c for c in score_cols if c in df.columns]
     ranked = _sector_rank(df, available_cols)
 
+    def _ranked(cols: list[str]) -> pd.DataFrame:
+        """Select only the rank columns that exist (keeps backward compatibility
+        when price-based factors weren't fetched)."""
+        present = [c for c in cols if c in ranked.columns]
+        return ranked[present] if present else pd.DataFrame(index=ranked.index)
+
     # Value: P/E, P/B, FCF yield, EV/EBITDA (4 sub-signals; skipna so missing evebitda ok)
     df["value_score"] = (
-        ranked[["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv"]].mean(axis=1, skipna=True) * 33
+        _ranked(["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv"]).mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
-    # Momentum: 12-1m, 6-1m, 52-week-high ratio (3 sub-signals).
+    # Momentum: 12-1m, 6-1m, 52-week-high ratio, residual (idiosyncratic) momentum.
     # Missing signals imputed at neutral 0.5 — same logic as original mom_12m.
     df["momentum_score"] = (
-        ranked[["mom_12m", "mom_6m", "high52_ratio"]].fillna(0.5).mean(axis=1) * 33
+        _ranked(["mom_12m", "mom_6m", "high52_ratio", "resid_mom"]).fillna(0.5).mean(axis=1) * 33
     ).clip(0, 33).astype(int)
     # Quality: ROE, gross margin (Novy-Marx), net margin, D/E, current ratio, earnings growth
     df["quality_score"] = (
-        ranked[["roe", "gross_margin", "margin", "de_inv", "current_ratio", "earnings_growth"]]
+        _ranked(["roe", "gross_margin", "margin", "de_inv", "current_ratio", "earnings_growth"])
         .mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
+    # Low-vol / BAB: inverse realized volatility + inverse beta (2 sub-signals).
+    # Missing imputed at neutral 0.5 (don't penalise thin-history names to worst).
+    df["low_vol_score"] = (
+        _ranked(["vol_inv", "beta_inv"]).fillna(0.5).mean(axis=1) * 33
+    ).fillna(16).clip(0, 33).astype(int)
 
-    wv, wm, wq = _REGIME_WEIGHTS.get(regime_label or "", _DEFAULT_WEIGHTS)
-    # Each component is 0-33; multiply by 3*weight so equal-weight still gives 0-99
+    wv, wm, wq, wl = _REGIME_WEIGHTS.get(regime_label or "", _DEFAULT_WEIGHTS)
+    # Each component is 0-33; multiply by 3*weight so weights summing to 1 give 0-99
+    # regardless of the number of sleeves.
     df["composite_score"] = (
         df["value_score"] * 3 * wv
         + df["momentum_score"] * 3 * wm
         + df["quality_score"] * 3 * wq
+        + df["low_vol_score"] * 3 * wl
     ).round().clip(0, 99).astype(int)
     return df
 
@@ -285,17 +397,29 @@ def prefetch_screener_data(tickers: list[str]) -> dict:
     """
     log.info("Pre-fetching screener data for %d tickers...", len(tickers))
     infos = _fetch_all_infos(tickers)
-    momentum = _fetch_momentum_batch(tickers)
+    # Download the universe close once and share it across momentum + price factors.
+    close: pd.DataFrame | None = None
+    try:
+        raw = yf.download(tickers, period="12mo", auto_adjust=True, progress=False)
+        close = _extract_close(raw, tickers)
+    except Exception:
+        log.warning("Pre-fetch: universe close download failed", exc_info=True)
+        close = None
+    spy_close = _fetch_spy_close()
+    momentum = _fetch_momentum_batch(tickers, close=close)
+    price_factors = _fetch_price_factors_batch(tickers, close=close, spy_close=spy_close)
     result = {
         "infos": infos,
         "momentum": momentum,
+        "price_factors": price_factors,
         "timestamp": datetime.now(UTC).isoformat(),
         "ticker_count": len(tickers),
     }
     log.info(
-        "Pre-fetch complete: %d infos, %d momentum entries",
+        "Pre-fetch complete: %d infos, %d momentum entries, %d price-factor entries",
         sum(1 for v in infos.values() if v is not None),
         sum(1 for v in momentum.values() if v != (None, None, None, None)),
+        sum(1 for v in price_factors.values() if v != (None, None, None)),
     )
     return result
 
@@ -320,6 +444,7 @@ def run_factor_screen(
     if prefetched is not None:
         infos = prefetched["infos"]
         momentum = prefetched["momentum"]
+        price_factors = prefetched.get("price_factors", {})
         log.info(
             "Using pre-fetched screener data from %s (%d tickers)",
             prefetched.get("timestamp", "?"), prefetched.get("ticker_count", 0),
@@ -327,6 +452,7 @@ def run_factor_screen(
     else:
         infos = _fetch_all_infos(tickers)
         momentum = _fetch_momentum_batch(tickers)
+        price_factors = _fetch_price_factors_batch(tickers)
 
     if momentum and all(v == (None, None, None, None) for v in momentum.values()):
         log.error(
@@ -335,7 +461,7 @@ def run_factor_screen(
             len(tickers),
         )
 
-    df = _build_factor_df(infos, momentum)
+    df = _build_factor_df(infos, momentum, price_factors)
     if df.empty:
         return []
 
@@ -373,6 +499,7 @@ def run_factor_screen(
             value_score=int(row["value_score"]),
             momentum_score=int(row["momentum_score"]),
             quality_score=int(row["quality_score"]),
+            low_vol_score=int(row["low_vol_score"]),
             research=research_map.get(t),
         ))
     return candidates

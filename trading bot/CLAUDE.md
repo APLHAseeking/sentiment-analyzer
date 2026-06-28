@@ -47,6 +47,16 @@
 > strips suffixes; DB migrations use `PRAGMA table_info`; DELEVERAGE circuit-breaker tests
 > added; broker tests use real alpaca enums; regime causal-test made non-vacuous. No open
 > findings remain from any prior review.
+> 2026-06-28: added three profitable strategies (cost-conscious; see
+> `docs/superpowers/plans/` review). Phase 1 screener gained a 4th **low-vol/BAB** sleeve
+> and a **residual-momentum** sub-signal (both price-derived, zero LLM cost;
+> `_REGIME_WEIGHTS` are now 4-tuples). New **Phase 2.5 insider** signal source: SEC EDGAR
+> Form 4 open-market buys (`bot/insider.py`, `bot/insider_signal.py`, `InsiderConfig`,
+> `insider_disclosures` table, `_process_insider_signal`, `signal_type="insider"`), capped
+> like congressional so added API cost is bounded (≤2 scored candidates/day). PIT backtest
+> (`backtesting/backtest_price_factors.py`) over a fixed/survivorship-biased universe:
+> residual momentum Sharpe ~0.88 / +5.8%/yr alpha vs SPY ~0.66; low-vol/BAB cuts beta to
+> ~0.6 and drawdown below SPY (defensive). Test count: **804** (+49).
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -89,9 +99,10 @@ Secrets come from environment / `.env` (see `.env.example`): `ANTHROPIC_API_KEY`
 `orchestration/main_loop.py` → `RegimeAwareOrchestrator` is the spine; everything else is a layer it wires together.
 
 **Signal hierarchy (per morning pipeline):**
-1. **Phase 1 — fundamental factor screener** (`screener/factor_scorer.py`): *primary* signal. Sector-neutral value/momentum/quality composite over the universe; top N go to AI scoring. **Momentum = 12-month return** (`mom_12m`); 1-month is display-only.
+1. **Phase 1 — fundamental factor screener** (`screener/factor_scorer.py`): *primary* signal. Sector-neutral composite of **four** sleeves — value, momentum, quality, and **low-vol/BAB** — over the universe; top N go to AI scoring. **Momentum = 12-month return** (`mom_12m`) plus 6-1m, 52w-high ratio, and **residual (idiosyncratic) momentum** (`resid_mom`); 1-month is display-only. The **low-vol sleeve** (`vol_inv`, `beta_inv`) ranks low realized-vol / low-beta names higher; it is regime-weighted up in bear/crash and down in bull/euphoria (`_REGIME_WEIGHTS` are 4-tuples summing to 1.0). Low-vol/BAB and residual momentum are price-derived (one shared SPY download), so they add **zero LLM cost**.
 2. **Phase 2 — congressional disclosures** (`bot/scraper.py` → `bot/signal_engine.py`): *supplementary*. Capped at `_CONGRESSIONAL_MAX_PCT = 3%` NAV and `_CONGRESSIONAL_MAX_PER_DAY = 1`. A ticker in **both** screener and disclosures gets the `"both"` signal type, full conviction credit, and no congressional size cap.
-3. **Phase 3 — inverse-ETF hedge** (`hedge/hedge_engine.py`): opens/closes inverse ETFs (SH/PSQ/RWM/…) when the regime is bear/crash.
+3. **Phase 2.5 — insider buys** (`bot/insider.py` → `bot/insider_signal.py`): *supplementary*. SEC EDGAR Form 4 open-market purchases (transaction code `P`). Capped via `InsiderConfig` (`max_pct` 3% NAV, `max_per_day` 2) so its bounded LLM-scoring cost stays small. Routed through `_process_insider_signal` (mirrors `_process_signal`) with `signal_type="insider"`; a ticker also in the screener resolves to `"both"`. SEC requires a `User-Agent` with contact email (`InsiderConfig.sec_user_agent`, env `SEC_USER_AGENT`).
+4. **Phase 3 — inverse-ETF hedge** (`hedge/hedge_engine.py`): opens/closes inverse ETFs (SH/PSQ/RWM/…) when the regime is bear/crash.
 
 **Decision flow for a candidate:** event-calendar gate (`utils/event_calendar.py`) → `gather_research` → AI entry score (`bot/ai_analyst.score_entry_with_debate`; bull/bear debate for conviction ≥ 7) → regime allocation scaling (`regime/allocation_engine.py`) → correlation filter (`risk/correlation.py`) → risk-manager veto (`risk/risk_manager.py`) → `Portfolio.open_position`.
 
@@ -101,11 +112,11 @@ Secrets come from environment / `.env` (see `.env.example`): `ANTHROPIC_API_KEY`
 
 **Portfolio (`bot/portfolio.py`):** position open/close/reduce, soft stop-loss / take-profit enforcement, **NAV-based sizing** (cash + mark-to-market), and `reconcile_with_broker` (books ghost positions with a matching broker fill into `closed_positions`, otherwise deletes-and-alerts; alerts on untracked ones).
 
-**Config (`system/config.py`):** one frozen `Settings` dataclass with nested typed configs (`RegimeConfig`, `RiskConfig`, `AllocationConfig`, `HedgeConfig`, `CorrelationConfig`, `ExecutionConfig`, `BacktestConfig`, …). Import the module-level `settings` singleton everywhere. All tunable parameters live here — do not hardcode constants in logic modules. `Settings.validate()` enforces circuit-breaker ordering.
+**Config (`system/config.py`):** one frozen `Settings` dataclass with nested typed configs (`RegimeConfig`, `RiskConfig`, `AllocationConfig`, `HedgeConfig`, `CorrelationConfig`, `ExecutionConfig`, `BacktestConfig`, `InsiderConfig`, …). Import the module-level `settings` singleton everywhere. All tunable parameters live here — do not hardcode constants in logic modules. `Settings.validate()` enforces circuit-breaker ordering.
 
 **Backtesting (`backtesting/`):** `walk_forward.py` (rolling train/test, frozen scaler, forward-only classification), `simulation.py` (`simulate_portfolio`), `metrics.py`, `benchmarks.py`, `analysis.py`, `stress_test.py`.
 
-**Persistence (`bot/db.py`):** SQLite tables — `disclosures`, `signals`, `fundamental_signals`, `positions`, `closed_positions`, `portfolio_log`, `regime_log`, `regime_transitions`, `risk_events`, `backtest_results`, `schema_version`. WAL mode; `foreign_keys=ON`; migrations in `_MIGRATIONS` keyed by `schema_version`. `realized_pnl` is net of both-side commissions.
+**Persistence (`bot/db.py`):** SQLite tables — `disclosures`, `insider_disclosures`, `signals`, `fundamental_signals`, `positions`, `closed_positions`, `portfolio_log`, `regime_log`, `regime_transitions`, `risk_events`, `backtest_results`, `schema_version`. Insider positions store `signal_id=NULL` (no FK into the congressional `signals` table); the Form 4 buy is persisted in `insider_disclosures` for audit + cluster counting. WAL mode; `foreign_keys=ON`; migrations in `_MIGRATIONS` keyed by `schema_version`. `realized_pnl` is net of both-side commissions.
 
 **Monitoring (`monitoring/`):** structured JSON logging with an `EventType` enum (`emit_event`) and pluggable alert senders (`fire_alert`, webhook/log).
 
@@ -138,7 +149,8 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 755 tests; keep green (run from inside trading bot/)
+pytest                                 # 804 tests; keep green (run from inside trading bot/)
+python backtesting/backtest_price_factors.py  # PIT backtest of low-vol/BAB + residual momentum
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 

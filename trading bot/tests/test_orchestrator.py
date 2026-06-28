@@ -23,6 +23,8 @@ def orch(mocker):
     mocker.patch("orchestration.main_loop.get_regime_data", return_value=MagicMock())
     mocker.patch("orchestration.main_loop.run_scraper", return_value=[])
     mocker.patch("orchestration.main_loop.filter_disclosures", return_value=[])
+    mocker.patch("orchestration.main_loop.run_insider_scraper", return_value=[])
+    mocker.patch("orchestration.main_loop.filter_insider_disclosures", return_value=[])
     mocker.patch("orchestration.main_loop.get_universe", return_value=[])
     mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[])
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
@@ -78,6 +80,52 @@ def test_congressional_phase_receives_fundamental_ticker_set(mocker, orch):
     assert "AAPL" in kwargs["fundamental_tickers"]
 
 
+def test_insider_phase_reaches_process_with_fundamental_ticker_set(mocker, orch):
+    """Phase 2.5 routes qualified insider buys to _process_insider_signal with the
+    fundamental ticker overlap available for signal_type="both" resolution."""
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
+        FactorCandidate(ticker="MSFT", composite_score=82, value_score=27,
+                         momentum_score=28, quality_score=27, research=None),
+    ])
+    mocker.patch("orchestration.main_loop.run_insider_scraper", return_value=[{"ticker": "MSFT"}])
+    mocker.patch("orchestration.main_loop.filter_insider_disclosures", return_value=[
+        {"id": "MSFT:CEO", "insider_name": "Nadella", "ticker": "MSFT", "title": "CEO",
+         "transaction_date": "2026-06-20", "disclosure_date": "2026-06-22",
+         "transaction_type": "buy", "amount_usd": 500_000.0, "scraped_at": "x"},
+    ])
+    mocker.patch.object(orch, "_process_fundamental_candidate", return_value=False)
+    insider_spy = mocker.patch.object(orch, "_process_insider_signal", return_value=False)
+
+    orch.run_morning_pipeline()
+
+    insider_spy.assert_called_once()
+    _, kwargs = insider_spy.call_args
+    assert "MSFT" in kwargs["fundamental_tickers"]
+
+
+def test_insider_phase_respects_daily_cap(mocker, orch):
+    """No more than InsiderConfig.max_per_day insider-only entries open per morning."""
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    discs = [
+        {"id": f"T{i}", "insider_name": "X", "ticker": f"T{i}", "title": "CEO",
+         "transaction_date": "2026-06-20", "disclosure_date": "2026-06-22",
+         "transaction_type": "buy", "amount_usd": 100_000.0, "scraped_at": "x"}
+        for i in range(5)
+    ]
+    mocker.patch("orchestration.main_loop.run_insider_scraper", return_value=discs)
+    mocker.patch("orchestration.main_loop.filter_insider_disclosures", return_value=discs)
+    mocker.patch.object(orch, "_process_fundamental_candidate", return_value=False)
+    insider_spy = mocker.patch.object(orch, "_process_insider_signal", return_value=True)
+    orch._portfolio.can_open_new_position.return_value = True
+
+    orch.run_morning_pipeline()
+
+    assert insider_spy.call_count == orch._cfg.insider.max_per_day
+
+
 def test_pipeline_enforces_stop_losses_even_at_capacity(mocker, orch):
     orch._broker = _mock_broker(cash=5_000, position_value=95_000)  # 95% invested
     mocker.patch.object(orch, "_process_signal")
@@ -98,6 +146,8 @@ def orch_fitted(mocker):
     mocker.patch("orchestration.main_loop.get_regime_data", return_value=MagicMock())
     mocker.patch("orchestration.main_loop.run_scraper", return_value=[])
     mocker.patch("orchestration.main_loop.filter_disclosures", return_value=[])
+    mocker.patch("orchestration.main_loop.run_insider_scraper", return_value=[])
+    mocker.patch("orchestration.main_loop.filter_insider_disclosures", return_value=[])
     mocker.patch("orchestration.main_loop.get_universe", return_value=[])
     mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[])
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])

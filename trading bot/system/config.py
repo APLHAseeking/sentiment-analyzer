@@ -283,6 +283,27 @@ class DashboardConfig:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class InsiderConfig:
+    """Corporate-insider (SEC Form 4 open-market buys) supplementary signal source.
+
+    Bounded like the congressional source so its incremental LLM-scoring cost stays
+    small (at most `max_per_day` candidates reach the AI scorer)."""
+    enabled: bool = True
+    min_trade_usd: float = 50_000.0      # ignore small/automatic buys below this dollar value
+    max_lag_days: int = 45               # discard filings older than this (filing - transaction)
+    max_per_day: int = 2                 # at most N pure insider-only entries per morning
+    max_pct: float = 3.0                 # max position size for insider-only signals (% NAV)
+    max_filings_per_run: int = 120       # cap SEC fetches per run (fair-access + cost guard)
+    cluster_window_days: int = 30        # window for counting multiple insiders on same ticker
+    # SEC requires a descriptive User-Agent with a contact email (10 req/s fair-access).
+    sec_user_agent: str = field(
+        default_factory=lambda: _env(
+            "SEC_USER_AGENT", "trading-bot research Thomasvromen10@gmail.com"
+        )
+    )
+
+
+@dataclass(frozen=True)
 class Settings:
     db_path: str = field(default_factory=lambda: resolve(_env("DB_PATH", "trading.db")))
     log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "INFO"))
@@ -291,6 +312,7 @@ class Settings:
 
     credentials: Credentials = field(default_factory=Credentials)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
+    insider: InsiderConfig = field(default_factory=InsiderConfig)
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)
     regime: RegimeConfig = field(default_factory=RegimeConfig)

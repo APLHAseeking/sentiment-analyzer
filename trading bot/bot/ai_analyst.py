@@ -45,6 +45,16 @@ _CONGRESSIONAL_RULES = """
 - Amount $50,001-$100,000: full conviction
 - Amount $15,001-$50,000: neutral (no bonus)"""
 
+_INSIDER_RULES = """
+## Insider Signal Rules (corporate insiders — SEC Form 4 open-market buys, code P)
+Open-market purchases by a company's own officers/directors are a documented
+positive signal (insiders buy on information; they rarely buy a stock they expect to fall).
+- C-suite buyer (CEO/CFO/President/Chair): +1 conviction (strongest insider signal)
+- cluster_count 2-3 (other insiders buying same stock in last 30d): +1 conviction
+- cluster_count 4+: +2 conviction (cluster buying is a strong signal)
+- Amount > $250,000: +1 conviction (large conviction buy)
+- lag_days 15-30: penalise conviction -1; lag_days 31-45: penalise conviction -2"""
+
 _FUNDAMENTAL_RULES = """
 ## Fundamental Factor Score Rules
 The composite factor score (0-99) combines value, momentum, and quality percentile ranks within the S&P 500 + Russell 1000 universe.
@@ -163,7 +173,7 @@ _BEAR_SYSTEM = (
 
 _VALID_ENTRY_VALUES = {"buy", "skip"}
 _VALID_ACTION_VALUES = {"hold", "exit", "reduce"}
-_VALID_SIGNAL_TYPES = {"congressional", "fundamental", "both"}
+_VALID_SIGNAL_TYPES = {"congressional", "fundamental", "both", "insider"}
 _VALID_SETUP_TYPES = {
     "breakout", "pullback_to_support", "trend_continuation",
     "reversal", "range_bound", "no_clean_setup",
@@ -228,6 +238,8 @@ def _build_entry_system(signal_type: str, has_disclosure: bool = True) -> str:
     parts = [_ENTRY_SCHEMA]
     if signal_type in ("congressional", "both") and has_disclosure:
         parts.append(_CONGRESSIONAL_RULES)
+    if signal_type == "insider" and has_disclosure:
+        parts.append(_INSIDER_RULES)
     if signal_type in ("fundamental", "both"):
         parts.append(_FUNDAMENTAL_RULES)
     if signal_type == "both":
@@ -414,6 +426,15 @@ def _build_entry_prompt(
             f"Amount range: {disclosure['amount_range']}",
             f"Committees held: {', '.join(committees)}",
             f"Cluster count (other members buying same stock last 30d): {cluster_count}",
+        ]
+    if signal_type == "insider" and disclosure:
+        lines += [
+            f"Insider: {disclosure.get('insider_name', 'Unknown')} ({disclosure.get('title', 'Insider')})",
+            f"Transaction date: {disclosure.get('transaction_date', '')} | "
+            f"Disclosure date: {disclosure.get('disclosure_date', '')}",
+            f"Lag days: {lag_days}",
+            f"Amount: ${float(disclosure.get('amount_usd', 0) or 0):,.0f}",
+            f"Cluster count (other insiders buying same stock last 30d): {cluster_count}",
         ]
     if signal_type in ("fundamental", "both") and factor_score is not None:
         lines.append(f"Composite factor score: {factor_score}/99")

@@ -46,6 +46,8 @@ from bot.signal_engine import (
     clear_sector_cache, get_etf_close_history, clear_etf_cache,
 )
 from bot.committee import get_committees_for_politician
+from bot.insider import run_insider_scraper
+from bot.insider_signal import filter_insider_disclosures, get_insider_cluster_count
 from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore, score_technical
 from bot.db import get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken
 from bot.universe import refresh_universe, get_universe
@@ -78,6 +80,8 @@ _SCREENER_TOP_N = 12
 # size and frequency so the portfolio isn't overweight on a single signal source.
 _CONGRESSIONAL_MAX_PCT = 3.0      # max position size for congressional-only signals (% NAV)
 _CONGRESSIONAL_MAX_PER_DAY = 1    # at most 1 pure congressional-only entry per morning
+# Insider (SEC Form 4) signals are supplementary like congressional — capped in size and
+# frequency so the bounded LLM-scoring cost stays small. Caps read from InsiderConfig.
 _ATR_FALLBACK_PCT = 10.0          # conservative (high-vol) ATR fallback when history() fails —
                                    # a smaller position results, the safe direction when
                                    # volatility is unknown (vol_target_size_pct: size ∝ 1/atr_pct)
@@ -592,6 +596,41 @@ class RegimeAwareOrchestrator:
                 except Exception:
                     log.exception("Failed processing %s — skipping", disc.get("ticker", "?"))
 
+            # ── Phase 2.5: Insider (SEC Form 4) signals (supplementary) ──────────
+            # Open-market insider buys, capped at settings.insider.max_pct per
+            # position and max_per_day entries per morning. A ticker also flagged by
+            # the fundamental screener gets the "both" signal type, full conviction
+            # credit and no insider cap (resolved per-ticker like congressional).
+            if self._cfg.insider.enabled:
+                try:
+                    raw_insider = run_insider_scraper()
+                    qualified_insider = filter_insider_disclosures(raw_insider)
+                    log.info("Insider Form 4: %d new, %d qualified",
+                             len(raw_insider), len(qualified_insider))
+                    insider_opened = 0
+                    for disc in qualified_insider:
+                        if not self._portfolio.can_open_new_position():
+                            log.info("Position limit reached — stopping Phase 2.5")
+                            break
+                        if insider_opened >= self._cfg.insider.max_per_day:
+                            log.info("Insider daily limit (%d) reached — skipping remaining",
+                                     self._cfg.insider.max_per_day)
+                            break
+                        if disc["ticker"] in all_open_tickers:
+                            continue
+                        try:
+                            opened = self._process_insider_signal(
+                                disc, sector_allocation, fundamental_tickers=fundamental_tickers
+                            )
+                            if opened:
+                                all_open_tickers.add(disc["ticker"])
+                                insider_opened += 1
+                        except Exception:
+                            log.exception("Failed processing insider %s — skipping",
+                                          disc.get("ticker", "?"))
+                except Exception:
+                    log.exception("Phase 2.5 insider screener failed — skipping")
+
         # ── Phase 3: inverse ETF hedge pass ─────────────────────────
         if is_hedge_now:
             self._run_hedge_pass()
@@ -852,6 +891,126 @@ class RegimeAwareOrchestrator:
             ticker=ticker, position_pct=final_pct,
             signal_id=signal_id, rationale=score.rationale, entry_price=entry_price,
             initial_stop_pct=initial_stop_pct,
+        )
+        sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
+        emit_event(log, EventType.ORDER_PLACED,
+                   f"Opened {ticker} ({signal_type}) pct={final_pct:.1f}% conv={score.conviction}",
+                   data={"ticker": ticker, "pct": final_pct,
+                         "regime": self._regime_state.regime_label if self._regime_state else "?",
+                         "conviction": score.conviction, "signal_type": signal_type})
+        return True
+
+    def _process_insider_signal(
+        self,
+        disc: dict,
+        sector_allocation: dict,
+        fundamental_tickers: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Process a SEC Form 4 insider open-market buy. Returns True if a position
+        was opened. Mirrors _process_signal (congressional) but with insider context
+        and the insider size cap; reuses the same scoring/sizing/risk pipeline."""
+        ticker = disc["ticker"]
+        signal_type = "both" if ticker in fundamental_tickers else "insider"
+        sector = get_sector_for_ticker(ticker)
+        lag = compute_lag_days(disc["transaction_date"], disc["disclosure_date"])
+        since = (date.today() - timedelta(days=self._cfg.insider.cluster_window_days)).isoformat()
+        cluster_count = get_insider_cluster_count(ticker, since)
+
+        has_event, event_reason = has_upcoming_event(
+            ticker, window_days=self._cfg.universe.event_exclusion_window_days
+        )
+        if has_event:
+            log.info("Skipping insider %s: upcoming event — %s", ticker, event_reason)
+            return False
+
+        research = gather_research(ticker)
+
+        # Scored as "insider" so the LLM sees the Form 4 context; a "both" ticker is
+        # scored with the insider disclosure plus the fundamental factor rules.
+        score: EntryScore = score_entry_with_debate(
+            disc, committees=[], sector=sector,
+            lag_days=lag, estimated_cost_pct=1.5,
+            research=research, cluster_count=cluster_count,
+            signal_type=signal_type,
+        )
+        if score.entry != "buy":
+            log.info("Skipping insider %s: AI conviction %d", ticker, score.conviction)
+            return False
+
+        _t = yf.Ticker(ticker)
+        try:
+            entry_price = _t.fast_info.last_price or 0.0
+        except Exception:
+            entry_price = 0.0
+        if not entry_price:
+            emit_event(log, EventType.DEAD_FEED,
+                       f"No price available for {ticker} — yfinance returned None", alert=True)
+            return False
+
+        sized = self._size_position(
+            ticker=ticker, sector=sector, entry_price=entry_price,
+            score_conviction=score.conviction, signal_type=signal_type,
+        )
+        if sized is None:
+            return False
+        base_pct, initial_stop_pct = sized
+
+        if self._regime_state is not None:
+            alloc_decision = self._alloc.compute(ticker, base_pct, self._regime_state)
+            final_pct = alloc_decision.final_position_pct
+            if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+                emit_event(log, EventType.SIGNAL_REJECTED,
+                           f"{ticker} blocked by regime allocation ({alloc_decision.rationale})")
+                return False
+        else:
+            final_pct = base_pct
+
+        # Insider-only signals are supplementary — cap position size. A ticker that
+        # also qualifies on the fundamental screener ("both") gets no insider cap.
+        if signal_type != "both":
+            final_pct = min(final_pct, self._cfg.insider.max_pct)
+
+        corr_mult = self._corr_filter.size_multiplier(ticker)
+        final_pct *= corr_mult
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(log, EventType.SIGNAL_REJECTED,
+                       f"{ticker} reduced to zero by correlation filter (mult={corr_mult:.2f})")
+            return False
+
+        final_pct *= self._port_vol_mult
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(log, EventType.SIGNAL_REJECTED,
+                       f"{ticker} reduced to zero by portfolio-vol gate (mult={self._port_vol_mult:.3f})")
+            return False
+
+        _positions_now = self._broker.get_positions()
+        _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
+        _nav = self._broker.get_cash() + _invested_usd
+        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
+        position_size_usd = _nav * final_pct / 100
+        adv_usd = research.avg_daily_volume_usd if research else None
+        veto = self._risk.validate_order(
+            ticker=ticker, position_pct=final_pct, sector=sector,
+            sector_allocation=sector_allocation,
+            position_size_usd=position_size_usd, adv_usd=adv_usd,
+            current_invested_pct=_current_invested_pct,
+        )
+        if not veto.allowed:
+            emit_event(log, EventType.RISK_VETO, f"{ticker} vetoed: {veto.reason}")
+            return False
+
+        final_pct *= veto.size_multiplier
+        if final_pct < _MIN_ECONOMIC_POSITION_PCT:
+            emit_event(log, EventType.SIGNAL_REJECTED,
+                       f"{ticker} reduced to zero by risk-state size multiplier (mult={veto.size_multiplier:.3f})")
+            return False
+
+        # No FK into the congressional `signals` table — insider buys are persisted in
+        # `insider_disclosures` for audit/cluster counting; the position records source.
+        self._portfolio.open_position(
+            ticker=ticker, position_pct=final_pct,
+            signal_id=None, rationale=score.rationale, entry_price=entry_price,
+            signal_source=signal_type, initial_stop_pct=initial_stop_pct,
         )
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(log, EventType.ORDER_PLACED,

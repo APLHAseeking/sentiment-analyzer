@@ -126,6 +126,20 @@ CREATE TABLE IF NOT EXISTS fundamental_signals (
 CREATE INDEX IF NOT EXISTS idx_fundamental_signals_date ON fundamental_signals(signal_date);
 CREATE INDEX IF NOT EXISTS idx_fundamental_signals_ticker ON fundamental_signals(ticker);
 
+CREATE TABLE IF NOT EXISTS insider_disclosures (
+    id TEXT PRIMARY KEY,
+    insider_name TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    title TEXT NOT NULL,
+    transaction_date TEXT NOT NULL,
+    disclosure_date TEXT NOT NULL,
+    transaction_type TEXT NOT NULL,
+    amount_usd REAL NOT NULL,
+    scraped_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_insider_disclosures_ticker ON insider_disclosures(ticker);
+CREATE INDEX IF NOT EXISTS idx_insider_disclosures_disclosure_date ON insider_disclosures(disclosure_date);
+
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY,
     description TEXT NOT NULL,
@@ -460,6 +474,36 @@ def get_recent_disclosures_for_ticker(ticker: str, since_date: str) -> list[sqli
     with get_conn() as conn:
         return conn.execute(
             """SELECT * FROM disclosures
+               WHERE ticker = ? AND transaction_date >= ?
+               ORDER BY transaction_date DESC""",
+            (ticker.upper(), since_date),
+        ).fetchall()
+
+
+def get_existing_insider_ids() -> set[str]:
+    # Limit to the last 90 days — older Form 4 filings are never re-submitted.
+    with get_conn() as conn:
+        return {row[0] for row in conn.execute(
+            "SELECT id FROM insider_disclosures WHERE disclosure_date >= date('now', '-90 days')"
+        ).fetchall()}
+
+
+def insert_insider_disclosures(disclosures: list[dict]) -> None:
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR IGNORE INTO insider_disclosures
+               (id, insider_name, ticker, title, transaction_date, disclosure_date,
+                transaction_type, amount_usd, scraped_at)
+               VALUES (:id, :insider_name, :ticker, :title, :transaction_date,
+                       :disclosure_date, :transaction_type, :amount_usd, :scraped_at)""",
+            disclosures,
+        )
+
+
+def get_recent_insider_disclosures_for_ticker(ticker: str, since_date: str) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM insider_disclosures
                WHERE ticker = ? AND transaction_date >= ?
                ORDER BY transaction_date DESC""",
             (ticker.upper(), since_date),

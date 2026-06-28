@@ -33,6 +33,11 @@ def _mom(m1=5.0, m12=10.0, m6=6.0, h52=0.95):
     return (m1, m12, m6, h52)
 
 
+# 3-tuple: (realized_vol_pct, beta, resid_mom_pct)
+def _pf(vol=20.0, beta=1.0, resid=5.0):
+    return (vol, beta, resid)
+
+
 def test_build_factor_df_basic():
     infos = {"AAPL": _make_info(), "MSFT": _make_info(pe=30.0, pb=4.0)}
     momentum = {"AAPL": _mom(), "MSFT": _mom(m1=1.0, m12=2.0)}
@@ -169,6 +174,68 @@ def test_compute_composite_returns_scores_in_range():
     assert (scored["composite_score"] <= 99).all()
 
 
+def test_build_factor_df_price_factors_populated():
+    """Price factors are inverted correctly: lower vol/beta -> higher ranked signal."""
+    infos = {"AAPL": _make_info()}
+    df = _build_factor_df(infos, {"AAPL": _mom()}, {"AAPL": _pf(vol=18.0, beta=0.8, resid=12.0)})
+    assert df.loc["AAPL", "vol_inv"] == pytest.approx(-18.0)
+    assert df.loc["AAPL", "beta_inv"] == pytest.approx(-0.8)
+    assert df.loc["AAPL", "resid_mom"] == pytest.approx(12.0)
+
+
+def test_compute_composite_prefers_low_vol():
+    """A low-volatility, low-beta name should outscore a high-vol, high-beta peer."""
+    infos = {"CALM": _make_info(), "WILD": _make_info()}
+    momentum = {"CALM": _mom(), "WILD": _mom()}
+    price_factors = {"CALM": _pf(vol=12.0, beta=0.6), "WILD": _pf(vol=45.0, beta=1.8)}
+    df = _build_factor_df(infos, momentum, price_factors)
+    scored = _compute_composite(df)
+    assert scored.loc["CALM", "low_vol_score"] > scored.loc["WILD", "low_vol_score"]
+
+
+def test_compute_composite_residual_momentum_feeds_momentum_sleeve():
+    """Higher residual momentum lifts the momentum sleeve when other signals tie."""
+    infos = {"HIGH": _make_info(), "LOW": _make_info()}
+    momentum = {"HIGH": _mom(), "LOW": _mom()}
+    price_factors = {"HIGH": _pf(resid=30.0), "LOW": _pf(resid=-10.0)}
+    df = _build_factor_df(infos, momentum, price_factors)
+    scored = _compute_composite(df)
+    assert scored.loc["HIGH", "momentum_score"] > scored.loc["LOW", "momentum_score"]
+
+
+def test_compute_composite_missing_price_factors_neutral():
+    """Names without price-factor data must not crash and land near neutral (no worst-case)."""
+    infos = {"A": _make_info(), "B": _make_info()}
+    momentum = {"A": _mom(), "B": _mom()}
+    df = _build_factor_df(infos, momentum)  # no price_factors at all
+    scored = _compute_composite(df)
+    assert (scored["composite_score"] >= 0).all()
+    assert (scored["composite_score"] <= 99).all()
+    # neutral 0.5 rank * 33 ~= 16
+    assert (scored["low_vol_score"] == 16).all()
+
+
+def test_regime_weights_sum_to_one():
+    """Every regime weight tuple (value, momentum, quality, low_vol) must sum to 1.0."""
+    from screener.factor_scorer import _REGIME_WEIGHTS, _DEFAULT_WEIGHTS
+    for label, weights in _REGIME_WEIGHTS.items():
+        assert len(weights) == 4, label
+        assert sum(weights) == pytest.approx(1.0), label
+    assert len(_DEFAULT_WEIGHTS) == 4
+    assert sum(_DEFAULT_WEIGHTS) == pytest.approx(1.0)
+
+
+def test_compute_composite_in_range_with_price_factors():
+    infos = {t: _make_info() for t in ["A", "B", "C"]}
+    momentum = {t: _mom() for t in ["A", "B", "C"]}
+    price_factors = {"A": _pf(vol=15.0, beta=0.7), "B": _pf(vol=30.0, beta=1.3), "C": _pf()}
+    df = _build_factor_df(infos, momentum, price_factors)
+    for regime in ["crash", "bear", "neutral", "bull", "euphoria", "melt-up", "deep-bear"]:
+        scored = _compute_composite(df, regime_label=regime)
+        assert (scored["composite_score"] >= 0).all()
+        assert (scored["composite_score"] <= 99).all()
+
+
 def test_run_factor_screen_empty_tickers():
     result = run_factor_screen([], top_n=5)
     assert result == []
@@ -184,6 +251,10 @@ def test_run_factor_screen_returns_top_n(mocker):
     mocker.patch(
         "screener.factor_scorer._fetch_momentum_batch",
         return_value={t: (float(i), float(i * 2), float(i), 0.9) for i, t in enumerate(tickers)},
+    )
+    mocker.patch(
+        "screener.factor_scorer._fetch_price_factors_batch",
+        return_value={t: (20.0, 1.0, float(i)) for i, t in enumerate(tickers)},
     )
     mocker.patch(
         "screener.factor_scorer._gather_research_with_momentum",
@@ -203,6 +274,10 @@ def test_run_factor_screen_all_none_returns_empty(mocker):
         "screener.factor_scorer._fetch_momentum_batch",
         return_value={"AAPL": (None, None, None, None), "MSFT": (None, None, None, None)},
     )
+    mocker.patch(
+        "screener.factor_scorer._fetch_price_factors_batch",
+        return_value={"AAPL": (None, None, None), "MSFT": (None, None, None)},
+    )
     result = run_factor_screen(["AAPL", "MSFT"], top_n=5)
     assert result == []
 
@@ -217,6 +292,10 @@ def test_run_factor_screen_calls_research_for_top_tickers(mocker):
     mocker.patch(
         "screener.factor_scorer._fetch_momentum_batch",
         return_value={"AAPL": (5.0, 10.0, 6.0, 0.95), "MSFT": (3.0, 8.0, 5.0, 0.88)},
+    )
+    mocker.patch(
+        "screener.factor_scorer._fetch_price_factors_batch",
+        return_value={"AAPL": (18.0, 0.9, 7.0), "MSFT": (25.0, 1.2, 4.0)},
     )
     research_spy = mocker.patch(
         "screener.factor_scorer._gather_research_with_momentum",
