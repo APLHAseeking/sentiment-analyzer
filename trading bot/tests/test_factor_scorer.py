@@ -216,13 +216,28 @@ def test_compute_composite_missing_price_factors_neutral():
 
 
 def test_regime_weights_sum_to_one():
-    """Every regime weight tuple (value, momentum, quality, low_vol) must sum to 1.0."""
+    """Every regime weight tuple (value, momentum, quality, low_vol, reversal) sums to 1.0."""
     from screener.factor_scorer import _REGIME_WEIGHTS, _DEFAULT_WEIGHTS
     for label, weights in _REGIME_WEIGHTS.items():
-        assert len(weights) == 4, label
+        assert len(weights) == 5, label
         assert sum(weights) == pytest.approx(1.0), label
-    assert len(_DEFAULT_WEIGHTS) == 4
+    assert len(_DEFAULT_WEIGHTS) == 5
     assert sum(_DEFAULT_WEIGHTS) == pytest.approx(1.0)
+
+
+def test_compute_composite_reversal_prefers_oversold():
+    """A recent loser (negative 1m return) should outscore a recent winner on reversal."""
+    infos = {"LOSER": _make_info(), "WINNER": _make_info()}
+    momentum = {"LOSER": _mom(m1=-20.0), "WINNER": _mom(m1=25.0)}
+    df = _build_factor_df(infos, momentum, {"LOSER": _pf(), "WINNER": _pf()})
+    scored = _compute_composite(df)
+    assert scored.loc["LOSER", "reversal_score"] > scored.loc["WINNER", "reversal_score"]
+
+
+def test_reversal_weighted_up_in_neutral_vs_bull():
+    """Reversal carries more composite weight in neutral than in bull (regime gating)."""
+    from screener.factor_scorer import _REGIME_WEIGHTS
+    assert _REGIME_WEIGHTS["neutral"][4] > _REGIME_WEIGHTS["bull"][4]
 
 
 def test_compute_composite_in_range_with_price_factors():

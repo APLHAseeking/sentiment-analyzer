@@ -78,7 +78,10 @@ def _factor_scores(close: pd.DataFrame, spy: pd.Series, asof_loc: int) -> pd.Dat
         resid = aligned["s"] - beta * aligned["m"]
         resid_win = resid.iloc[:max(0, len(resid) - SKIP)]
         resid_mom = (1 + resid_win).prod() - 1 if len(resid_win) else np.nan
-        rows[t] = {"vol": vol, "beta": beta, "resid_mom": resid_mom}
+        # Short-term reversal (mean reversion): negative of trailing 1-month return,
+        # so the biggest recent losers (most oversold) score highest.
+        rev = -(col.iloc[-1] / col.iloc[-SKIP] - 1) if len(col) > SKIP else np.nan
+        rows[t] = {"vol": vol, "beta": beta, "resid_mom": resid_mom, "reversal": rev}
     return pd.DataFrame(rows).T
 
 
@@ -119,6 +122,14 @@ def _pick_resid_mom(scores: pd.DataFrame) -> list[str]:
     return s[s["resid_mom"] >= cut].index.tolist()
 
 
+def _pick_reversal(scores: pd.DataFrame) -> list[str]:
+    s = scores.dropna(subset=["reversal"])
+    if s.empty:
+        return []
+    cut = s["reversal"].quantile(1 - TOP_QUANTILE)  # most oversold (biggest losers)
+    return s[s["reversal"] >= cut].index.tolist()
+
+
 def _pick_all(scores: pd.DataFrame) -> list[str]:
     return scores.index.tolist()
 
@@ -135,6 +146,7 @@ def main() -> None:
     strategies = {
         "Low-Vol / BAB": _pick_low_vol,
         "Residual Momentum": _pick_resid_mom,
+        "Mean Reversion (1m)": _pick_reversal,
         "Equal-Weight (baseline)": _pick_all,
     }
     bench_eq = spy.loc[rebal[0]:]

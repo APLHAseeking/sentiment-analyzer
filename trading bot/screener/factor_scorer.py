@@ -37,6 +37,7 @@ class FactorCandidate:
     quality_score: int
     research: ResearchReport | None
     low_vol_score: int = 0
+    reversal_score: int = 0
 
 
 def _fetch_info_with_retry(ticker: str) -> tuple[str, dict | None]:
@@ -264,6 +265,11 @@ def _build_factor_df(
                 "vol_inv": -vol if vol is not None and vol > 0 else None,
                 "beta_inv": -beta if beta is not None else None,
                 "resid_mom": resid_mom,
+                # Short-term reversal (mean reversion): last-month losers tend to
+                # bounce. -mom_1m so the most oversold names rank highest. Regime-
+                # gated in the composite (favoured in neutral/range-bound, suppressed
+                # in strong trends and crashes — see _REGIME_WEIGHTS).
+                "reversal": -mom1m if mom1m is not None else None,
             })
         except Exception:
             log.debug("Skipping %s in factor_df build", ticker, exc_info=True)
@@ -301,20 +307,26 @@ def _sector_rank(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     return result
 
 
-# Regime-specific factor weights (value, momentum, quality, low_vol must sum to 1.0).
-# In bear/crash: favour value + quality + low-vol (defensive, mean-reversion).
-# In bull/euphoria: favour momentum (trend-following works in rising markets) and
-# de-weight low-vol (low-beta names lag in strong rallies).
-_REGIME_WEIGHTS: dict[str, tuple[float, float, float, float]] = {
-    "crash":     (0.40, 0.10, 0.35, 0.15),
-    "deep-bear": (0.40, 0.10, 0.35, 0.15),
-    "bear":      (0.35, 0.15, 0.35, 0.15),
-    "neutral":   (0.30, 0.30, 0.30, 0.10),
-    "bull":      (0.20, 0.45, 0.25, 0.10),
-    "euphoria":  (0.25, 0.45, 0.25, 0.05),
-    "melt-up":   (0.25, 0.45, 0.25, 0.05),
+# Regime-specific factor weights (value, momentum, quality, low_vol, reversal — sum to 1.0).
+# Tuned from the PIT backtest in backtesting/backtest_price_factors.py:
+#   - Residual momentum (inside the momentum sleeve) was the strongest sleeve
+#     (Sharpe ~0.88, +5.8%/yr alpha vs SPY) -> momentum is weighted heavily in
+#     trending regimes (bull/euphoria/melt-up).
+#   - Low-vol/BAB was defensive (beta ~0.6, drawdown below SPY) -> weighted up in
+#     bear/crash where capital preservation matters.
+#   - Short-term reversal (mean reversion) works best in choppy/range-bound tape and
+#     for oversold bounces -> weighted up in neutral/bear, suppressed in strong trends
+#     (momentum dominates) and crashes (avoid catching falling knives).
+_REGIME_WEIGHTS: dict[str, tuple[float, float, float, float, float]] = {
+    "crash":     (0.35, 0.05, 0.35, 0.20, 0.05),
+    "deep-bear": (0.35, 0.05, 0.35, 0.20, 0.05),
+    "bear":      (0.30, 0.10, 0.30, 0.15, 0.15),
+    "neutral":   (0.25, 0.25, 0.25, 0.10, 0.15),
+    "bull":      (0.20, 0.40, 0.25, 0.10, 0.05),
+    "euphoria":  (0.25, 0.40, 0.25, 0.05, 0.05),
+    "melt-up":   (0.25, 0.40, 0.25, 0.05, 0.05),
 }
-_DEFAULT_WEIGHTS: tuple[float, float, float, float] = (0.30, 0.30, 0.30, 0.10)
+_DEFAULT_WEIGHTS: tuple[float, float, float, float, float] = (0.25, 0.25, 0.25, 0.10, 0.15)
 
 
 def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.DataFrame:
@@ -335,6 +347,7 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
         "current_ratio", "earnings_growth",                          # quality (cont.)
         "mom_12m", "mom_6m", "high52_ratio", "resid_mom",          # momentum
         "vol_inv", "beta_inv",                                       # low-vol / BAB
+        "reversal",                                                  # short-term reversal
     ]
     available_cols = [c for c in score_cols if c in df.columns]
     ranked = _sector_rank(df, available_cols)
@@ -364,8 +377,12 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
     df["low_vol_score"] = (
         _ranked(["vol_inv", "beta_inv"]).fillna(0.5).mean(axis=1) * 33
     ).fillna(16).clip(0, 33).astype(int)
+    # Short-term reversal (mean reversion): single oversold signal (-1m return).
+    df["reversal_score"] = (
+        _ranked(["reversal"]).fillna(0.5).mean(axis=1) * 33
+    ).fillna(16).clip(0, 33).astype(int)
 
-    wv, wm, wq, wl = _REGIME_WEIGHTS.get(regime_label or "", _DEFAULT_WEIGHTS)
+    wv, wm, wq, wl, wr = _REGIME_WEIGHTS.get(regime_label or "", _DEFAULT_WEIGHTS)
     # Each component is 0-33; multiply by 3*weight so weights summing to 1 give 0-99
     # regardless of the number of sleeves.
     df["composite_score"] = (
@@ -373,6 +390,7 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
         + df["momentum_score"] * 3 * wm
         + df["quality_score"] * 3 * wq
         + df["low_vol_score"] * 3 * wl
+        + df["reversal_score"] * 3 * wr
     ).round().clip(0, 99).astype(int)
     return df
 
@@ -500,6 +518,7 @@ def run_factor_screen(
             momentum_score=int(row["momentum_score"]),
             quality_score=int(row["quality_score"]),
             low_vol_score=int(row["low_vol_score"]),
+            reversal_score=int(row["reversal_score"]),
             research=research_map.get(t),
         ))
     return candidates
