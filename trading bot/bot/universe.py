@@ -16,15 +16,51 @@ _UNIVERSE: set[str] = set()
 _CACHE_FILE = "universe_cache.json"
 
 
-def _fetch_sp500() -> pd.DataFrame:
+def _fetch_sp500_ishares() -> pd.DataFrame:
+    """Fallback S&P 500 list via iShares IVV holdings CSV.
+
+    Same skiprows / column-validation logic as _fetch_russell1000; only the URL
+    and the output column name differ. Wikipedia is the preferred source because
+    it returns standard Symbol names; this is the fallback when Wikipedia is blocked.
+    """
+    url = (
+        "https://www.ishares.com/us/products/239726/ishares-core-sp-500-etf/"
+        "1467271812596.ajax?fileType=csv&fileName=IVV_holdings&dataType=fund"
+    )
     resp = requests.get(
-        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-        headers={"User-Agent": "Mozilla/5.0 (compatible; trading-bot/1.0)"},
-        timeout=30,
+        url, headers={"User-Agent": "Mozilla/5.0 (compatible; trading-bot/1.0)"}, timeout=30
     )
     resp.raise_for_status()
-    tables = pd.read_html(io.StringIO(resp.text))
-    return tables[0][["Symbol"]]
+    df = pd.read_csv(io.StringIO(resp.text), skiprows=9)
+    if "Ticker" not in df.columns:
+        raise ValueError(
+            f"Unexpected iShares IVV CSV format. Columns found: {df.columns.tolist()}"
+        )
+    tickers = df[["Ticker"]].dropna()
+    _VALID_TICKER = re.compile(r"^[A-Z]{1,5}$")
+    valid = tickers[tickers["Ticker"].str.match(_VALID_TICKER, na=False)]
+    if len(valid) < 100:
+        raise ValueError(
+            f"IVV holdings CSV only {len(valid)} valid tickers — format may have changed."
+        )
+    return valid.rename(columns={"Ticker": "Symbol"})
+
+
+def _fetch_sp500() -> pd.DataFrame:
+    try:
+        resp = requests.get(
+            "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
+            headers={"User-Agent": "Mozilla/5.0 (compatible; trading-bot/1.0)"},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        tables = pd.read_html(io.StringIO(resp.text))
+        return tables[0][["Symbol"]]
+    except Exception as wiki_exc:
+        log.warning(
+            "Wikipedia S&P 500 blocked (%s) — trying iShares IVV fallback", wiki_exc
+        )
+        return _fetch_sp500_ishares()
 
 
 def _fetch_russell1000() -> pd.DataFrame:

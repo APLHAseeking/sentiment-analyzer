@@ -131,6 +131,7 @@ def simulate_portfolio(
     fill_delay_bars: int = 0,
     slippage_model: str = "flat",
     impact_coef_bps_per_adv_pct: float = 2.0,
+    forced_closes: dict[str, list[str]] | None = None,
 ) -> SimState:
     """Simulate the portfolio day-by-day through the provided signal list.
 
@@ -139,6 +140,10 @@ def simulate_portfolio(
     signals : sorted by date ascending. Each dict must have:
               date (YYYY-MM-DD), ticker, conviction, position_pct, regime_label.
     price_data : maps ticker → pd.Series of daily close prices (DatetimeIndex).
+    forced_closes : optional dict mapping ISO date strings to lists of tickers to
+        force-close on that date (after stop checks, before opening new positions).
+        Used by run_pit_backtest to liquidate the previous rebalance window's
+        holdings before entering the new one, preventing capital lock-up.
     """
     state = SimState(cash=initial_cash)
 
@@ -199,6 +204,19 @@ def simulate_portfolio(
                                  "take_profit", slippage_bps, commission_pct)
                 if ticker in state.positions:
                     state.positions[ticker]["take_profit_taken"] = True
+
+        # --- Rebalance: force-close positions on scheduled dates ------------
+        if forced_closes:
+            for fc_ticker in forced_closes.get(day_str, []):
+                if fc_ticker not in state.positions:
+                    continue
+                fc_series = price_data.get(fc_ticker)
+                if fc_series is None:
+                    continue
+                fc_price = _get_price(fc_series, day_str)
+                if fc_price is not None:
+                    _close_position(state, fc_ticker, fc_price, day_str,
+                                    "rebalance", slippage_bps, commission_pct, peak_prices)
 
         # --- Compute NAV once per day (cash + mark-to-market positions) -----
         day_pos_value = 0.0

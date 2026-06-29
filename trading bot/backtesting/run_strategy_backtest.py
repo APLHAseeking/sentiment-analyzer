@@ -86,6 +86,52 @@ def _compute_pit_momentum(
     return result
 
 
+def _compute_pit_price_factors(
+    provider: PITDataProvider,
+    tickers: list[str],
+    as_of: date,
+    spy_prices: pd.Series | None = None,
+    lookback_days: int = 365,
+) -> dict[str, tuple[float | None, float | None, float | None]]:
+    """Compute (realized_vol, beta, resid_mom) from PIT prices.
+
+    Mirrors _fetch_price_factors_batch from the live screener but reads prices
+    from the PITDataProvider instead of yfinance. SPY prices come from the
+    spy_prices Series already fetched by the caller (shared, no extra download).
+    """
+    start = as_of - timedelta(days=lookback_days + 40)
+    spy_ret: pd.Series | None = None
+    if spy_prices is not None and not spy_prices.empty:
+        spy_window = spy_prices[
+            (spy_prices.index.date >= start) & (spy_prices.index.date <= as_of)
+        ]
+        if not spy_window.empty:
+            spy_ret = spy_window.pct_change().dropna()
+
+    result: dict[str, tuple[float | None, float | None, float | None]] = {}
+    for ticker in tickers:
+        prices = provider.prices(ticker, start, as_of)
+        if len(prices) < _MIN_MOMENTUM_BARS:
+            result[ticker] = (None, None, None)
+            continue
+        ret = prices.pct_change().dropna()
+        vol = float(ret.std() * (252 ** 0.5) * 100) if ret.std() > 0 else None
+        beta: float | None = None
+        resid_mom: float | None = None
+        if spy_ret is not None:
+            aligned = pd.concat([ret, spy_ret], axis=1, join="inner").dropna()
+            aligned.columns = ["stock", "spy"]
+            spy_var = float(aligned["spy"].var())
+            if len(aligned) >= _MIN_MOMENTUM_BARS and spy_var > 0:
+                beta = float(aligned["stock"].cov(aligned["spy"]) / spy_var)
+                resid = aligned["stock"] - beta * aligned["spy"]
+                resid_window = resid.iloc[:max(0, len(resid) - 21)]
+                if len(resid_window) > 0:
+                    resid_mom = float(((1 + resid_window).prod() - 1) * 100)
+        result[ticker] = (vol, beta, resid_mom)
+    return result
+
+
 def run_pit_backtest(
     provider: PITDataProvider,
     rebalance_dates: list[str],
@@ -129,6 +175,8 @@ def run_pit_backtest(
     all_signals: list[dict] = []
     all_prices: dict[str, pd.Series] = {}
     windows: list[dict] = []
+    forced_closes: dict[str, list[str]] = {}
+    prev_window_tickers: list[str] = []
 
     sorted_dates = sorted(date.fromisoformat(d) for d in rebalance_dates)
 
@@ -152,8 +200,11 @@ def run_pit_backtest(
         # 3. PIT-safe momentum from price history
         momentum = _compute_pit_momentum(provider, tickers, rebal_date)
 
-        # 4. Score using the same core as the live screener
-        factor_df = _build_factor_df(infos, momentum)
+        # 3b. Price-based factors (vol, beta, resid_mom) — same window, shared SPY prices
+        price_factors = _compute_pit_price_factors(provider, tickers, rebal_date, spy_prices)
+
+        # 4. Score using the same core as the live screener (all 5 sleeves)
+        factor_df = _build_factor_df(infos, momentum, price_factors)
         if factor_df.empty:
             log.warning("Empty factor_df for %s — no fundamentals available", rebal_date)
             continue
@@ -166,7 +217,13 @@ def run_pit_backtest(
         rebal_str = rebal_date.isoformat()
         hold_end_str = hold_end.isoformat()
 
+        # Close previous window's positions at this rebalance date before
+        # opening new ones — prevents capital lock-up across quarterly windows.
+        if prev_window_tickers:
+            forced_closes[rebal_str] = list(prev_window_tickers)
+
         window_tickers = top.index.tolist()
+        prev_window_tickers = window_tickers
         for ticker in window_tickers:
             # Vol-target sizing from the trailing close window (matches live)
             vol_window = provider.prices(
@@ -217,6 +274,7 @@ def run_pit_backtest(
         slippage_bps=slippage_bps,
         commission_pct=commission_pct,
         fill_delay_bars=1,
+        forced_closes=forced_closes,
     )
     eq = equity_series(sim)
     tr = trade_returns(sim)

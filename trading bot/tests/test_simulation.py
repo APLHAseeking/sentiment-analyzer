@@ -731,3 +731,61 @@ def test_market_impact_vary_adv_only():
         f"Smaller ADV should cause more market-impact slippage. "
         f"small_adv_entry={small_adv_entry}, large_adv_entry={large_adv_entry}"
     )
+
+
+# ---------------------------------------------------------------------------
+# forced_closes — quarterly-rebalance position liquidation
+# ---------------------------------------------------------------------------
+
+def test_forced_closes_liquidates_before_new_positions_open():
+    """A forced close on a given date must sell the existing position and free
+    cash so the next signal on that same date can be filled."""
+    idx = pd.date_range("2025-01-02", periods=5, freq="B")
+    prices = {
+        "OLD": pd.Series([100.0, 102.0, 104.0, 106.0, 108.0], index=idx),
+        "NEW": pd.Series([50.0,  50.0,  50.0,  50.0,  50.0],  index=idx),
+    }
+    # Open OLD on day 0, then force-close it and open NEW on day 2.
+    signals = [
+        {"date": str(idx[0].date()), "ticker": "OLD", "conviction": 7, "position_pct": 80.0},
+        {"date": str(idx[2].date()), "ticker": "NEW", "conviction": 7, "position_pct": 10.0},
+    ]
+    forced_closes = {str(idx[2].date()): ["OLD"]}
+
+    sim = simulate_portfolio(
+        signals=signals,
+        price_data=prices,
+        initial_cash=100_000.0,
+        slippage_bps=0.0,
+        commission_pct=0.0,
+        trailing_stop_pct=9999.0,
+        take_profit_pct=9999.0,
+        forced_closes=forced_closes,
+    )
+    tickers_closed = [t.ticker for t in sim.trades]
+    assert "OLD" in tickers_closed, "OLD must be closed by the forced-close mechanism"
+    assert "NEW" in tickers_closed or "NEW" in sim.positions, (
+        "NEW must be opened after OLD is force-closed (cash freed)"
+    )
+    old_trade = next(t for t in sim.trades if t.ticker == "OLD")
+    assert old_trade.exit_reason == "rebalance"
+
+
+def test_forced_closes_none_does_not_change_behavior():
+    """Passing forced_closes=None must produce identical results to the default."""
+    idx = pd.date_range("2025-01-02", periods=3, freq="B")
+    prices = {"AAA": pd.Series([100.0, 105.0, 110.0], index=idx)}
+    signals = [{"date": str(idx[0].date()), "ticker": "AAA", "conviction": 7, "position_pct": 5.0}]
+
+    sim_none = simulate_portfolio(
+        signals=signals, price_data=prices, initial_cash=100_000.0,
+        slippage_bps=0.0, commission_pct=0.0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+        forced_closes=None,
+    )
+    sim_default = simulate_portfolio(
+        signals=signals, price_data=prices, initial_cash=100_000.0,
+        slippage_bps=0.0, commission_pct=0.0,
+        trailing_stop_pct=9999.0, take_profit_pct=9999.0,
+    )
+    assert sim_none.equity_curve == sim_default.equity_curve

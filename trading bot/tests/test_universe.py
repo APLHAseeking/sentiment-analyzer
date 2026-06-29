@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from unittest.mock import patch
-from bot.universe import is_in_universe, _build_universe, refresh_universe
+from bot.universe import is_in_universe, _build_universe, refresh_universe, _fetch_sp500
 
 
 def test_is_in_universe_match():
@@ -86,3 +86,25 @@ def test_build_universe_normalizes_russell_only_class_share_tickers(mocker):
 
     assert "TEST-B" in result
     assert "TEST.B" not in result
+
+
+def test_fetch_sp500_falls_back_to_ishares_when_wikipedia_fails(mocker):
+    """When Wikipedia is blocked, _fetch_sp500 must fall back to iShares IVV."""
+    mocker.patch("bot.universe.requests.get", side_effect=Exception("403 Forbidden"))
+    ishares_df = pd.DataFrame({"Symbol": ["AAPL", "MSFT", "AMZN"]})
+    mocker.patch("bot.universe._fetch_sp500_ishares", return_value=ishares_df)
+    result = _fetch_sp500()
+    assert set(result["Symbol"]) == {"AAPL", "MSFT", "AMZN"}
+
+
+def test_fetch_sp500_ishares_not_called_when_wikipedia_succeeds(mocker):
+    """iShares fallback must NOT be invoked when Wikipedia succeeds."""
+    import io
+    wiki_html = "<table><tr><th>Symbol</th></tr><tr><td>AAPL</td></tr></table>"
+    mock_resp = mocker.MagicMock()
+    mock_resp.text = wiki_html
+    mock_resp.raise_for_status = mocker.MagicMock()
+    mocker.patch("bot.universe.requests.get", return_value=mock_resp)
+    ishares_spy = mocker.patch("bot.universe._fetch_sp500_ishares")
+    _fetch_sp500()
+    ishares_spy.assert_not_called()
