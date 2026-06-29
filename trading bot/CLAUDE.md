@@ -65,6 +65,12 @@
 > neutral/range-bound + bear, ~0.05 in trends/crashes) and blended with quality/value/
 > low-vol so the bot prefers *oversold-but-sound* names (mitigates falling knives).
 > Test count: **806** (+51).
+> 2026-06-29: emphasised residual momentum further — the momentum sleeve is now a
+> weighted blend (`_MOMENTUM_WEIGHTS`) with `resid_mom` the largest sub-weight (0.45 vs
+> the prior equal 0.25). Caveat made explicit in `docs/FACTOR_BACKTEST_2026-06-28.md`: the
+> backtest's headline "+5.8%/yr alpha" is beta-adjusted *and* survivorship-inflated; net of
+> the equal-weight baseline (+2.3%/yr alpha, same biased universe) the factor-specific edge
+> is ~3–4%/yr, before trading costs. Test count: **808** (full suite green).
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
@@ -107,7 +113,7 @@ Secrets come from environment / `.env` (see `.env.example`): `ANTHROPIC_API_KEY`
 `orchestration/main_loop.py` → `RegimeAwareOrchestrator` is the spine; everything else is a layer it wires together.
 
 **Signal hierarchy (per morning pipeline):**
-1. **Phase 1 — fundamental factor screener** (`screener/factor_scorer.py`): *primary* signal. Sector-neutral composite of **five** sleeves — value, momentum, quality, **low-vol/BAB**, and **short-term reversal (mean reversion)** — over the universe; top N go to AI scoring. **Momentum = 12-month return** (`mom_12m`) plus 6-1m, 52w-high ratio, and **residual (idiosyncratic) momentum** (`resid_mom`); 1-month is display-only **but feeds the reversal sleeve** (`reversal = -mom_1m`, most-oversold ranks highest). The **low-vol sleeve** (`vol_inv`, `beta_inv`) ranks low realized-vol / low-beta names higher. `_REGIME_WEIGHTS` are **5-tuples** (value, momentum, quality, low_vol, reversal) summing to 1.0, **tuned from the PIT backtest** (`docs/FACTOR_BACKTEST_2026-06-28.md`): momentum heavy in trends (residual momentum was the strongest sleeve), low-vol up in bear/crash (defensive), reversal up only in neutral/range-bound + bear and small elsewhere (naive reversal was weak standalone — kept small and blended). Low-vol/BAB, residual momentum, and reversal are price-derived (one shared SPY download), so they add **zero LLM cost**.
+1. **Phase 1 — fundamental factor screener** (`screener/factor_scorer.py`): *primary* signal. Sector-neutral composite of **five** sleeves — value, momentum, quality, **low-vol/BAB**, and **short-term reversal (mean reversion)** — over the universe; top N go to AI scoring. **Momentum = 12-month return** (`mom_12m`) plus 6-1m, 52w-high ratio, and **residual (idiosyncratic) momentum** (`resid_mom`); 1-month is display-only **but feeds the reversal sleeve** (`reversal = -mom_1m`, most-oversold ranks highest). Within the momentum sleeve the sub-signals are a **weighted blend** (`_MOMENTUM_WEIGHTS`, renormalised over present signals): residual momentum carries the **largest weight (0.45)** — it was the strongest single sleeve in the backtest — followed by `mom_12m` 0.30, `mom_6m` 0.15, `high52_ratio` 0.10. The **low-vol sleeve** (`vol_inv`, `beta_inv`) ranks low realized-vol / low-beta names higher. `_REGIME_WEIGHTS` are **5-tuples** (value, momentum, quality, low_vol, reversal) summing to 1.0, **tuned from the PIT backtest** (`docs/FACTOR_BACKTEST_2026-06-28.md`): momentum heavy in trends (residual momentum was the strongest sleeve), low-vol up in bear/crash (defensive), reversal up only in neutral/range-bound + bear and small elsewhere (naive reversal was weak standalone — kept small and blended). Low-vol/BAB, residual momentum, and reversal are price-derived (one shared SPY download), so they add **zero LLM cost**.
 2. **Phase 2 — congressional disclosures** (`bot/scraper.py` → `bot/signal_engine.py`): *supplementary*. Capped at `_CONGRESSIONAL_MAX_PCT = 3%` NAV and `_CONGRESSIONAL_MAX_PER_DAY = 1`. A ticker in **both** screener and disclosures gets the `"both"` signal type, full conviction credit, and no congressional size cap.
 3. **Phase 2.5 — insider buys** (`bot/insider.py` → `bot/insider_signal.py`): *supplementary*. SEC EDGAR Form 4 open-market purchases (transaction code `P`). Capped via `InsiderConfig` (`max_pct` 3% NAV, `max_per_day` 2) so its bounded LLM-scoring cost stays small. Routed through `_process_insider_signal` (mirrors `_process_signal`) with `signal_type="insider"`; a ticker also in the screener resolves to `"both"`. SEC requires a `User-Agent` with contact email (`InsiderConfig.sec_user_agent`, env `SEC_USER_AGENT`).
 4. **Phase 3 — inverse-ETF hedge** (`hedge/hedge_engine.py`): opens/closes inverse ETFs (SH/PSQ/RWM/…) when the regime is bear/crash.
@@ -158,7 +164,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 ## Verifying changes
 
 ```bash
-pytest                                 # 806 tests; keep green (run from inside trading bot/)
+pytest                                 # 808 tests; keep green (run from inside trading bot/)
 python backtesting/backtest_price_factors.py  # PIT backtest of low-vol/BAB + residual momentum
 pytest tests/test_simulation.py -q    # example: a single module
 ```

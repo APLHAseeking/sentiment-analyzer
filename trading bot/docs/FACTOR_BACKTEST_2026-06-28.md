@@ -14,11 +14,30 @@ OOS test** (see `docs/PHASE0_FINDINGS.md`). These findings are encoded directly 
 | Mean Reversion (1m) | 168.7 | 14.3 | 22.9 | 0.53 | 0.75 | 43.5 | −1.24 | 1.03 |
 | SPY (buy & hold) | 201.8 | 16.1 | 19.5 | 0.66 | 0.93 | 33.7 | — | — |
 
+## How to read the "+5.8%/yr alpha" (important)
+
+The 5.8% is **annualised Jensen's alpha** (beta-adjusted excess return vs SPY), not raw
+outperformance, and it is **survivorship-inflated**:
+
+- Raw return gap: residual momentum 20.9%/yr vs SPY 16.1%/yr ≈ **+4.8%/yr raw**.
+- Alpha is higher than the raw gap because the strategy ran at beta 0.86 (less market risk).
+- **But the equal-weight baseline — no factor, just hold the 73 names — also beat SPY
+  (+2.3%/yr alpha).** That is the universe (survivorship), not the factor. The
+  factor-specific edge is closer to `5.8% − 2.3% ≈ 3–4%/yr`, **before trading costs**
+  (this script models none; the bot's own simulator does).
+
+Bottom line to quote: *"~3–4%/yr risk-adjusted edge over a naive equal-weight hold, before
+costs"* — not *"beat the S&P by 5.8%."*
+
 ## What the bot does with this
 
 - **Residual momentum — strongest single sleeve.** Highest Sharpe and the only sleeve
   with large positive alpha. Lives inside the momentum sleeve, which is weighted heavily
-  in trending regimes (bull/euphoria/melt-up: momentum weight 0.40).
+  in trending regimes (bull/euphoria/melt-up: momentum weight 0.40). **Emphasis (2026-06-29):**
+  within the momentum sleeve it now carries the largest sub-weight via `_MOMENTUM_WEIGHTS`
+  (`resid_mom` 0.45, `mom_12m` 0.30, `mom_6m` 0.15, `high52_ratio` 0.10) — up from the prior
+  equal 0.25. Kept below a 0.5 majority to avoid over-concentrating on one
+  survivorship-biased backtest.
 - **Low-vol / BAB — defensive, not a return engine.** Lower absolute return but the
   lowest beta (0.61) and a drawdown below SPY. Weighted **up in bear/crash** (0.15–0.20)
   for capital preservation, down in strong rallies (0.05) where low-beta names lag.

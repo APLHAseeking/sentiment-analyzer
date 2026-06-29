@@ -203,6 +203,17 @@ def test_compute_composite_residual_momentum_feeds_momentum_sleeve():
     assert scored.loc["HIGH", "momentum_score"] > scored.loc["LOW", "momentum_score"]
 
 
+def test_residual_momentum_is_largest_momentum_subweight():
+    """Residual momentum carries the largest weight inside the momentum sleeve
+    (emphasis encoded from the PIT backtest)."""
+    from screener.factor_scorer import _MOMENTUM_WEIGHTS
+    assert sum(_MOMENTUM_WEIGHTS.values()) == pytest.approx(1.0)
+    assert max(_MOMENTUM_WEIGHTS, key=_MOMENTUM_WEIGHTS.get) == "resid_mom"
+    # and it is strictly larger than every other sub-signal
+    others = {k: v for k, v in _MOMENTUM_WEIGHTS.items() if k != "resid_mom"}
+    assert all(_MOMENTUM_WEIGHTS["resid_mom"] > v for v in others.values())
+
+
 def test_compute_composite_missing_price_factors_neutral():
     """Names without price-factor data must not crash and land near neutral (no worst-case)."""
     infos = {"A": _make_info(), "B": _make_info()}

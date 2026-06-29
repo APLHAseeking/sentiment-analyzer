@@ -328,6 +328,14 @@ _REGIME_WEIGHTS: dict[str, tuple[float, float, float, float, float]] = {
 }
 _DEFAULT_WEIGHTS: tuple[float, float, float, float, float] = (0.25, 0.25, 0.25, 0.10, 0.15)
 
+# Sub-signal weights inside the momentum sleeve (renormalised over present signals).
+# Residual (idiosyncratic) momentum is the largest weight by design — it was the
+# strongest single sleeve in the PIT backtest (docs/FACTOR_BACKTEST_2026-06-28.md),
+# so it drives the momentum signal more than the raw price-momentum sub-signals.
+_MOMENTUM_WEIGHTS: dict[str, float] = {
+    "resid_mom": 0.45, "mom_12m": 0.30, "mom_6m": 0.15, "high52_ratio": 0.10,
+}
+
 
 def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.DataFrame:
     if df.empty:
@@ -358,14 +366,26 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
         present = [c for c in cols if c in ranked.columns]
         return ranked[present] if present else pd.DataFrame(index=ranked.index)
 
+    def _weighted_blend(weights: dict[str, float], fill: float = 0.5) -> pd.Series:
+        """Weighted average of rank columns (missing imputed at `fill`), with weights
+        renormalised over the columns actually present. Returns a 0-1 Series."""
+        present = {c: w for c, w in weights.items() if c in ranked.columns}
+        if not present:
+            return pd.Series(fill, index=ranked.index)
+        total = sum(present.values())
+        block = _ranked(list(present)).fillna(fill)
+        return sum(block[c] * (w / total) for c, w in present.items())
+
     # Value: P/E, P/B, FCF yield, EV/EBITDA (4 sub-signals; skipna so missing evebitda ok)
     df["value_score"] = (
         _ranked(["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv"]).mean(axis=1, skipna=True) * 33
     ).fillna(0).clip(0, 33).astype(int)
     # Momentum: 12-1m, 6-1m, 52-week-high ratio, residual (idiosyncratic) momentum.
-    # Missing signals imputed at neutral 0.5 — same logic as original mom_12m.
+    # Residual momentum is up-weighted within the sleeve — it was the strongest single
+    # sleeve in the PIT backtest (docs/FACTOR_BACKTEST_2026-06-28.md), so it drives the
+    # momentum signal more than the raw price-momentum sub-signals. Missing imputed at 0.5.
     df["momentum_score"] = (
-        _ranked(["mom_12m", "mom_6m", "high52_ratio", "resid_mom"]).fillna(0.5).mean(axis=1) * 33
+        _weighted_blend(_MOMENTUM_WEIGHTS) * 33
     ).clip(0, 33).astype(int)
     # Quality: ROE, gross margin (Novy-Marx), net margin, D/E, current ratio, earnings growth
     df["quality_score"] = (
