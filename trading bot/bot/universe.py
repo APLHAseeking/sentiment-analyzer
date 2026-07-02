@@ -36,8 +36,9 @@ def _fetch_sp500_ishares() -> pd.DataFrame:
         raise ValueError(
             f"Unexpected iShares IVV CSV format. Columns found: {df.columns.tolist()}"
         )
-    tickers = df[["Ticker"]].dropna()
-    _VALID_TICKER = re.compile(r"^[A-Z]{1,5}$")
+    tickers = df[["Ticker"]].dropna().copy()
+    tickers["Ticker"] = tickers["Ticker"].map(_normalize_ticker)
+    _VALID_TICKER = re.compile(r"^[A-Z]{1,5}(-[A-Z])?$")
     valid = tickers[tickers["Ticker"].str.match(_VALID_TICKER, na=False)]
     if len(valid) < 100:
         raise ValueError(

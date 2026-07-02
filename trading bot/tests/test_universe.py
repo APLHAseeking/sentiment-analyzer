@@ -97,6 +97,35 @@ def test_fetch_sp500_falls_back_to_ishares_when_wikipedia_fails(mocker):
     assert set(result["Symbol"]) == {"AAPL", "MSFT", "AMZN"}
 
 
+def test_fetch_sp500_ishares_normalizes_class_share_tickers(mocker):
+    """The iShares IVV CSV fallback (used when Wikipedia is blocked) must
+    survive dotted class-share tickers (e.g. BRK.B) the same way the
+    Wikipedia path does, instead of silently dropping them because they
+    fail a raw '^[A-Z]{1,5}$' validation regex. Exercises the real CSV
+    parsing/validation path (mocks requests.get's raw response, not
+    _fetch_sp500_ishares itself) so a regression in the regex is caught."""
+    from bot.universe import _fetch_sp500_ishares
+
+    filler_tickers = [f"{c1}{c2}" for c1 in "ABCD" for c2 in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
+    assert len(filler_tickers) >= 100
+    rows = [f"{t},Some Company {t}" for t in filler_tickers]
+    rows.append("BRK.B,Berkshire Hathaway Class B")
+    csv_text = (
+        "\n".join([f"metadata line {i}" for i in range(9)])
+        + "\nTicker,Name\n"
+        + "\n".join(rows)
+    )
+    mock_resp = mocker.MagicMock()
+    mock_resp.text = csv_text
+    mock_resp.raise_for_status = mocker.MagicMock()
+    mocker.patch("bot.universe.requests.get", return_value=mock_resp)
+
+    result = _fetch_sp500_ishares()
+
+    assert "BRK-B" in set(result["Symbol"])
+    assert "BRK.B" not in set(result["Symbol"])
+
+
 def test_fetch_sp500_ishares_not_called_when_wikipedia_succeeds(mocker):
     """iShares fallback must NOT be invoked when Wikipedia succeeds."""
     import io
