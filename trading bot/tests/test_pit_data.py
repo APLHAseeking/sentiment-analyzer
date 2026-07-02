@@ -8,14 +8,14 @@ from __future__ import annotations
 
 import io
 import textwrap
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from backtesting.pit_data import CSVPITProvider
-from backtesting.run_strategy_backtest import run_pit_backtest
+from backtesting.pit_data import CSVPITProvider, PITDataProvider
+from backtesting.run_strategy_backtest import run_pit_backtest, _compute_pit_price_factors
 
 
 # ── Synthetic fixture builders ────────────────────────────────────────────────
@@ -260,6 +260,42 @@ class TestRunPITBacktest:
         # At least the windows with non-empty universe should be present
         assert len(result["windows"]) >= 1
 
+    def test_overlapping_ticker_not_force_closed_and_reopened(self, tmp_path, monkeypatch):
+        """A ticker selected in two consecutive rebalance windows must not be
+        force-closed and immediately reopened at the second rebalance — that
+        pays a phantom round-trip commission and corrupts the backtest P&L
+        used to justify the live _REGIME_WEIGHTS."""
+        c, f, p = _make_fixtures(tmp_path)
+        provider = CSVPITProvider(c, f, p)
+
+        from backtesting import run_strategy_backtest as rsb
+        original_simulate = rsb.simulate_portfolio
+        captured: dict = {}
+
+        def _capture_and_delegate(*args, **kwargs):
+            captured["forced_closes"] = kwargs.get("forced_closes")
+            return original_simulate(*args, **kwargs)
+
+        monkeypatch.setattr(rsb, "simulate_portfolio", _capture_and_delegate)
+
+        # top_n=4 with at most 4 candidates per window means every candidate
+        # is selected regardless of score — AAPL/MSFT/GOOG are in both the
+        # 2020-02-01 and 2020-08-01 universes (only ENRN delists in between),
+        # so they must persist, not round-trip.
+        rsb.run_pit_backtest(
+            provider=provider,
+            rebalance_dates=["2020-02-01", "2020-08-01"],
+            top_n=4,
+            position_pct=5.0,
+            initial_cash=100_000.0,
+        )
+
+        forced_closes = captured["forced_closes"]
+        second_window_forced = forced_closes.get("2020-08-01", [])
+        assert "AAPL" not in second_window_forced
+        assert "MSFT" not in second_window_forced
+        assert "GOOG" not in second_window_forced
+
     def test_spy_benchmark_returns_attribution_keys(self, tmp_path):
         """When spy_prices is provided, metrics should include beta/alpha/IR."""
         c, f, p = _make_fixtures(tmp_path)
@@ -279,3 +315,117 @@ class TestRunPITBacktest:
         assert "beta" in result["metrics"]
         assert "alpha_annualized_pct" in result["metrics"]
         assert "information_ratio" in result["metrics"]
+
+
+# ── _compute_pit_price_factors window-anchoring tests ──────────────────────────
+
+class _FixedSeriesPITProvider(PITDataProvider):
+    """Minimal PITDataProvider serving one pre-built price series, filtered to
+    the requested [start, end] window — used to check that
+    _compute_pit_price_factors anchors vol/beta/resid_mom to a trailing bar
+    count, not to whatever wider window the caller's start/end happens to
+    include."""
+
+    def __init__(self, ticker: str, prices: pd.Series):
+        self._ticker = ticker
+        self._prices = prices
+
+    def constituents(self, as_of):
+        return {self._ticker}
+
+    def fundamentals(self, ticker, as_of):
+        return None
+
+    def prices(self, ticker, start, end):
+        if ticker != self._ticker:
+            return pd.Series(dtype=float)
+        mask = (self._prices.index.date >= start) & (self._prices.index.date <= end)
+        return self._prices[mask]
+
+
+class TestComputePITPriceFactorsWindow:
+    """_compute_pit_price_factors must use the SAME trailing 252-bar window
+    that _compute_pit_momentum anchors mom_12m to (line 68: `prices.iloc[-252]`),
+    not the full ~278+ bar history the caller's lookback_days happens to fetch.
+    """
+
+    N_BARS = 300
+    SHIFT = N_BARS - 252  # 48 bars older than the trailing-252 window
+
+    @staticmethod
+    def _vol_beta_resid(prices: pd.Series, spy_ret: pd.Series):
+        """Independent reimplementation of the vol/beta/resid_mom formula,
+        applied directly to whichever `prices` window is passed in — lets the
+        test compute the correct trailing-252 answer and the old buggy
+        full-window answer without calling the function under test."""
+        ret = prices.pct_change().dropna()
+        vol = float(ret.std() * (252 ** 0.5) * 100) if ret.std() > 0 else None
+        aligned = pd.concat([ret, spy_ret], axis=1, join="inner").dropna()
+        aligned.columns = ["stock", "spy"]
+        spy_var = float(aligned["spy"].var())
+        beta = float(aligned["stock"].cov(aligned["spy"]) / spy_var)
+        resid = aligned["stock"] - beta * aligned["spy"]
+        resid_window = resid.iloc[:max(0, len(resid) - 21)]
+        resid_mom = (
+            float(((1 + resid_window).prod() - 1) * 100) if len(resid_window) > 0 else None
+        )
+        return vol, beta, resid_mom
+
+    def _build_series(self):
+        """~300 trading bars where the first 48 (dropped once sliced to the
+        trailing 252) are high-vol and strongly negatively correlated with
+        SPY, while the last 252 are calmer and positively correlated —
+        constructed so the full-window and trailing-252-window computations
+        diverge materially."""
+        idx = pd.bdate_range("2019-06-03", periods=self.N_BARS)
+        rng = np.random.RandomState(123)
+        spy_rets = rng.normal(0.0004, 0.01, self.N_BARS - 1)
+        spy_prices = 300.0 * np.exp(np.cumsum(np.concatenate([[0.0], spy_rets])))
+        spy = pd.Series(spy_prices, index=idx)
+
+        stock_rets = np.empty(self.N_BARS - 1)
+        old_noise = rng.normal(0.0, 0.03, self.SHIFT)
+        stock_rets[: self.SHIFT] = -5.0 * spy_rets[: self.SHIFT] + old_noise
+        recent_len = self.N_BARS - 1 - self.SHIFT
+        recent_noise = rng.normal(0.0005, 0.004, recent_len)
+        stock_rets[self.SHIFT :] = 1.0 * spy_rets[self.SHIFT :] + recent_noise
+
+        stock_prices = 100.0 * np.exp(np.cumsum(np.concatenate([[0.0], stock_rets])))
+        stock = pd.Series(stock_prices, index=idx)
+        return stock, spy
+
+    def test_price_factors_anchor_to_trailing_252_bars_like_momentum(self):
+        stock, spy = self._build_series()
+        as_of = stock.index[-1].date()
+        provider = _FixedSeriesPITProvider("TEST", stock)
+
+        # lookback_days=500 so the provider's window comfortably covers all
+        # ~300 bars (mirrors the real caller fetching more history than the
+        # 252-bar window mom_12m/vol/beta should be anchored to).
+        result = _compute_pit_price_factors(
+            provider, ["TEST"], as_of, spy_prices=spy, lookback_days=500,
+        )
+        vol, beta, resid_mom = result["TEST"]
+        assert vol is not None and beta is not None and resid_mom is not None
+
+        full_prices = provider.prices("TEST", as_of - timedelta(days=540), as_of)
+        assert len(full_prices) > 278  # sanity: caller's window is wider than 252 bars
+
+        spy_ret_full = spy.pct_change().dropna()
+        correct_vol, correct_beta, correct_resid = self._vol_beta_resid(
+            full_prices.iloc[-252:], spy_ret_full
+        )
+        buggy_vol, buggy_beta, buggy_resid = self._vol_beta_resid(
+            full_prices, spy_ret_full
+        )
+
+        # Function must match the trailing-252-bar computation ...
+        assert vol == pytest.approx(correct_vol, rel=1e-9)
+        assert beta == pytest.approx(correct_beta, rel=1e-9)
+        assert resid_mom == pytest.approx(correct_resid, rel=1e-9)
+
+        # ... and must NOT match the old buggy full-window computation — the
+        # constructed regime shift makes these materially different.
+        assert abs(vol - buggy_vol) > 5.0
+        assert abs(beta - buggy_beta) > 0.5
+        assert abs(resid_mom - buggy_resid) > 5.0

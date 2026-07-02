@@ -114,6 +114,10 @@ def _compute_pit_price_factors(
         if len(prices) < _MIN_MOMENTUM_BARS:
             result[ticker] = (None, None, None)
             continue
+        # Anchor to the same trailing 252-bar window _compute_pit_momentum
+        # uses for mom_12m — prices may span more than 252 bars since the
+        # caller fetches lookback_days=365+40 calendar days of history.
+        prices = prices.iloc[-252:] if len(prices) > 252 else prices
         ret = prices.pct_change().dropna()
         vol = float(ret.std() * (252 ** 0.5) * 100) if ret.std() > 0 else None
         beta: float | None = None
@@ -217,12 +221,17 @@ def run_pit_backtest(
         rebal_str = rebal_date.isoformat()
         hold_end_str = hold_end.isoformat()
 
-        # Close previous window's positions at this rebalance date before
-        # opening new ones — prevents capital lock-up across quarterly windows.
-        if prev_window_tickers:
-            forced_closes[rebal_str] = list(prev_window_tickers)
-
         window_tickers = top.index.tolist()
+
+        # Close previous window's positions that didn't make this window's cut
+        # before opening new ones — prevents capital lock-up across quarterly
+        # windows without round-tripping (force-close + immediate reopen) a
+        # ticker that's still selected.
+        if prev_window_tickers:
+            rolled_off = [t for t in prev_window_tickers if t not in window_tickers]
+            if rolled_off:
+                forced_closes[rebal_str] = rolled_off
+
         prev_window_tickers = window_tickers
         for ticker in window_tickers:
             # Vol-target sizing from the trailing close window (matches live)
