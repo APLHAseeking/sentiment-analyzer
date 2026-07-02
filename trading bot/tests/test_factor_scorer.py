@@ -1,4 +1,5 @@
 import pytest
+import numpy as np
 import pandas as pd
 from unittest.mock import patch, MagicMock
 from screener.factor_scorer import (
@@ -331,3 +332,57 @@ def test_run_factor_screen_calls_research_for_top_tickers(mocker):
     assert research_spy.call_count == len(tickers)
     called_tickers = {call.args[0] for call in research_spy.call_args_list}
     assert called_tickers == set(tickers)
+
+
+def test_fetch_price_factors_batch_real_computation():
+    """Exercises the REAL cov/var/window-slicing math (not the pre-baked _pf tuple).
+
+    Builds a synthetic stock return series with a known analytic relationship to
+    SPY: stock_ret = beta_true * spy_ret + idio_drift, where idio_drift is a
+    *constant* (no random noise). A constant additive term doesn't change
+    covariance or std relative to SPY, so beta and vol are recoverable exactly
+    (up to floating-point rounding) rather than merely approximately — a wrong
+    cov/var formula (e.g. swapped numerator/denominator) would produce a beta
+    far from beta_true (e.g. ~1/beta_true), not a slightly-off one.
+    """
+    from screener.factor_scorer import _fetch_price_factors_batch, _MIN_MOMENTUM_BARS
+
+    n_bars = 320  # comfortably above _MIN_MOMENTUM_BARS (200) plus the 21-bar skip
+    dates = pd.bdate_range("2019-01-02", periods=n_bars)
+    ret_dates = dates[1:]
+
+    np.random.seed(11)
+    beta_true = 1.5
+    idio_drift = 0.0005  # constant idiosyncratic daily drift, no noise
+    spy_ret = pd.Series(np.random.normal(0.0004, 0.01, n_bars - 1), index=ret_dates)
+    stock_ret = beta_true * spy_ret + idio_drift
+
+    spy_close = pd.Series(index=dates, dtype=float)
+    spy_close.iloc[0] = 100.0
+    spy_close.iloc[1:] = 100.0 * (1 + spy_ret).cumprod().values
+
+    stock_close = pd.Series(index=dates, dtype=float)
+    stock_close.iloc[0] = 50.0
+    stock_close.iloc[1:] = 50.0 * (1 + stock_ret).cumprod().values
+
+    close = pd.DataFrame({"SYNTH": stock_close})
+
+    result = _fetch_price_factors_batch(["SYNTH"], close=close, spy_close=spy_close)
+    vol, beta, resid_mom = result["SYNTH"]
+
+    # 1. beta recovers beta_true almost exactly (additive constant doesn't move cov).
+    assert beta == pytest.approx(beta_true, abs=1e-6)
+
+    # 2. vol: stock_ret std == beta_true * spy_ret std (constant drift doesn't
+    #    change std either); check the exact analytic value plus a ballpark range.
+    expected_vol = float(stock_ret.std() * (252 ** 0.5) * 100)
+    assert vol == pytest.approx(expected_vol, rel=1e-6)
+    assert 10.0 < vol < 40.0  # ~1.5 * 1%/day * sqrt(252) * 100 ~= 24%
+
+    # 3. resid_mom: residual = stock_ret - beta*spy_ret = idio_drift (constant),
+    #    compounded over the window that excludes the last ~21 bars.
+    aligned_len = len(ret_dates)
+    window_len = aligned_len - 21
+    assert window_len > _MIN_MOMENTUM_BARS
+    expected_resid_mom = ((1 + idio_drift) ** window_len - 1) * 100
+    assert resid_mom == pytest.approx(expected_resid_mom, rel=1e-4)

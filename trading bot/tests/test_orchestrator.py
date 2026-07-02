@@ -1663,3 +1663,74 @@ def test_fundamental_technical_gate_on_buy_passes_structure_stop_pct(mocker, orc
 
     call_kwargs = orch._portfolio.open_position.call_args[1]
     assert call_kwargs["initial_stop_pct"] == pytest.approx(2.0)
+
+
+def test_process_insider_signal_caps_at_insider_max_pct_when_insider_only(mocker, orch):
+    """trading bot/CLAUDE.md documents: InsiderConfig.max_pct (3% NAV) caps
+    insider-only entries. With fundamental_tickers empty, signal_type resolves
+    to "insider" (not "both"), so the cap in _process_insider_signal must
+    clamp the final position size to <= 3.0%, mirroring the congressional cap."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_insider_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "AAPL:CEO", "insider_name": "X", "ticker": "AAPL", "title": "CEO",
+        "transaction_date": "2026-06-20", "disclosure_date": "2026-06-22",
+        "transaction_type": "buy", "amount_usd": 500_000.0, "scraped_at": "x",
+    }
+    orch._process_insider_signal(disc, {}, fundamental_tickers=frozenset())
+
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    assert call_kwargs["position_pct"] <= 3.0
+
+
+def test_process_insider_signal_no_cap_when_both_signal_type(mocker, orch):
+    """A ticker that also qualifies on the fundamental screener resolves
+    signal_type="both" and must NOT be clamped by InsiderConfig.max_pct,
+    same as the congressional "both" carve-out."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    nav = 100_000.0
+    orch._broker = _mock_broker(cash=nav, position_value=0)
+    orch._regime_state = None
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_insider_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "AAPL:CEO", "insider_name": "X", "ticker": "AAPL", "title": "CEO",
+        "transaction_date": "2026-06-20", "disclosure_date": "2026-06-22",
+        "transaction_type": "buy", "amount_usd": 500_000.0, "scraped_at": "x",
+    }
+    orch._process_insider_signal(disc, {}, fundamental_tickers=frozenset({"AAPL"}))
+
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    assert call_kwargs["position_pct"] > 3.0
