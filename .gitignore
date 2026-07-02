@@ -45,3 +45,7 @@ trading bot/capitol_trades_data2.json
 trading bot/capitol_trades_merged.json
 trading bot/universe_cache.json
 trading bot/propublica_committee_cache
+
+# Regenerated model cache / live runtime state (can contain live position/PnL data)
+trading bot/regime_model.joblib
+trading bot/dashboard_state.json

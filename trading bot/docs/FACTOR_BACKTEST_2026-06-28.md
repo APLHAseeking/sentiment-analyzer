@@ -6,6 +6,22 @@ large/mid-cap set, so results are **survivorship-biased and indicative, not a cl
 OOS test** (see `docs/PHASE0_FINDINGS.md`). These findings are encoded directly into
 `screener/factor_scorer.py::_REGIME_WEIGHTS` so live scoring reflects them.
 
+## Methodology caveats (backtest proxy vs. live composite)
+
+This backtest's per-sleeve scoring is **simpler** than the live scorer in two ways:
+
+- **Low-vol/BAB sleeve:** the backtest scores this sleeve on realized volatility only.
+  The live `screener/factor_scorer.py` composite blends **both** `vol_inv` (realized
+  vol) **and** `beta_inv` (beta) into the low-vol sleeve.
+- **Short-term reversal sleeve:** the backtest ranks this sleeve with **no
+  sector-neutral adjustment**. Live scoring applies sector-neutral ranking to every
+  sleeve, including reversal.
+
+Because of this, the Sharpe/alpha figures below describe a **simplified proxy** of the
+live strategy, not the exact deployed composite. Read them as **directional support
+for the factor weights** (i.e. which sleeves deserve more/less regime weight), not as a
+precise expected-return estimate for the live bot.
+
 | Strategy | TotRet% | AnnRet% | Vol% | Sharpe | Sortino | MaxDD% | Alpha%/yr | Beta |
 |---|---|---|---|---|---|---|---|---|
 | Residual Momentum | 306.8 | 20.9 | 19.2 | **0.88** | 1.26 | 28.9 | **+5.79** | 0.86 |
