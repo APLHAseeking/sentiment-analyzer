@@ -11,13 +11,22 @@ trading bot and thesis scripts layered on top. Three things live here.
   Anthropic API; results cached in `signals.db` (SQLite, gitignored). Deps in
   root `requirements.txt` (flask, pandas, openpyxl, anthropic). Run: `python app.py`.
 - **`trading bot/`** — regime-aware paper trading system (primary active work).
-  Full guidance in `trading bot/CLAUDE.md`. Run tests with `pytest` from inside
-  `trading bot/` (721 tests). Has its own deps and data caches.
+  Full guidance and status/change history in `trading bot/CLAUDE.md`. Run tests
+  with `pytest` from inside `trading bot/` (818 tests). Has its own deps and
+  data caches. Preparing for live (paper-money) Alpaca trading starting the
+  week of 2026-07-06; a full pre-launch review (2026-07-02) fixed 2 new bugs
+  found in strategy code added since the last standalone review, added missing
+  test coverage, and added operational readiness docs (`docs/RUNBOOK.md`,
+  alert webhook config) — see `trading bot/CLAUDE.md`'s status banner for
+  details. Outstanding: user must set `ALERT_WEBHOOK_URL` before relying on
+  unattended alerting.
 - **`docs/superpowers/`** — `plans/` and `specs/` for past and current work.
 
 Thesis inputs at root: `stoxx600_constituents.csv`, `Thesis STOXX, and time
-series (1).xlsx`. `TRADING_BOT_REVIEW_2026-06-23.md` is the latest full bug-audit
-of the bot (supersedes earlier review/plan docs, which were removed).
+series (1).xlsx`. Standalone trading-bot bug-audit docs (`TRADING_BOT_REVIEW_*.md`,
+`TRADING_BOT_FULL_REVIEW_BUNDLE.md`) are removed once fully remediated — the
+running history lives in `trading bot/CLAUDE.md`'s status banner instead of
+separate files, so it doesn't go stale.
 
 ## Data not in this repo
 

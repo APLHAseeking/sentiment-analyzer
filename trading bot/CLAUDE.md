@@ -71,6 +71,25 @@
 > backtest's headline "+5.8%/yr alpha" is beta-adjusted *and* survivorship-inflated; net of
 > the equal-weight baseline (+2.3%/yr alpha, same biased universe) the factor-specific edge
 > is ~3–4%/yr, before trading costs. Test count: **808** (full suite green).
+> 2026-07-02: pre-launch full review ahead of live paper trading. Re-verified all 5
+> Critical fixes from `TRADING_BOT_REVIEW_2026-06-23.md` are still correct after the
+> 2026-06-28/29 strategy commits (no regressions). Fresh audit of the strategy code added
+> since that review (low-vol/BAB, residual momentum, mean-reversion, insider) found and
+> fixed 2 new bugs: `run_pit_backtest` was force-closing and immediately reopening tickers
+> that persisted across rebalance windows, paying phantom double commission and skewing
+> the Sharpe/alpha numbers behind `_REGIME_WEIGHTS`; `_fetch_sp500_ishares`' fallback
+> validated tickers before normalization, silently dropping class-share names (e.g.
+> `BRK.B`) again. Also fixed a lookback-window mismatch in `_compute_pit_price_factors`
+> (was using the full ~278-bar fetch window instead of the trailing 252 bars `mom_12m`
+> anchors to) and added missing regression coverage for `_fetch_price_factors_batch`'s
+> real beta/resid_mom math and `_process_insider_signal`'s position-size cap (both were
+> previously only exercised via mocks). Operational readiness added: `ALERT_WEBHOOK_URL`
+> documented in `.env.example`, `docs/RUNBOOK.md` (start/monitor/restart guide),
+> `regime_model.joblib`/`dashboard_state.json` added to `.gitignore`, and
+> `docs/FACTOR_BACKTEST_2026-06-28.md` now notes where the backtest's low-vol and
+> reversal sleeves diverge from the live composite's scoring. `TRADING_BOT_REVIEW_2026-06-23.md`
+> and `TRADING_BOT_FULL_REVIEW_BUNDLE.md` removed — all findings from both are now fixed
+> and folded into this history. Test count: **818** (full suite green).
 
 This file gives Claude Code (claude.ai/code) project-specific guidance for this repository. Personal cross-project preferences (communication style, git habits, general working style) live in the global `~/.claude/CLAUDE.md` and apply on top of this.
 
