@@ -53,7 +53,6 @@ pytest tests/test_simulation.py -q    # example: a single module
 ```
 
 - Tests must run **offline** — mock yfinance / Alpaca / scraper / LLM calls (see `tests/conftest.py`). New code needs offline unit tests.
-- Match existing style; do not reformat untouched code.
 - Set `temperature=0` on any LLM call you add or touch (reproducibility).
 
 ## Reference (on-demand — Read the anchor before touching the named area)

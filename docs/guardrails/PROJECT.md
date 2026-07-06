@@ -42,10 +42,13 @@ Trading-bot scraper caches (`capitol_trades_*.json`, `universe_cache.json`,
 <a id="worktrees"></a>
 ## Worktrees
 
-19 worktrees exist (verified via `git worktree list`, 2026-07-06):
+3 worktrees exist (15 stale ones pruned 2026-07-06; verified via `git worktree list`):
 
 - `.worktrees/congressional-bot/` — branch `feature/congressional-bot` (the one deliberate worktree)
-- 18 under `.claude/worktrees/` — auto-created by past Claude Code agent sessions (`agent-a*`, `worktree-*` names) plus fix branches (`fix-circuit-breaker`, `fix-hmm-baumwelch`, `fix-scraper-vocab`, `fix-stop-cancellation`). Prune with `git worktree remove <path>`, never by deleting directories by hand.
+- `.claude/worktrees/agent-a406ac57552c79bd4/` — kept at prune time: holds an uncommitted edit to `trading bot/tests/test_risk_manager.py`. Review, then commit or `git worktree remove --force`.
+- `.claude/worktrees/agent-acd81f6ef185da66b/` — kept at prune time: holds uncommitted edits to `trading bot/bot/scraper.py` + `tests/test_scraper.py`. Same disposition choice.
+
+Prune with `git worktree remove <path>`, never by deleting directories by hand. Pruned-branch commits still exist in git (`worktree-agent-*`, `fix/*` branches were not deleted).
 
 <a id="flask-app"></a>
 ## Flask sentiment app (moved here from ~/Downloads/CLAUDE.md, 2026-07-06 — content as of 2026-05-28)
