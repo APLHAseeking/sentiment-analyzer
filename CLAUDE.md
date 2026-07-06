@@ -3,6 +3,7 @@
 ## Project
 <!-- Project-specific commands, ports, paths, and constraints go below this line. Cap: 40 lines. -->
 Thomas Vromen's finance-tooling monorepo (git remote `sentiment-analyzer`): began as the Flask sentiment app; trading bot and thesis scripts layered on top.
+Primary active work: `trading bot/` — its own CLAUDE.md auto-loads when working there; live (paper-money) Alpaca launch targeted week of 2026-07-06.
 
 Before navigating app.py / trading bot/ / docs/superpowers/ or citing repo layout -> Read docs/guardrails/PROJECT.md#project-map
 Before assuming headline-pull artifacts live in this repo -> Read docs/guardrails/PROJECT.md#data-not-in-this-repo
