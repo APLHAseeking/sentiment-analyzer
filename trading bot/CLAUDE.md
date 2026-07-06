@@ -6,9 +6,10 @@
 > performance numbers are look-ahead biased until then. See `docs/PHASE0_FINDINGS.md` for gate
 > decision rules and required datasets.
 > Phases 1–3 fully implemented; paper trading operational; live (paper-money) Alpaca launch
-> targeted week of 2026-07-06. Pre-launch full review completed 2026-07-02 — **no open findings
-> remain from any prior review.** Test count: **818** (full suite green).
-> Outstanding: set `ALERT_WEBHOOK_URL` before relying on unattended alerting.
+> started 2026-07-06. Pre-launch full review completed 2026-07-02 — **no open findings
+> remain from any prior review.** First live run (2026-07-06) hit and fixed a Critical bug in
+> `_llm_call`'s OpenAI retry path — see `docs/CLAUDE-REFERENCE.md#history` for details.
+> Test count: **819** (full suite green).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 
@@ -47,7 +48,7 @@ Secrets come from environment / `.env` (see `.env.example`): `ANTHROPIC_API_KEY`
 ## Verifying changes
 
 ```bash
-pytest                                 # 818 tests; keep green (run from inside trading bot/)
+pytest                                 # 819 tests; keep green (run from inside trading bot/)
 python backtesting/backtest_price_factors.py  # PIT backtest of low-vol/BAB + residual momentum
 pytest tests/test_simulation.py -q    # example: a single module
 ```

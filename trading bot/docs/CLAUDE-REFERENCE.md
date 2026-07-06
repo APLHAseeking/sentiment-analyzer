@@ -192,3 +192,12 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 > reversal sleeves diverge from the live composite's scoring. `TRADING_BOT_REVIEW_2026-06-23.md`
 > and `TRADING_BOT_FULL_REVIEW_BUNDLE.md` removed — all findings from both are now fixed
 > and folded into this history. Test count: **818** (full suite green).
+> 2026-07-06: live paper trading started. First real run hit a Critical bug: `_llm_call`'s
+> OpenAI retry path (`bot/ai_analyst.py`) assumed any "unsupported parameter" 400 was about
+> `temperature`/`seed` (true for an earlier reasoning-tier model) and retried by dropping
+> those — but kept `max_tokens`, which `gpt-5.4` actually rejects (needs
+> `max_completion_tokens`). The retry failed identically, so every candidate
+> (screener/congressional/insider alike, all share this call) errored and was skipped —
+> 100% entry-scoring failure, zero trades possible. Fixed: retry now inspects which param
+> was rejected and swaps only that one; confirmed live that `temperature`/`seed` are fine
+> for `gpt-5.4`. Test count: **819** (full suite green).
