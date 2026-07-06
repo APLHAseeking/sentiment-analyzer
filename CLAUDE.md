@@ -7,3 +7,4 @@ Thomas Vromen's finance-tooling monorepo (git remote `sentiment-analyzer`): bega
 Before navigating app.py / trading bot/ / docs/superpowers/ or citing repo layout -> Read docs/guardrails/PROJECT.md#project-map
 Before assuming headline-pull artifacts live in this repo -> Read docs/guardrails/PROJECT.md#data-not-in-this-repo
 Before creating or referencing a git worktree here -> Read docs/guardrails/PROJECT.md#worktrees
+Before editing app.py, static/app.js, or anything touching signals.db -> Read docs/guardrails/PROJECT.md#flask-app

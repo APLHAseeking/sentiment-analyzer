@@ -42,6 +42,33 @@ Trading-bot scraper caches (`capitol_trades_*.json`, `universe_cache.json`,
 <a id="worktrees"></a>
 ## Worktrees
 
-One active git worktree under `.worktrees/`:
+19 worktrees exist (verified via `git worktree list`, 2026-07-06):
 
-- `.worktrees/congressional-bot/` — branch `feature/congressional-bot`
+- `.worktrees/congressional-bot/` — branch `feature/congressional-bot` (the one deliberate worktree)
+- 18 under `.claude/worktrees/` — auto-created by past Claude Code agent sessions (`agent-a*`, `worktree-*` names) plus fix branches (`fix-circuit-breaker`, `fix-hmm-baumwelch`, `fix-scraper-vocab`, `fix-stop-cancellation`). Prune with `git worktree remove <path>`, never by deleting directories by hand.
+
+<a id="flask-app"></a>
+## Flask sentiment app (moved here from ~/Downloads/CLAUDE.md, 2026-07-06 — content as of 2026-05-28)
+
+**Purpose:** local web app that classifies financial-news headlines as buy/neutral/sell using the Anthropic API, over a user-uploaded CSV/Excel dataset.
+
+**Stack:** single-file Flask backend (`app.py`); vanilla ES2020 frontend (`static/app.js`) with Bootstrap 5 — no build step, no bundler; SQLite (`signals.db`); deps in root `requirements.txt`. Keep this shape: no frontend framework, no build tooling, no ORM.
+
+**Run:** `pip install -r requirements.txt && python app.py` → http://localhost:8080. First run creates `signals.db`. Reset local state: stop app, delete `signals.db`, restart (drops classifications + settings; uploaded data file untouched). Inspect: `sqlite3 signals.db ".tables"`.
+
+**Data flow:** `POST /api/upload` (save file, return columns) → `POST /api/settings` (column mapping as JSON) → `GET /api/data` (pandas read + SQLite join, paginated) → `POST /api/process` (batch classify via Anthropic API, persist) → `GET /api/export` (merged CSV download).
+
+**Persistence gotchas:**
+- Uploaded file stays at its original disk path; only the path lives in `settings`. Move the file and the app breaks.
+- `row_id` = SHA-256 of `ticker|date|headline` — dedup key AND join key. Never change the hash inputs or format: it orphans every existing classification.
+- `_df_cache` (in-memory DataFrame cache) must be invalidated whenever file path or column mapping changes, or you serve stale data. Any new df-loading code path must invalidate it too.
+
+**Frontend:** all state in the `state` object; processing runs in chunks of 50 row IDs; the stop button sets `state.stopProcessing`, checked between chunks — keep that check intact.
+
+**Classification (`/api/process`):** structured system prompt enforcing `{"signal": "buy"|"neutral"|"sell", "reason": "..."}`; retries 3x on RateLimitError with 5s/10s/20s back-off; 0.4s sleep between rows — keep the back-off and sleep, removing them trips rate limits. Model string read from `settings`; don't hardcode a new one without confirming it's a current Anthropic model.
+
+**Verifying:** no test suite. Smoke test after backend changes: upload small CSV → map columns → load data (pagination) → process a few rows (result persists across reload) → export. New tests go under `tests/`, pytest.
+
+**Security:** API key lives in the `settings` table, server-side only; settings GET returns `api_key_set: bool`, never the key. Never expose the key to the frontend or logs. Never commit `signals.db`, uploaded data files, or `.env`.
+
+**Gotchas:** date filtering is lexicographic string comparison — date columns must be ISO (YYYY-MM-DD) or filtering breaks silently. SQLite is single-writer — serialize writes, no concurrent processing.
