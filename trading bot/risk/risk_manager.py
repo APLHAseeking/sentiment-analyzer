@@ -261,8 +261,11 @@ class RiskManager:
             )
         return None
 
-    def veto_new_entry(self, ticker: str, proposed_pct: float) -> RiskVeto:
-        """Return whether a new entry is allowed and at what size."""
+    def veto_new_entry(self, ticker: str) -> RiskVeto:
+        """Return whether a new entry is allowed and the state size multiplier.
+
+        Size/sector/liquidity caps live in validate_order — this only checks
+        circuit-breaker state and the lock file."""
         # Lock file takes absolute precedence
         if os.path.exists(self._risk.lock_file_path):
             self._state = RiskState.LOCKED_OUT
@@ -297,7 +300,7 @@ class RiskManager:
         if stale_veto is not None:
             return stale_veto
 
-        veto = self.veto_new_entry(ticker, position_pct)
+        veto = self.veto_new_entry(ticker)
         if not veto.allowed:
             return veto
 

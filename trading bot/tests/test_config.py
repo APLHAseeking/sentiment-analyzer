@@ -23,6 +23,12 @@ def test_validate_rejects_inverted_daily_loss_thresholds():
         s.validate()
 
 
+def test_validate_rejects_weekly_halt_not_above_daily_halt():
+    s = Settings(risk=RiskConfig(weekly_loss_halt_pct=3.5))
+    with pytest.raises(ValueError, match="weekly_loss_halt_pct"):
+        s.validate()
+
+
 def test_validate_rejects_bad_confidence_threshold():
     from dataclasses import replace
     alloc = AllocationConfig(min_confidence_to_trade=1.5)

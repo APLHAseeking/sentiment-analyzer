@@ -86,6 +86,8 @@ _ATR_FALLBACK_PCT = 10.0          # conservative (high-vol) ATR fallback when hi
                                    # a smaller position results, the safe direction when
                                    # volatility is unknown (vol_target_size_pct: size ∝ 1/atr_pct)
 _MIN_ECONOMIC_POSITION_PCT = 0.1  # below this, an order is not worth the commission/slippage
+_ESTIMATED_COST_PCT = 1.5         # round-trip cost estimate passed to AI entry scoring
+                                   # (same knob as bot/scheduler.py's exit-review constant)
 
 
 def _ma_conviction_delta(close_prices: np.ndarray, current_price: float) -> int:
@@ -798,7 +800,7 @@ class RegimeAwareOrchestrator:
         # AI entry scoring
         score: EntryScore = score_entry_with_debate(
             disc, committees=committees, sector=sector,
-            lag_days=lag, estimated_cost_pct=1.5,
+            lag_days=lag, estimated_cost_pct=_ESTIMATED_COST_PCT,
             research=research, cluster_count=cluster_count,
         )
         if score.entry != "buy":
@@ -931,7 +933,7 @@ class RegimeAwareOrchestrator:
         # scored with the insider disclosure plus the fundamental factor rules.
         score: EntryScore = score_entry_with_debate(
             disc, committees=[], sector=sector,
-            lag_days=lag, estimated_cost_pct=1.5,
+            lag_days=lag, estimated_cost_pct=_ESTIMATED_COST_PCT,
             research=research, cluster_count=cluster_count,
             signal_type=signal_type,
         )
@@ -1049,7 +1051,7 @@ class RegimeAwareOrchestrator:
             committees=[],
             sector=sector,
             lag_days=0,
-            estimated_cost_pct=1.5,
+            estimated_cost_pct=_ESTIMATED_COST_PCT,
             research=candidate.research,
             signal_type=signal_type,
             factor_score=candidate.composite_score,

@@ -334,6 +334,8 @@ class Settings:
             raise ValueError("daily_loss_reduce_pct must be < daily_loss_halt_pct")
         if self.risk.daily_loss_halt_pct >= self.risk.daily_loss_deleverage_pct:
             raise ValueError("daily_loss_halt_pct must be < daily_loss_deleverage_pct")
+        if self.risk.daily_loss_halt_pct >= self.risk.weekly_loss_halt_pct:
+            raise ValueError("daily_loss_halt_pct must be < weekly_loss_halt_pct")
         if self.risk.daily_loss_deleverage_pct >= self.risk.max_drawdown_lockout_pct:
             raise ValueError("daily_loss_deleverage_pct must be < max_drawdown_lockout_pct")
         if self.backtest.train_years <= 0 or self.backtest.test_months <= 0:

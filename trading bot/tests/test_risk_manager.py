@@ -163,7 +163,7 @@ def test_veto_blocks_when_locked_out(tmp_path):
     # Create lock file manually
     with open(lock_path, "w") as f:
         f.write("RISK LOCKOUT\n")
-    veto = mgr.veto_new_entry("AAPL", 5.0)
+    veto = mgr.veto_new_entry("AAPL")
     assert not veto.allowed
     assert "lock" in veto.reason.lower()
 
@@ -173,7 +173,7 @@ def test_veto_blocks_when_entries_halted(tmp_path):
     mgr.start_of_day(100_000)
     mgr._peak_nav = 100_000
     mgr.check_circuit_breakers(95_000)  # triggers halt
-    veto = mgr.veto_new_entry("AAPL", 5.0)
+    veto = mgr.veto_new_entry("AAPL")
     assert not veto.allowed
 
 
@@ -182,7 +182,7 @@ def test_veto_reduces_size_during_reduce_state(tmp_path):
     mgr.start_of_day(100_000)
     mgr._peak_nav = 100_000
     mgr.check_circuit_breakers(97_000)  # triggers size reduction
-    veto = mgr.veto_new_entry("AAPL", 5.0)
+    veto = mgr.veto_new_entry("AAPL")
     assert veto.allowed
     assert veto.size_multiplier == 0.5
 
@@ -190,7 +190,7 @@ def test_veto_reduces_size_during_reduce_state(tmp_path):
 def test_veto_passes_in_normal_state(tmp_path):
     mgr = _make_manager(tmp_path)
     mgr.start_of_day(100_000)
-    veto = mgr.veto_new_entry("AAPL", 5.0)
+    veto = mgr.veto_new_entry("AAPL")
     assert veto.allowed
     assert veto.size_multiplier == 1.0
 
@@ -413,7 +413,7 @@ def test_veto_new_entry_blocked_during_deleverage(tmp_path):
     # Trigger deleverage (7% > 6% threshold)
     mgr.check_circuit_breakers(93_000)
     assert mgr.state == RiskState.DELEVERAGE
-    veto = mgr.veto_new_entry("AAPL", 5.0)
+    veto = mgr.veto_new_entry("AAPL")
     assert not veto.allowed
     assert "DELEVERAGE" in veto.reason or "circuit breaker" in veto.reason.lower()
 

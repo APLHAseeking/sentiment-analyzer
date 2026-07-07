@@ -77,6 +77,14 @@ class GaussianHMM:
                 best_ll = ll
                 best_params = params
 
+        if best_params is None:
+            # NaN log-likelihoods compare False against -inf, so degenerate
+            # input (NaNs, constant features) can leave every restart rejected.
+            raise RuntimeError(
+                "GaussianHMM.fit: every EM restart produced a non-finite "
+                "log-likelihood — input features are degenerate (NaN/constant)"
+            )
+
         self.startprob_ = best_params["startprob_"]
         self.transmat_ = best_params["transmat_"]
         self.means_ = best_params["means_"]

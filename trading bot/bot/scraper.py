@@ -248,9 +248,8 @@ def _fetch_trades_for_page(page: int) -> list[dict]:
         if json_trades:
             log.debug("Capitol Trades page %d: fetched %d trades via JSON API", page, len(json_trades))
             return json_trades
-        elif json_trades is not None:
-            # Empty list but no exception — JSON endpoint returned nothing or is unavailable
-            log.debug("Capitol Trades JSON API returned 0 trades for page %d — trying HTML", page)
+        # Empty list but no exception — JSON endpoint returned nothing or is unavailable
+        log.debug("Capitol Trades JSON API returned 0 trades for page %d — trying HTML", page)
     except Exception as exc:
         log.debug("Capitol Trades JSON fetch raised unexpectedly: %s — falling back to HTML", exc)
 

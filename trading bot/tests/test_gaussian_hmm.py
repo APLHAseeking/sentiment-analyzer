@@ -63,3 +63,14 @@ def test_fit_recovers_sticky_transition_matrix_on_overlapping_emissions():
         f"learned transmat_ diagonal collapsed toward uniform: {learned_diag} "
         f"(true diagonal was {np.diag(true_transmat)})"
     )
+
+
+def test_fit_raises_clear_error_on_degenerate_input():
+    """All-NaN input makes every EM restart return a NaN log-likelihood; fit()
+    must raise a clear RuntimeError instead of crashing on best_params=None."""
+    import pytest
+
+    X = np.full((50, 2), np.nan)
+    model = GaussianHMM(n_components=2, n_iter=5, random_state=1, n_restarts=2)
+    with pytest.raises(RuntimeError, match="non-finite"):
+        model.fit(X)
