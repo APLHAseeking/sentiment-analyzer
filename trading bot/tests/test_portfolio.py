@@ -365,6 +365,30 @@ def test_open_position_rejected_order_does_not_insert_to_db(mock_broker, db):
     assert not any(p["ticker"] == "AAPL" for p in open_positions)
 
 
+def test_open_position_unconfirmed_fill_does_not_insert_to_db(mock_broker, db):
+    """A fill-poll timeout leaves the order SUBMITTED (not FILLED, not
+    REJECTED) with filled_avg_price still 0.0 — this used to fall through to
+    the NAV-estimate fallback and book a phantom position for an order that
+    was never actually confirmed at the broker. It must now cancel the
+    dangling order and skip the candidate instead."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    pending_order = Order(
+        ticker="CF", side=OrderSide.BUY, qty=7.34, order_type=OrderType.MARKET,
+    )
+    pending_order.status = OrderStatus.SUBMITTED
+    pending_order.order_id = "b5b24e9e-fake"
+    mock_broker.place_order.return_value = pending_order
+    mock_broker.get_positions.return_value = []
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.open_position("CF", 5.0, None, "test", 113.20)
+
+    assert result is False
+    open_positions = db.get_open_positions()
+    assert not any(p["ticker"] == "CF" for p in open_positions)
+    mock_broker.cancel_order.assert_called_once_with("b5b24e9e-fake")
+
+
 def test_reconcile_removes_ghost_positions(mock_broker, db):
     # Insert a position in SQLite that doesn't exist at the broker
     db.insert_disclosures([{

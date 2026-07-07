@@ -217,4 +217,40 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 > yield into value (free frames API, zero LLM cost, live-verified); short-interest
 > negative screen (>20% of float excluded, `UniverseConfig.max_short_pct_float`).
 > Deferred/rejected edges + revisit conditions recorded in `docs/EDGE_BACKLOG.md`.
+> 2026-07-07 (later same day): first two live trades opened (CF, VTRS, both
+> fundamental-screener signals) exposed 3 more Critical/High bugs. (1) `AlpacaBroker.
+> place_stop_order` always sent `TimeInForce.GTC`; Alpaca rejects GTC on fractional-share
+> qty ("fractional orders must be DAY orders") — NAV-based sizing produces fractional
+> qty routinely, so both new positions opened with **zero resting stop** (the price-poll
+> backstop in `enforce_stop_losses` still protected them each intraday check, but with no
+> continuously-resting order in between). Fixed: DAY for fractional qty, GTC for whole
+> shares; DAY stops expire at session end but the existing trail-up poll already re-arms
+> them each intraday check. (2) `bot/insider.py._fetch_daily_form4_index` only slept
+> between *successful* daily-index fetches, not between consecutive misses
+> (weekend/holiday/not-yet-published days) — a burst of back-to-back requests with zero
+> delay (4 in <1s in the live log) tripped SEC's WAF into 403s regardless of the compliant
+> User-Agent. Fixed: sleep before every attempt after the first. (3) `bot/scraper.
+> _fetch_page_json` treated *any* sub-500 HTTP status as "endpoint doesn't exist," so a 429
+> (rate limit) short-circuited straight to the HTML fallback instead of backing off and
+> retrying — and neither fetch path honoured a `Retry-After` header. Fixed: 429 now retries
+> (respecting `Retry-After` if present); genuine 4xx (401/403/404) still falls back
+> immediately. Capitol Trades itself was still down after the fix (external 429s, 2 days
+> running) — worth rechecking if it persists past day 3.
+> Deeper look at the same two trades found the real root cause: both were **phantom
+> positions**. `Portfolio.open_position` only bailed out on `OrderStatus.REJECTED` — any
+> other status (including the `SUBMITTED` state left by a fill-poll timeout) fell through
+> to the "use fill data if available, else NAV estimate" path and booked the position
+> regardless of whether the order ever actually filled. Both CF and VTRS buy orders were
+> still `NEW`/unfilled at Alpaca **~53 minutes later** during active market hours — not a
+> slow-fractional-fill quirk, a genuinely stuck order — yet the local DB had booked full
+> positions, run allocation sizing, and attempted (and failed, per the stop-order bug
+> above) to protect them with stops. `reconcile_with_broker` only diffs *positions*, never
+> looks at outstanding *orders*, so the two dangling live orders weren't visible to any
+> existing safety net — if they'd filled later they would have surfaced as untracked broker
+> positions with zero local record. Fixed: `open_position` now requires
+> `order.status == OrderStatus.FILLED` before booking anything; any other terminal/non-
+> terminal status cancels the order (a no-op if it raced to FILLED in the interim —
+> `reconcile_with_broker`'s untracked-position alert is the backstop for that race) and
+> returns `False` instead of guessing. The two real dangling orders were cancelled by hand
+> after diagnosis. Test count: **860** (full suite green).
 > Test count: **853** (full suite green).

@@ -149,6 +149,18 @@ def _parse_trades_page(html: str) -> list[dict]:
     return trades
 
 
+def _retry_delay(resp, default: float) -> float:
+    """Honour a numeric Retry-After header (seconds) if the server sent one,
+    otherwise fall back to the caller's exponential-backoff delay."""
+    retry_after = resp.headers.get("Retry-After") if resp is not None else None
+    if retry_after is not None:
+        try:
+            return max(float(retry_after), default)
+        except ValueError:
+            pass
+    return default
+
+
 def _fetch_page_json(page: int, max_retries: int = 3) -> list[dict]:
     """Try fetching trades from the Capitol Trades JSON API endpoint.
 
@@ -177,18 +189,24 @@ def _fetch_page_json(page: int, max_retries: int = 3) -> list[dict]:
             data = resp.json()
             return _parse_json_response(data)
         except requests.exceptions.HTTPError as exc:
-            # 4xx means the endpoint doesn't exist or requires auth — don't retry
-            if exc.response is not None and exc.response.status_code < 500:
+            status = exc.response.status_code if exc.response is not None else None
+            # 429 is a rate limit, not a wrong/missing endpoint — it must be
+            # retried (honouring Retry-After), unlike a genuine 4xx (401/403/404)
+            # which means the endpoint doesn't exist or requires auth.
+            if status is not None and status != 429 and status < 500:
                 log.debug("Capitol Trades JSON endpoint HTTP %d on page %d — falling back to HTML",
-                          exc.response.status_code, page)
+                          status, page)
                 return []
             last_exc = exc
         except (requests.exceptions.RequestException, ValueError) as exc:
             last_exc = exc
         if attempt < max_retries - 1:
+            wait = delay
+            if isinstance(last_exc, requests.exceptions.HTTPError) and last_exc.response is not None:
+                wait = _retry_delay(last_exc.response, delay)
             log.debug("Capitol Trades JSON fetch page %d failed (attempt %d/%d): %s — retrying in %.0fs",
-                      page, attempt + 1, max_retries, last_exc, delay)
-            time.sleep(delay)
+                      page, attempt + 1, max_retries, last_exc, wait)
+            time.sleep(wait)
             delay *= 2
     log.debug("Capitol Trades JSON endpoint unavailable after %d attempts: %s", max_retries, last_exc)
     return []
@@ -209,9 +227,12 @@ def _fetch_page(page: int, max_retries: int = 3) -> str:
         except requests.exceptions.RequestException as exc:
             if attempt == max_retries - 1:
                 raise
+            wait = delay
+            if isinstance(exc, requests.exceptions.HTTPError) and exc.response is not None:
+                wait = _retry_delay(exc.response, delay)
             log.warning("Capitol Trades fetch page %d failed (attempt %d/%d): %s — retrying in %.0fs",
-                        page, attempt + 1, max_retries, exc, delay)
-            time.sleep(delay)
+                        page, attempt + 1, max_retries, exc, wait)
+            time.sleep(wait)
             delay *= 2
 
 

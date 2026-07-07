@@ -175,6 +175,13 @@ def _fetch_daily_form4_index() -> list[dict]:
         url = _DAILY_INDEX_URL.format(
             year=d.year, quarter=(d.month - 1) // 3 + 1, yyyymmdd=d.strftime("%Y%m%d"),
         )
+        # Sleep before every attempt, not just successful ones — a burst of
+        # back-to-back misses (weekend/holiday/not-yet-published days all in
+        # the same lookback window) still has to respect the fair-access rate,
+        # otherwise SEC's WAF returns 403 on the whole burst regardless of a
+        # compliant User-Agent.
+        if offset > 0:
+            time.sleep(_INTER_REQUEST_SLEEP)
         try:
             resp = requests.get(url, headers=_headers(), timeout=30)
             if resp.status_code == 404:  # index not published (future/weekend/holiday)
@@ -187,7 +194,6 @@ def _fetch_daily_form4_index() -> list[dict]:
         found += 1
         if found >= _DAILY_INDEXES_PER_RUN:
             break
-        time.sleep(_INTER_REQUEST_SLEEP)
     return entries
 
 

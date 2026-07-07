@@ -107,6 +107,32 @@ def test_parse_form_idx_keeps_only_exact_form_4():
     assert e["filing_date"] == "2026-07-06"
 
 
+def test_fetch_daily_form4_index_sleeps_between_every_attempt(mocker):
+    """Consecutive misses (weekend/holiday/not-yet-published days) must still
+    be rate-limited between each other, not just after a success — a burst of
+    back-to-back requests with no delay is what triggered SEC's WAF to 403 an
+    entire lookback window even with a compliant User-Agent."""
+    from bot.insider import _fetch_daily_form4_index, _DAILY_INDEXES_PER_RUN
+
+    responses = []
+    for _ in range(3):
+        responses.append(mocker.MagicMock(status_code=404))
+    for _ in range(_DAILY_INDEXES_PER_RUN):
+        hit = mocker.MagicMock(status_code=200, text=_FORM_IDX)
+        hit.raise_for_status = mocker.MagicMock()
+        responses.append(hit)
+
+    mocker.patch("bot.insider.requests.get", side_effect=responses)
+    sleep_mock = mocker.patch("bot.insider.time.sleep")
+
+    entries = _fetch_daily_form4_index()
+
+    assert len(entries) == _DAILY_INDEXES_PER_RUN
+    # 5 attempts total (3 misses + 2 hits) -> sleep before every attempt
+    # except the very first.
+    assert sleep_mock.call_count == len(responses) - 1
+
+
 def test_run_insider_scraper_dedups_duplicate_accessions(mocker):
     """EDGAR lists a Form 4 once per associated CIK (issuer + owner) — the same
     accession must be fetched and emitted only once per run."""

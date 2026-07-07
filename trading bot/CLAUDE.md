@@ -9,9 +9,17 @@
 > started 2026-07-06. First live run (2026-07-06) hit and fixed a Critical bug in
 > `_llm_call`'s OpenAI retry path. 2026-07-07: full review remediation (8 findings, incl.
 > restart-safe circuit-breaker baselines + full-day insider feed) and new zero-LLM-cost
-> signals (XBRL SUE/accruals/net-payout, short-interest screen) — **no open findings; see
-> `docs/CLAUDE-REFERENCE.md#history`; deferred edge ideas live in `docs/EDGE_BACKLOG.md`.**
-> Test count: **853** (full suite green).
+> signals (XBRL SUE/accruals/net-payout, short-interest screen). Later same day: first two
+> "opened" trades (CF, VTRS) turned out to be **phantom positions** — `open_position` booked
+> them from an unconfirmed (fill-poll-timeout) order status, but neither ever actually filled
+> at Alpaca; a restart's reconcile caught them as ghosts. Root-caused to 4 bugs, all fixed:
+> (1) `open_position` now requires `OrderStatus.FILLED` before booking, cancelling the
+> dangling order otherwise; (2) `place_stop_order` always sent GTC, which Alpaca rejects for
+> fractional qty; (3) SEC EDGAR daily-index fetch had no delay between consecutive misses,
+> bursting into 403s; (4) the Capitol Trades JSON path treated 429 (rate limit) the same as a
+> genuine 404 and gave up instead of backing off. See `docs/CLAUDE-REFERENCE.md#history` for
+> detail; deferred edge ideas live in `docs/EDGE_BACKLOG.md`. Test count: **860** (full suite
+> green).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

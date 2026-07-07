@@ -206,13 +206,22 @@ class AlpacaBroker(BrokerInterface):
         return history
 
     def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
-        """Submit a GTC stop-sell order to Alpaca. Returns order ID or None on failure."""
+        """Submit a stop-sell order to Alpaca. Returns order ID or None on failure.
+
+        Alpaca rejects fractional-share orders with GTC ("fractional orders
+        must be DAY orders") — NAV-based sizing routinely produces fractional
+        qty, so this must switch to DAY whenever qty isn't a whole share.
+        A DAY stop expires at end of session; enforce_stop_losses' trail-up
+        poll re-places it each intraday check regardless (existing_stop reads
+        back as 0.0 once expired), so overnight re-arming is already handled.
+        """
         from alpaca.trading.requests import StopOrderRequest
+        tif = TimeInForce.DAY if qty != int(qty) else TimeInForce.GTC
         req = StopOrderRequest(
             symbol=ticker.upper(),
             qty=qty,
             side=AlpacaSide.SELL,
-            time_in_force=TimeInForce.GTC,
+            time_in_force=tif,
             stop_price=round(stop_price, 2),
         )
         try:

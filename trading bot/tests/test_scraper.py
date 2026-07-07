@@ -5,6 +5,7 @@ from bot.scraper import (
     _parse_json_response,
     _validate_trade,
     _fetch_page,
+    _fetch_page_json,
     run_scraper,
 )
 
@@ -130,6 +131,76 @@ def test_fetch_page_raises_after_all_retries_exhausted(mocker):
     mocker.patch("bot.scraper.time.sleep")
     with pytest.raises(requests.exceptions.ConnectionError):
         _fetch_page(1, max_retries=3)
+
+
+def _http_error_response(status_code, retry_after=None):
+    resp = requests.models.Response()
+    resp.status_code = status_code
+    if retry_after is not None:
+        resp.headers["Retry-After"] = str(retry_after)
+    return resp
+
+
+def test_fetch_page_json_retries_on_429_instead_of_falling_back(mocker):
+    """429 is a rate limit, not a missing/wrong endpoint — the JSON path must
+    retry it like a transient error, not immediately give up and fall back to
+    HTML (the original bug: any sub-500 status short-circuited to [])."""
+    call_count = {"n": 0}
+    def flaky(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            resp = _http_error_response(429)
+            raise requests.exceptions.HTTPError(response=resp)
+        mock_resp = mocker.MagicMock()
+        mock_resp.raise_for_status = mocker.MagicMock()
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_resp.json.return_value = {"data": []}
+        return mock_resp
+    mocker.patch("bot.scraper.requests.get", side_effect=flaky)
+    sleep_mock = mocker.patch("bot.scraper.time.sleep")
+
+    result = _fetch_page_json(1)
+
+    assert call_count["n"] == 3
+    assert result == []
+    assert sleep_mock.call_count == 2
+
+
+def test_fetch_page_json_honours_retry_after_header(mocker):
+    """A 429 with a Retry-After header must wait at least that long, not the
+    (possibly shorter) default exponential-backoff delay."""
+    call_count = {"n": 0}
+    def flaky(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] < 2:
+            resp = _http_error_response(429, retry_after=30)
+            raise requests.exceptions.HTTPError(response=resp)
+        mock_resp = mocker.MagicMock()
+        mock_resp.raise_for_status = mocker.MagicMock()
+        mock_resp.headers = {"Content-Type": "application/json"}
+        mock_resp.json.return_value = {"data": []}
+        return mock_resp
+    mocker.patch("bot.scraper.requests.get", side_effect=flaky)
+    sleep_mock = mocker.patch("bot.scraper.time.sleep")
+
+    _fetch_page_json(1)
+
+    sleep_mock.assert_called_once_with(30.0)
+
+
+def test_fetch_page_json_gives_up_immediately_on_404(mocker):
+    """A genuine 404 (wrong/missing endpoint) must still fall back to HTML
+    right away — only 429 gets the retry treatment."""
+    mocker.patch(
+        "bot.scraper.requests.get",
+        side_effect=requests.exceptions.HTTPError(response=_http_error_response(404)),
+    )
+    sleep_mock = mocker.patch("bot.scraper.time.sleep")
+
+    result = _fetch_page_json(1)
+
+    assert result == []
+    sleep_mock.assert_not_called()
 
 
 def test_run_scraper_returns_empty_on_persistent_fetch_failure(mocker, db):

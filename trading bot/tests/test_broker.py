@@ -229,6 +229,37 @@ def _alpaca_stop_order(symbol, stop_price, qty, order_id, status):
     return o
 
 
+def test_place_stop_order_uses_day_for_fractional_qty():
+    """Alpaca rejects fractional-share orders submitted GTC ('fractional
+    orders must be DAY orders') — NAV-based sizing routinely produces
+    fractional qty, so a fractional qty must go out as DAY, not GTC."""
+    mock_api = MagicMock()
+    mock_api.submit_order.return_value = MagicMock(id="stop-frac")
+    broker = AlpacaBroker(api_client=mock_api)
+
+    order_id = broker.place_stop_order("AAPL", qty=7.34389171119657, stop_price=100.0)
+
+    assert order_id == "stop-frac"
+    sent_req = mock_api.submit_order.call_args[0][0]
+    from alpaca.trading.enums import TimeInForce
+    assert sent_req.time_in_force == TimeInForce.DAY
+
+
+def test_place_stop_order_uses_gtc_for_whole_share_qty():
+    """Whole-share qty has no fractional-order restriction — keep GTC so the
+    stop rests indefinitely instead of expiring at end of session."""
+    mock_api = MagicMock()
+    mock_api.submit_order.return_value = MagicMock(id="stop-whole")
+    broker = AlpacaBroker(api_client=mock_api)
+
+    order_id = broker.place_stop_order("AAPL", qty=10.0, stop_price=100.0)
+
+    assert order_id == "stop-whole"
+    sent_req = mock_api.submit_order.call_args[0][0]
+    from alpaca.trading.enums import TimeInForce
+    assert sent_req.time_in_force == TimeInForce.GTC
+
+
 def test_get_stop_orders_matches_real_enum_orders():
     """get_stop_orders must recognise resting stops whose order_type/status are
     real alpaca enums (OrderType.STOP / OrderStatus.NEW), not the literal

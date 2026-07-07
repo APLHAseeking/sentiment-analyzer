@@ -56,9 +56,27 @@ class Portfolio:
         if order.status == OrderStatus.REJECTED:
             log.warning("Order rejected for %s: %s", ticker, order.reject_reason)
             return False
+        if order.status != OrderStatus.FILLED:
+            # Fill poll timed out (or any other non-terminal state) — the order
+            # is still live at the broker with an unconfirmed outcome. Booking a
+            # position here would create a phantom: the DB believes we're in,
+            # but the broker doesn't. Cancel the dangling order (a no-op if it
+            # actually filled in the interim — reconcile_with_broker's
+            # untracked-position path is the backstop for that race) and skip
+            # this candidate rather than book on a guess.
+            self.broker.cancel_order(order.order_id)
+            emit_event(
+                log, EventType.ORDER_REJECTED,
+                f"{ticker} buy order {order.order_id} did not confirm FILLED "
+                f"(status={order.status.value}) — cancelled, position not opened",
+                data={"ticker": ticker, "order_id": order.order_id, "status": order.status.value},
+                level=logging.ERROR,
+                alert=True,
+            )
+            return False
 
         # Use actual fill data when available; fall back to pre-trade NAV estimate
-        # for mock/simulated brokers that leave filled_avg_price at 0.0.
+        # for a FILLED order that still left filled_avg_price at 0.0.
         actual_shares = shares
         actual_entry_price = entry_price
         if order.filled_avg_price > 0 and order.filled_qty > 0:
