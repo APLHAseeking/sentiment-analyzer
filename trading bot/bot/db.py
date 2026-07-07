@@ -393,6 +393,37 @@ def get_nav_history() -> list[float]:
         ).fetchall()
     return [float(r["total_nav"]) for r in rows]
 
+def get_nav_baselines(day_start: str, week_start: str) -> dict[str, float | None]:
+    """NAV baselines for RiskManager restart recovery.
+
+    peak_nav — all-time max total_nav ever logged.
+    week_start_nav — first NAV logged on/after ``week_start`` (ISO date), else
+        the last NAV before it (prior Friday close = start-of-week equity).
+    day_start_nav — first NAV logged on/after ``day_start``, else the last NAV
+        before it (yesterday's close = start-of-day equity).
+    Every value is None when portfolio_log has no usable row.
+    """
+    def _baseline(conn, since: str) -> float | None:
+        row = conn.execute(
+            "SELECT total_nav FROM portfolio_log WHERE date >= ? ORDER BY date ASC, id ASC LIMIT 1",
+            (since,),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT total_nav FROM portfolio_log WHERE date < ? ORDER BY date DESC, id DESC LIMIT 1",
+                (since,),
+            ).fetchone()
+        return float(row["total_nav"]) if row is not None else None
+
+    with get_conn() as conn:
+        peak_row = conn.execute("SELECT MAX(total_nav) AS m FROM portfolio_log").fetchone()
+        peak = float(peak_row["m"]) if peak_row is not None and peak_row["m"] is not None else None
+        return {
+            "peak_nav": peak,
+            "week_start_nav": _baseline(conn, week_start),
+            "day_start_nav": _baseline(conn, day_start),
+        }
+
 def log_regime(date: str, regime_label: str, regime_index: int,
                confidence: float, is_stable: bool, n_regimes: int) -> None:
     with get_conn() as conn:

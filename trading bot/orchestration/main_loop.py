@@ -216,7 +216,9 @@ class RegimeAwareOrchestrator:
                        f"Reconciled {len(reconcile['ghost_positions'])} ghost position(s): "
                        f"{reconcile['ghost_positions']}", alert=True)
 
-        # Initialize risk manager NAV baseline
+        # Initialize risk manager NAV baseline — restore persisted baselines
+        # first so a restart cannot reset the drawdown/weekly/daily breakers.
+        self._risk.restore_baselines()
         equity = broker.get_equity() if hasattr(broker, "get_equity") else broker.get_cash()
         self._risk.start_of_day(equity)
 

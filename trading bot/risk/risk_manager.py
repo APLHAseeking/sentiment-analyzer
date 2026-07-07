@@ -84,6 +84,33 @@ class RiskManager:
     # Daily / weekly refresh
     # ------------------------------------------------------------------
 
+    def restore_baselines(self) -> None:
+        """Seed NAV baselines from portfolio_log so circuit breakers survive restarts.
+
+        Call once after DB init and before the first start_of_day(). Without
+        this, a process restart resets peak/week/day NAV to the current NAV,
+        so the max-drawdown lockout and the weekly/daily loss breakers only
+        measure from the restart point instead of the true baselines.
+        Restored values never lower an already-known peak; week/day baselines
+        are only filled when still unset (0.0).
+        """
+        try:
+            base = db.get_nav_baselines(self._current_day, self._current_week_start)
+        except Exception as exc:
+            log.warning("Could not restore risk baselines from portfolio_log: %s", exc)
+            return
+        if base["peak_nav"] is not None:
+            self._peak_nav = max(self._peak_nav, base["peak_nav"])
+        if base["week_start_nav"] is not None and self._week_start_nav == 0:
+            self._week_start_nav = base["week_start_nav"]
+        if base["day_start_nav"] is not None and self._day_start_nav == 0:
+            self._day_start_nav = base["day_start_nav"]
+        if base["peak_nav"] is not None:
+            log.info(
+                "Risk baselines restored from portfolio_log: peak=%.2f week_start=%.2f day_start=%.2f",
+                self._peak_nav, self._week_start_nav, self._day_start_nav,
+            )
+
     def start_of_day(self, current_nav: float) -> None:
         """Call at the start of each trading day to refresh baseline NAV."""
         today = date.today().isoformat()

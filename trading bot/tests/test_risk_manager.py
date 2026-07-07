@@ -416,3 +416,63 @@ def test_veto_new_entry_blocked_during_deleverage(tmp_path):
     veto = mgr.veto_new_entry("AAPL", 5.0)
     assert not veto.allowed
     assert "DELEVERAGE" in veto.reason or "circuit breaker" in veto.reason.lower()
+
+
+# ---------------------------------------------------------------------------
+# restore_baselines — circuit breakers must survive a process restart
+# ---------------------------------------------------------------------------
+
+def test_restore_baselines_lockout_fires_after_restart_mid_drawdown(tmp_path, db):
+    """A restart must not reset the drawdown baseline: with a 120k peak in
+    portfolio_log, a fresh RiskManager at 90k NAV (25% off peak) must lock out."""
+    db.log_portfolio("2026-06-01", 20_000, 100_000, 120_000)
+    db.log_portfolio("2026-07-03", 20_000, 85_000, 105_000)
+    mgr = _make_manager(tmp_path)
+    mgr.restore_baselines()
+    assert mgr._peak_nav == 120_000
+    mgr.start_of_day(90_000)
+    mgr.check_circuit_breakers(90_000)
+    assert mgr.state == RiskState.LOCKED_OUT
+    assert os.path.exists(str(tmp_path / "RISK_LOCKOUT"))
+
+
+def test_restore_baselines_day_start_falls_back_to_last_close(tmp_path, db):
+    """Nothing logged today -> day baseline is the most recent prior NAV
+    (yesterday's close), not the post-restart NAV."""
+    db.log_portfolio("2026-07-03", 20_000, 85_000, 105_000)
+    mgr = _make_manager(tmp_path)
+    mgr.restore_baselines()
+    assert mgr._day_start_nav == 105_000
+
+
+def test_restore_baselines_recovers_weekly_baseline(tmp_path, db):
+    """A restart mid-week must keep the week-start NAV so the weekly halt
+    still sees the full week's loss."""
+    from datetime import date
+    week_start = RiskManager._get_week_start()
+    today = date.today().isoformat()
+    db.log_portfolio(week_start, 20_000, 80_000, 100_000)
+    # A log row near current NAV so the daily breakers stay quiet.
+    db.log_portfolio(today, 20_000, 71_500, 91_500)
+    mgr = _make_manager(tmp_path)
+    mgr.restore_baselines()
+    assert mgr._week_start_nav == 100_000
+    mgr.start_of_day(91_000)
+    mgr.check_circuit_breakers(91_000)  # 9% weekly loss >= 8% halt threshold
+    assert mgr.state == RiskState.WEEKLY_HALT
+
+
+def test_restore_baselines_empty_log_is_noop(tmp_path, db):
+    mgr = _make_manager(tmp_path)
+    mgr.restore_baselines()
+    assert mgr._peak_nav == 0.0
+    mgr.start_of_day(100_000)
+    assert mgr._peak_nav == 100_000
+
+
+def test_restore_baselines_never_lowers_known_peak(tmp_path, db):
+    db.log_portfolio("2026-06-01", 20_000, 70_000, 90_000)
+    mgr = _make_manager(tmp_path)
+    mgr.start_of_day(100_000)
+    mgr.restore_baselines()
+    assert mgr._peak_nav == 100_000
