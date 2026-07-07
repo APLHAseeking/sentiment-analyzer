@@ -10,6 +10,7 @@ import pandas as pd
 import yfinance as yf
 
 from bot.researcher import gather_research, ResearchReport
+from screener.xbrl_fundamentals import fetch_xbrl_factors
 from system.config import settings
 
 log = logging.getLogger(__name__)
@@ -223,8 +224,10 @@ def _build_factor_df(
     infos: dict[str, dict | None],
     momentum: dict[str, tuple[float | None, float | None, float | None, float | None]],
     price_factors: dict[str, tuple[float | None, float | None, float | None]] | None = None,
+    xbrl: dict[str, dict[str, float | None]] | None = None,
 ) -> pd.DataFrame:
     price_factors = price_factors or {}
+    xbrl = xbrl or {}
     rows = []
     for ticker, info in infos.items():
         if info is None:
@@ -249,6 +252,14 @@ def _build_factor_df(
             # yfinance reports short interest as a fraction of float; store as %.
             short_frac = _to_float(info.get("shortPercentOfFloat"))
             short_pct_float = short_frac * 100 if short_frac is not None else None
+            # SEC XBRL factors (screener/xbrl_fundamentals.py) — all optional.
+            x = xbrl.get(ticker) or {}
+            sue = _to_float(x.get("sue"))
+            accr = _to_float(x.get("accruals"))
+            payout_usd = _to_float(x.get("net_payout_usd"))
+            net_payout_yield = (
+                payout_usd / mcap if payout_usd is not None and mcap and mcap > 0 else None
+            )
 
             rows.append({
                 "ticker": ticker,
@@ -279,6 +290,12 @@ def _build_factor_df(
                 # Short interest as % of float — negative screen, not a ranked
                 # signal (see _compute_composite / UniverseConfig.max_short_pct_float).
                 "short_pct_float": short_pct_float,
+                # SUE (earnings surprise, PEAD input) — joins the momentum sleeve.
+                "sue": sue,
+                # Accruals inverted (low accruals = higher earnings quality).
+                "accruals_inv": -accr if accr is not None else None,
+                # Buybacks + dividends over market cap — joins the value sleeve.
+                "net_payout_yield": net_payout_yield,
             })
         except Exception:
             log.debug("Skipping %s in factor_df build", ticker, exc_info=True)
@@ -355,8 +372,12 @@ _DEFAULT_WEIGHTS: tuple[float, float, float, float, float] = (0.25, 0.25, 0.25, 
 # Residual (idiosyncratic) momentum is the largest weight by design — it was the
 # strongest single sleeve in the PIT backtest (docs/FACTOR_BACKTEST_2026-06-28.md),
 # so it drives the momentum signal more than the raw price-momentum sub-signals.
+# SUE (earnings surprise / PEAD) enters conservatively at 0.15 — deliberately
+# small until a PIT backtest with XBRL filing dates validates a larger weight
+# (docs/EDGE_BACKLOG.md); when SUE is missing the weights renormalise back over
+# the price sub-signals, preserving pre-XBRL behaviour.
 _MOMENTUM_WEIGHTS: dict[str, float] = {
-    "resid_mom": 0.45, "mom_12m": 0.30, "mom_6m": 0.15, "high52_ratio": 0.10,
+    "resid_mom": 0.40, "mom_12m": 0.25, "sue": 0.15, "mom_6m": 0.12, "high52_ratio": 0.08,
 }
 
 
@@ -390,9 +411,11 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
     # growth tech). Sectors with < _MIN_SECTOR_SIZE members fall back to universe rank.
     score_cols = [
         "pe_inv", "pb_inv", "fcf_yield", "evebitda_inv",          # value
+        "net_payout_yield",                                          # value (XBRL)
         "roe", "gross_margin", "margin", "de_inv",                  # quality
         "current_ratio", "earnings_growth",                          # quality (cont.)
-        "mom_12m", "mom_6m", "high52_ratio", "resid_mom",          # momentum
+        "accruals_inv",                                              # quality (XBRL)
+        "mom_12m", "mom_6m", "high52_ratio", "resid_mom", "sue",   # momentum
         "vol_inv", "beta_inv",                                       # low-vol / BAB
         "reversal",                                                  # short-term reversal
     ]
@@ -415,11 +438,12 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
         block = _ranked(list(present)).fillna(fill)
         return sum(block[c] * (w / total) for c, w in present.items())
 
-    # Value: P/E, P/B, FCF yield, EV/EBITDA (4 sub-signals; skipna so missing evebitda ok).
+    # Value: P/E, P/B, FCF yield, EV/EBITDA, net payout yield (skipna so missing ok).
     # All-missing imputes at neutral 16 (0.5×33), matching the other sleeves — a name
     # with no value data is unknown, not worst.
     df["value_score"] = (
-        _ranked(["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv"]).mean(axis=1, skipna=True) * 33
+        _ranked(["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv", "net_payout_yield"])
+        .mean(axis=1, skipna=True) * 33
     ).fillna(16).clip(0, 33).astype(int)
     # Momentum: 12-1m, 6-1m, 52-week-high ratio, residual (idiosyncratic) momentum.
     # Residual momentum is up-weighted within the sleeve — it was the strongest single
@@ -428,10 +452,12 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
     df["momentum_score"] = (
         _weighted_blend(_MOMENTUM_WEIGHTS) * 33
     ).clip(0, 33).astype(int)
-    # Quality: ROE, gross margin (Novy-Marx), net margin, D/E, current ratio, earnings growth.
+    # Quality: ROE, gross margin (Novy-Marx), net margin, D/E, current ratio,
+    # earnings growth, inverted accruals (Sloan earnings quality, XBRL).
     # All-missing imputes at neutral 16, same as value.
     df["quality_score"] = (
-        _ranked(["roe", "gross_margin", "margin", "de_inv", "current_ratio", "earnings_growth"])
+        _ranked(["roe", "gross_margin", "margin", "de_inv", "current_ratio",
+                 "earnings_growth", "accruals_inv"])
         .mean(axis=1, skipna=True) * 33
     ).fillna(16).clip(0, 33).astype(int)
     # Low-vol / BAB: inverse realized volatility + inverse beta (2 sub-signals).
@@ -468,6 +494,16 @@ def _gather_research_with_momentum(
     return ticker, report
 
 
+def _fetch_xbrl_safe(tickers: list[str]) -> dict[str, dict[str, float | None]]:
+    """fetch_xbrl_factors with a fail-soft wrapper — the screener must keep
+    working (XBRL columns rank neutral) when SEC endpoints are down."""
+    try:
+        return fetch_xbrl_factors(tickers)
+    except Exception:
+        log.warning("XBRL factor fetch failed — scoring without XBRL signals", exc_info=True)
+        return {}
+
+
 def prefetch_screener_data(tickers: list[str]) -> dict:
     """Fetch all slow data (ticker infos + momentum) for the full universe.
 
@@ -488,18 +524,21 @@ def prefetch_screener_data(tickers: list[str]) -> dict:
     spy_close = _fetch_spy_close()
     momentum = _fetch_momentum_batch(tickers, close=close)
     price_factors = _fetch_price_factors_batch(tickers, close=close, spy_close=spy_close)
+    xbrl = _fetch_xbrl_safe(tickers)
     result = {
         "infos": infos,
         "momentum": momentum,
         "price_factors": price_factors,
+        "xbrl": xbrl,
         "timestamp": datetime.now(UTC).isoformat(),
         "ticker_count": len(tickers),
     }
     log.info(
-        "Pre-fetch complete: %d infos, %d momentum entries, %d price-factor entries",
+        "Pre-fetch complete: %d infos, %d momentum entries, %d price-factor entries, %d XBRL entries",
         sum(1 for v in infos.values() if v is not None),
         sum(1 for v in momentum.values() if v != (None, None, None, None)),
         sum(1 for v in price_factors.values() if v != (None, None, None)),
+        sum(1 for v in xbrl.values() if any(f is not None for f in v.values())),
     )
     return result
 
@@ -525,6 +564,7 @@ def run_factor_screen(
         infos = prefetched["infos"]
         momentum = prefetched["momentum"]
         price_factors = prefetched.get("price_factors", {})
+        xbrl = prefetched.get("xbrl", {})
         log.info(
             "Using pre-fetched screener data from %s (%d tickers)",
             prefetched.get("timestamp", "?"), prefetched.get("ticker_count", 0),
@@ -533,6 +573,7 @@ def run_factor_screen(
         infos = _fetch_all_infos(tickers)
         momentum = _fetch_momentum_batch(tickers)
         price_factors = _fetch_price_factors_batch(tickers)
+        xbrl = _fetch_xbrl_safe(tickers)
 
     if momentum and all(v == (None, None, None, None) for v in momentum.values()):
         log.error(
@@ -541,7 +582,7 @@ def run_factor_screen(
             len(tickers),
         )
 
-    df = _build_factor_df(infos, momentum, price_factors)
+    df = _build_factor_df(infos, momentum, price_factors, xbrl=xbrl)
     if df.empty:
         return []
 

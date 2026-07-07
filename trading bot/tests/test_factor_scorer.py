@@ -272,6 +272,59 @@ def test_compute_composite_missing_price_factors_neutral():
     assert (scored["low_vol_score"] == 16).all()
 
 
+def test_compute_composite_sue_feeds_momentum_sleeve():
+    """Higher SUE (positive earnings surprise) lifts the momentum sleeve when
+    price signals tie (PEAD input)."""
+    infos = {"BEAT": _make_info(), "MISS": _make_info()}
+    momentum = {"BEAT": _mom(), "MISS": _mom()}
+    xbrl = {
+        "BEAT": {"sue": 3.0, "accruals": None, "net_payout_usd": None},
+        "MISS": {"sue": -3.0, "accruals": None, "net_payout_usd": None},
+    }
+    df = _build_factor_df(infos, momentum, xbrl=xbrl)
+    scored = _compute_composite(df)
+    assert scored.loc["BEAT", "momentum_score"] > scored.loc["MISS", "momentum_score"]
+
+
+def test_compute_composite_net_payout_feeds_value_sleeve():
+    """Higher net payout (buybacks + dividends / mcap) lifts the value sleeve."""
+    infos = {"PAYER": _make_info(), "HOARDER": _make_info()}
+    momentum = {"PAYER": _mom(), "HOARDER": _mom()}
+    xbrl = {
+        "PAYER": {"sue": None, "accruals": None, "net_payout_usd": 8e8},   # 8% of 10e9 mcap
+        "HOARDER": {"sue": None, "accruals": None, "net_payout_usd": 1e7},
+    }
+    df = _build_factor_df(infos, momentum, xbrl=xbrl)
+    assert df.loc["PAYER", "net_payout_yield"] == pytest.approx(0.08)
+    scored = _compute_composite(df)
+    assert scored.loc["PAYER", "value_score"] > scored.loc["HOARDER", "value_score"]
+
+
+def test_compute_composite_low_accruals_feed_quality_sleeve():
+    """Lower accruals (cash-backed earnings) lift the quality sleeve (Sloan)."""
+    infos = {"CASH": _make_info(), "ACCRUED": _make_info()}
+    momentum = {"CASH": _mom(), "ACCRUED": _mom()}
+    xbrl = {
+        "CASH": {"sue": None, "accruals": -0.05, "net_payout_usd": None},
+        "ACCRUED": {"sue": None, "accruals": 0.15, "net_payout_usd": None},
+    }
+    df = _build_factor_df(infos, momentum, xbrl=xbrl)
+    scored = _compute_composite(df)
+    assert scored.loc["CASH", "quality_score"] > scored.loc["ACCRUED", "quality_score"]
+
+
+def test_compute_composite_without_xbrl_unchanged():
+    """No xbrl dict at all -> columns are absent/NaN and scores stay valid
+    (weights renormalise over the present sub-signals)."""
+    infos = {"A": _make_info(), "B": _make_info()}
+    momentum = {"A": _mom(), "B": _mom(m12=20.0)}
+    df = _build_factor_df(infos, momentum)
+    scored = _compute_composite(df)
+    assert (scored["composite_score"] >= 0).all()
+    assert (scored["composite_score"] <= 99).all()
+    assert scored.loc["B", "momentum_score"] > scored.loc["A", "momentum_score"]
+
+
 def test_regime_weights_sum_to_one():
     """Every regime weight tuple (value, momentum, quality, low_vol, reversal) sums to 1.0."""
     from screener.factor_scorer import _REGIME_WEIGHTS, _DEFAULT_WEIGHTS
@@ -328,6 +381,7 @@ def test_run_factor_screen_returns_top_n(mocker):
         "screener.factor_scorer._fetch_price_factors_batch",
         return_value={t: (20.0, 1.0, float(i)) for i, t in enumerate(tickers)},
     )
+    mocker.patch("screener.factor_scorer._fetch_xbrl_safe", return_value={})
     mocker.patch(
         "screener.factor_scorer._gather_research_with_momentum",
         side_effect=lambda t, m1, m3: (t, None),
@@ -350,6 +404,7 @@ def test_run_factor_screen_all_none_returns_empty(mocker):
         "screener.factor_scorer._fetch_price_factors_batch",
         return_value={"AAPL": (None, None, None), "MSFT": (None, None, None)},
     )
+    mocker.patch("screener.factor_scorer._fetch_xbrl_safe", return_value={})
     result = run_factor_screen(["AAPL", "MSFT"], top_n=5)
     assert result == []
 
@@ -369,6 +424,7 @@ def test_run_factor_screen_calls_research_for_top_tickers(mocker):
         "screener.factor_scorer._fetch_price_factors_batch",
         return_value={"AAPL": (18.0, 0.9, 7.0), "MSFT": (25.0, 1.2, 4.0)},
     )
+    mocker.patch("screener.factor_scorer._fetch_xbrl_safe", return_value={})
     research_spy = mocker.patch(
         "screener.factor_scorer._gather_research_with_momentum",
         side_effect=lambda t, m1, m3: (t, None),
