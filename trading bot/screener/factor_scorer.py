@@ -10,6 +10,7 @@ import pandas as pd
 import yfinance as yf
 
 from bot.researcher import gather_research, ResearchReport
+from system.config import settings
 
 log = logging.getLogger(__name__)
 
@@ -245,6 +246,9 @@ def _build_factor_df(
             mom1m, mom12m, mom6m, high52 = momentum.get(ticker, (None, None, None, None))
             vol, beta, resid_mom = price_factors.get(ticker, (None, None, None))
             sector = (info.get("sector") or "Unknown").strip() or "Unknown"
+            # yfinance reports short interest as a fraction of float; store as %.
+            short_frac = _to_float(info.get("shortPercentOfFloat"))
+            short_pct_float = short_frac * 100 if short_frac is not None else None
 
             rows.append({
                 "ticker": ticker,
@@ -272,6 +276,9 @@ def _build_factor_df(
                 # gated in the composite (favoured in neutral/range-bound, suppressed
                 # in strong trends and crashes — see _REGIME_WEIGHTS).
                 "reversal": -mom1m if mom1m is not None else None,
+                # Short interest as % of float — negative screen, not a ranked
+                # signal (see _compute_composite / UniverseConfig.max_short_pct_float).
+                "short_pct_float": short_pct_float,
             })
         except Exception:
             log.debug("Skipping %s in factor_df build", ticker, exc_info=True)
@@ -360,6 +367,22 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
     primary = ["pe_inv", "pb_inv", "fcf_yield", "roe", "margin", "de_inv"]
     valid_mask = df[primary].notna().sum(axis=1) >= _MIN_VALID_METRICS
     df = df[valid_mask].copy()
+    if df.empty:
+        return df
+
+    # Short-interest negative screen: heavily shorted names are excluded rather
+    # than down-weighted (documented underperformance of crowded shorts plus
+    # squeeze tail risk in a long-only book). Missing data passes — absence of
+    # the field is not evidence of crowding.
+    max_short = settings.universe.max_short_pct_float
+    if max_short > 0 and "short_pct_float" in df.columns:
+        crowded = df["short_pct_float"].notna() & (df["short_pct_float"] > max_short)
+        if crowded.any():
+            log.info(
+                "Short-interest screen excluded %d name(s) above %.1f%% of float: %s",
+                int(crowded.sum()), max_short, ", ".join(df.index[crowded][:10]),
+            )
+            df = df[~crowded]
     if df.empty:
         return df
 

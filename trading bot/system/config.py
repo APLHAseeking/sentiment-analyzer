@@ -52,6 +52,10 @@ class UniverseConfig:
     min_trade_usd: int = 15_000       # minimum meaningful trade size
     event_exclusion_window_days: int = 2   # block new entries within N calendar days of earnings/FOMC
     research_concurrency: int = 5     # max parallel gather_research calls
+    # Short-interest negative screen: exclude names whose short interest exceeds
+    # this % of float from the factor screener (documented underperformance of
+    # heavily shorted names + squeeze tail risk in a long-only book). 0 disables.
+    max_short_pct_float: float = 20.0
 
 
 @dataclass(frozen=True)

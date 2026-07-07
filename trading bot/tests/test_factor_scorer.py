@@ -184,6 +184,33 @@ def test_compute_composite_missing_new_fields_degrade_gracefully():
     assert (scored["composite_score"] <= 99).all()
 
 
+def test_short_interest_screen_excludes_crowded_names():
+    """Names shorted above UniverseConfig.max_short_pct_float (default 20%) are
+    excluded outright; missing short data passes (unknown != crowded)."""
+    infos = {
+        "CROWDED": {**_make_info(), "shortPercentOfFloat": 0.35},  # 35% of float
+        "NORMAL": {**_make_info(), "shortPercentOfFloat": 0.02},
+        "UNKNOWN": _make_info(),
+    }
+    momentum = {t: _mom() for t in infos}
+    df = _build_factor_df(infos, momentum)
+    scored = _compute_composite(df)
+    assert "CROWDED" not in scored.index
+    assert "NORMAL" in scored.index
+    assert "UNKNOWN" in scored.index
+
+
+def test_short_interest_screen_disabled_when_zero(mocker):
+    from screener import factor_scorer
+    from system.config import Settings, UniverseConfig
+    mocker.patch.object(factor_scorer, "settings",
+                        Settings(universe=UniverseConfig(max_short_pct_float=0.0)))
+    infos = {"CROWDED": {**_make_info(), "shortPercentOfFloat": 0.35}, "B": _make_info()}
+    momentum = {t: _mom() for t in infos}
+    scored = _compute_composite(_build_factor_df(infos, momentum))
+    assert "CROWDED" in scored.index
+
+
 def test_compute_composite_returns_scores_in_range():
     infos = {t: _make_info() for t in ["A", "B", "C"]}
     momentum = {t: _mom() for t in ["A", "B", "C"]}
