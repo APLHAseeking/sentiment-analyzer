@@ -149,7 +149,25 @@ def test_compute_composite_missing_momentum_scored_neutrally():
     df = _build_factor_df(infos, momentum)
     scored = _compute_composite(df)
     assert scored.loc["MISSING", "momentum_score"] > scored.loc["WORST", "momentum_score"]
-    assert scored.loc["MISSING", "momentum_score"] < scored.loc["MID", "momentum_score"]
+    # With centered ranks a true median name sits exactly at the 0.5 neutral
+    # imputation point, so MISSING and MID legitimately tie at the midpoint.
+    assert scored.loc["MISSING", "momentum_score"] <= scored.loc["MID", "momentum_score"]
+    assert scored.loc["MISSING", "momentum_score"] < scored.loc["BEST", "momentum_score"]
+
+
+def test_centered_rank_no_small_group_bias():
+    """Centered percentile ranks must average 0.5 for any group size — plain
+    rank(pct=True) averages (n+1)/2n, inflating small sectors (A4 fix)."""
+    from screener.factor_scorer import _centered_rank
+    small = pd.DataFrame({"x": [1.0, 2.0, 3.0, 4.0, 5.0]})
+    large = pd.DataFrame({"x": list(map(float, range(100)))})
+    assert _centered_rank(small)["x"].mean() == pytest.approx(0.5)
+    assert _centered_rank(large)["x"].mean() == pytest.approx(0.5)
+    # NaNs stay NaN and don't distort the centering of the rest
+    with_nan = pd.DataFrame({"x": [1.0, np.nan, 3.0]})
+    ranked = _centered_rank(with_nan)["x"]
+    assert pd.isna(ranked.iloc[1])
+    assert ranked.dropna().mean() == pytest.approx(0.5)
 
 
 def test_compute_composite_missing_new_fields_degrade_gracefully():

@@ -137,7 +137,9 @@ def _fetch_momentum_batch(
                     continue
                 current = float(col.iloc[-1])
                 p1m = float(col.iloc[max(0, len(col) - 21)])
-                p12m = float(col.iloc[0])  # ~12 months ago
+                # Anchor to the trailing 252 bars (not the whole fetch window) so
+                # mom_12m means the same thing regardless of how much history came back.
+                p12m = float(col.iloc[max(0, len(col) - 252)])
                 # 6-1 momentum: return from ~6 months ago to ~1 month ago (skip last month)
                 p6m_start = float(col.iloc[max(0, len(col) - 126)])
                 p6m_end = float(col.iloc[max(0, len(col) - 21)])
@@ -218,7 +220,7 @@ def _fetch_price_factors_batch(
 
 def _build_factor_df(
     infos: dict[str, dict | None],
-    momentum: dict[str, tuple[float | None, float | None]],
+    momentum: dict[str, tuple[float | None, float | None, float | None, float | None]],
     price_factors: dict[str, tuple[float | None, float | None, float | None]] | None = None,
 ) -> pd.DataFrame:
     price_factors = price_factors or {}
@@ -282,15 +284,29 @@ def _build_factor_df(
     return df
 
 
+def _centered_rank(frame: pd.DataFrame) -> pd.DataFrame:
+    """Percentile rank centered so every group averages 0.5 regardless of size.
+
+    Plain ``rank(pct=True)`` over n members yields ranks {1/n .. 1} with mean
+    (n+1)/2n, which systematically inflates scores for names in small sectors
+    (a 5-member sector's average name would score 0.6). The centered variant
+    ((rank − 0.5) / n, per column over non-NaN members) averages exactly 0.5
+    for any group size, keeping sleeve scores comparable across sectors.
+    """
+    ranks = frame.rank(na_option="keep")
+    return (ranks - 0.5).div(frame.count())
+
+
 def _sector_rank(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     """Rank each column within sector for sectors >= _MIN_SECTOR_SIZE members.
 
     Sectors that are too small (< _MIN_SECTOR_SIZE tickers with data) fall back
     to the universe-wide percentile rank. This prevents a utility company's low
     P/E from outranking a genuinely cheap tech company across sectors.
+    Ranks are centered (see _centered_rank) so small sectors get no size bonus.
     """
     # Universe-wide fallback ranks
-    universe_ranked = df[cols].rank(pct=True, na_option="keep")
+    universe_ranked = _centered_rank(df[cols])
 
     if "sector" not in df.columns:
         return universe_ranked
@@ -302,7 +318,7 @@ def _sector_rank(df: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
     for sector in large_sectors:
         mask = df["sector"] == sector
         sector_slice = df.loc[mask, cols]
-        result.loc[mask, cols] = sector_slice.rank(pct=True, na_option="keep")
+        result.loc[mask, cols] = _centered_rank(sector_slice)
 
     return result
 
@@ -376,10 +392,12 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
         block = _ranked(list(present)).fillna(fill)
         return sum(block[c] * (w / total) for c, w in present.items())
 
-    # Value: P/E, P/B, FCF yield, EV/EBITDA (4 sub-signals; skipna so missing evebitda ok)
+    # Value: P/E, P/B, FCF yield, EV/EBITDA (4 sub-signals; skipna so missing evebitda ok).
+    # All-missing imputes at neutral 16 (0.5×33), matching the other sleeves — a name
+    # with no value data is unknown, not worst.
     df["value_score"] = (
         _ranked(["pe_inv", "pb_inv", "fcf_yield", "evebitda_inv"]).mean(axis=1, skipna=True) * 33
-    ).fillna(0).clip(0, 33).astype(int)
+    ).fillna(16).clip(0, 33).astype(int)
     # Momentum: 12-1m, 6-1m, 52-week-high ratio, residual (idiosyncratic) momentum.
     # Residual momentum is up-weighted within the sleeve — it was the strongest single
     # sleeve in the PIT backtest (docs/FACTOR_BACKTEST_2026-06-28.md), so it drives the
@@ -387,11 +405,12 @@ def _compute_composite(df: pd.DataFrame, regime_label: str | None = None) -> pd.
     df["momentum_score"] = (
         _weighted_blend(_MOMENTUM_WEIGHTS) * 33
     ).clip(0, 33).astype(int)
-    # Quality: ROE, gross margin (Novy-Marx), net margin, D/E, current ratio, earnings growth
+    # Quality: ROE, gross margin (Novy-Marx), net margin, D/E, current ratio, earnings growth.
+    # All-missing imputes at neutral 16, same as value.
     df["quality_score"] = (
         _ranked(["roe", "gross_margin", "margin", "de_inv", "current_ratio", "earnings_growth"])
         .mean(axis=1, skipna=True) * 33
-    ).fillna(0).clip(0, 33).astype(int)
+    ).fillna(16).clip(0, 33).astype(int)
     # Low-vol / BAB: inverse realized volatility + inverse beta (2 sub-signals).
     # Missing imputed at neutral 0.5 (don't penalise thin-history names to worst).
     df["low_vol_score"] = (
