@@ -16,7 +16,7 @@ import logging
 import re
 import time
 import xml.etree.ElementTree as ET
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 
 import requests
 
@@ -26,12 +26,20 @@ from system.config import settings
 
 log = logging.getLogger(__name__)
 
-# Recent Form 4 filings as an Atom feed (most recent first).
+# Recent Form 4 filings as an Atom feed (most recent first) — fallback source.
 _GETCURRENT_URL = "https://www.sec.gov/cgi-bin/browse-edgar"
+_GETCURRENT_MAX_COUNT = 100  # EDGAR clamps/rejects larger count values on this feed
+# Daily form index — primary source. Published after each business day's close,
+# it lists EVERY filing of that day; the getcurrent feed only exposes the most
+# recent ~100 entries and so misses most of a day's Form 4 volume.
+_DAILY_INDEX_URL = "https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{quarter}/form.{yyyymmdd}.idx"
+_MAX_INDEX_LOOKBACK_DAYS = 7   # calendar days to walk back looking for published indexes
+_DAILY_INDEXES_PER_RUN = 2     # newest N published daily indexes per run (gap tolerance)
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _TICKER_RE = re.compile(r"^[A-Z]{1,5}([.\-][A-Z])?$")
 _ACCESSION_RE = re.compile(r"accession[_-]?number=([\d-]+)", re.IGNORECASE)
 _ACCESSION_PATH_RE = re.compile(r"/(\d{10}-\d{2}-\d{6})", re.IGNORECASE)
+_IDX_FILE_RE = re.compile(r"edgar/data/(\d+)/([\d\-]+)\.txt")
 _INTER_REQUEST_SLEEP = 0.12  # ~8 req/s, under SEC's 10 req/s fair-access ceiling
 
 
@@ -127,6 +135,62 @@ def parse_form4_xml(xml_text: str, accession: str, filing_date: str) -> list[dic
     return results
 
 
+def parse_form_idx(text: str, filing_date: str) -> list[dict]:
+    """Parse an EDGAR daily ``form.idx`` file into Form 4 index entries.
+
+    Pure function (no network) so it is fully unit-testable. Rows are
+    whitespace-separated columns: Form Type, Company Name, CIK, Date Filed,
+    File Name. Only exact form type ``4`` rows are kept (amendments ``4/A``
+    excluded). The File Name path (``edgar/data/<cik>/<accession>.txt``) is
+    rewritten to the browsable filing-directory URL _fetch_form4_xml expects.
+    """
+    entries: list[dict] = []
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "4":
+            continue
+        m = _IDX_FILE_RE.search(parts[-1])
+        if not m:
+            continue
+        cik, accession = m.group(1), m.group(2)
+        href = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}"
+        entries.append({"accession": accession, "href": href, "filing_date": filing_date})
+    return entries
+
+
+def _fetch_daily_form4_index() -> list[dict]:
+    """Fetch Form 4 entries from the most recent published EDGAR daily indexes.
+
+    Walks back from today collecting up to _DAILY_INDEXES_PER_RUN available
+    ``form.idx`` files (today's appears only after EOD; weekends/holidays have
+    none), newest first — so when the caller's per-run budget truncates, the
+    most recent day survives. Returns [] when nothing could be fetched
+    (caller falls back to the getcurrent Atom feed).
+    """
+    entries: list[dict] = []
+    found = 0
+    today = datetime.now(UTC).date()
+    for offset in range(_MAX_INDEX_LOOKBACK_DAYS):
+        d = today - timedelta(days=offset)
+        url = _DAILY_INDEX_URL.format(
+            year=d.year, quarter=(d.month - 1) // 3 + 1, yyyymmdd=d.strftime("%Y%m%d"),
+        )
+        try:
+            resp = requests.get(url, headers=_headers(), timeout=30)
+            if resp.status_code == 404:  # index not published (future/weekend/holiday)
+                continue
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            log.warning("EDGAR daily index fetch failed (%s): %s", url, exc)
+            continue
+        entries.extend(parse_form_idx(resp.text, d.isoformat()))
+        found += 1
+        if found >= _DAILY_INDEXES_PER_RUN:
+            break
+        time.sleep(_INTER_REQUEST_SLEEP)
+    return entries
+
+
 def _fetch_recent_form4_index(count: int) -> list[dict]:
     """Fetch the most recent Form 4 filings via the EDGAR getcurrent Atom feed.
 
@@ -137,7 +201,7 @@ def _fetch_recent_form4_index(count: int) -> list[dict]:
             _GETCURRENT_URL,
             params={
                 "action": "getcurrent", "type": "4", "owner": "include",
-                "count": count, "output": "atom",
+                "count": min(count, _GETCURRENT_MAX_COUNT), "output": "atom",
             },
             headers=_headers(), timeout=30,
         )
@@ -206,31 +270,59 @@ def _fetch_form4_xml(accession: str, href: str) -> str | None:
 def run_insider_scraper() -> list[dict]:
     """Scrape recent SEC Form 4 open-market purchases. Returns new (deduped) buys.
 
-    Persists new rows to `insider_disclosures`. Fires a DEAD_FEED alert if the feed
-    yields nothing on the first page (mirrors the congressional scraper)."""
+    Primary source is the EDGAR daily form index (full-day coverage); the
+    getcurrent Atom feed is the fallback. Persists new rows to
+    `insider_disclosures`. Fires a DEAD_FEED alert if both sources yield
+    nothing (mirrors the congressional scraper)."""
     cfg = settings.insider
     if not cfg.enabled:
         return []
 
-    index = _fetch_recent_form4_index(cfg.max_filings_per_run)
+    index = _fetch_daily_form4_index()
+    if not index:
+        log.info("EDGAR daily index unavailable — falling back to getcurrent Atom feed")
+        index = _fetch_recent_form4_index(cfg.max_filings_per_run)
     if not index:
         emit_event(log, EventType.DEAD_FEED,
                    "SEC Form 4 feed returned 0 filings — insider signal pipeline dead",
                    alert=True)
         return []
 
+    # Dedup by accession: EDGAR lists ownership filings once per associated CIK
+    # (issuer + each reporting owner), so the same filing typically appears
+    # twice — without this, half the per-run fetch budget is wasted and the
+    # same buy is scored twice downstream.
+    seen_accessions: set[str] = set()
+    deduped: list[dict] = []
+    for entry in index:
+        if entry["accession"] in seen_accessions:
+            continue
+        seen_accessions.add(entry["accession"])
+        deduped.append(entry)
+
     existing = get_existing_insider_ids()
+    # Skip filings whose first purchase is already recorded (re-listed in an
+    # older daily index we are re-scanning). Filings with no P transactions
+    # leave no id and are re-fetched — acceptable, bounded by the run budget.
+    existing_accessions = {i.split(":", 1)[0] for i in existing}
     new_buys: list[dict] = []
-    for entry in index[:cfg.max_filings_per_run]:
+    seen_ids: set[str] = set()
+    scanned = 0
+    for entry in deduped[:cfg.max_filings_per_run]:
+        if entry["accession"] in existing_accessions:
+            continue
         xml_text = _fetch_form4_xml(entry["accession"], entry.get("href", ""))
+        scanned += 1
         time.sleep(_INTER_REQUEST_SLEEP)
         if not xml_text:
             continue
         for buy in parse_form4_xml(xml_text, entry["accession"], entry["filing_date"]):
-            if buy["id"] not in existing:
+            if buy["id"] not in existing and buy["id"] not in seen_ids:
+                seen_ids.add(buy["id"])
                 new_buys.append(buy)
 
     if new_buys:
         insert_insider_disclosures(new_buys)
-    log.info("Insider Form 4: %d filings scanned, %d new open-market buys", len(index), len(new_buys))
+    log.info("Insider Form 4: %d distinct filings indexed, %d fetched, %d new open-market buys",
+             len(deduped), scanned, len(new_buys))
     return new_buys

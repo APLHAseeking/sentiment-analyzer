@@ -83,6 +83,94 @@ def test_parse_form4_malformed_xml_returns_empty():
     assert parse_form4_xml("<not valid", "acc", "2026-06-26") == []
 
 
+# ── Daily index + scraper dedup ────────────────────────────────────────────
+
+_FORM_IDX = """Description:           Daily Index of EDGAR Dissemination Feed by Form Type
+Last Data Received:    July 6, 2026
+
+Form Type   Company Name                          CIK         Date Filed  File Name
+---------------------------------------------------------------------------------------
+3           Foo Corp                              123456      20260706    edgar/data/123456/0001-23-000009.txt
+4           Bar Inc                               777888      20260706    edgar/data/777888/0001234567-26-000123.txt
+4/A         Baz LLC                               999         20260706    edgar/data/999/0001-23-000010.txt
+10-K        Qux Co                                55555       20260706    edgar/data/55555/0001-23-000011.txt
+"""
+
+
+def test_parse_form_idx_keeps_only_exact_form_4():
+    from bot.insider import parse_form_idx
+    entries = parse_form_idx(_FORM_IDX, "2026-07-06")
+    assert len(entries) == 1
+    e = entries[0]
+    assert e["accession"] == "0001234567-26-000123"
+    assert e["href"] == "https://www.sec.gov/Archives/edgar/data/777888/000123456726000123"
+    assert e["filing_date"] == "2026-07-06"
+
+
+def test_run_insider_scraper_dedups_duplicate_accessions(mocker):
+    """EDGAR lists a Form 4 once per associated CIK (issuer + owner) — the same
+    accession must be fetched and emitted only once per run."""
+    from bot import insider
+    dup = {"accession": "0001-23-000001", "href": "http://x/1", "filing_date": "2026-07-06"}
+    mocker.patch.object(insider, "_fetch_daily_form4_index", return_value=[dup, dict(dup)])
+    fetch_xml = mocker.patch.object(insider, "_fetch_form4_xml", return_value=_form4_xml())
+    mocker.patch.object(insider, "get_existing_insider_ids", return_value=set())
+    mocker.patch.object(insider, "insert_insider_disclosures")
+    mocker.patch.object(insider.time, "sleep")
+    buys = insider.run_insider_scraper()
+    assert fetch_xml.call_count == 1
+    assert len(buys) == 1
+
+
+def test_run_insider_scraper_skips_already_recorded_accessions(mocker):
+    from bot import insider
+    entry = {"accession": "0001-23-000001", "href": "http://x/1", "filing_date": "2026-07-06"}
+    mocker.patch.object(insider, "_fetch_daily_form4_index", return_value=[entry])
+    fetch_xml = mocker.patch.object(insider, "_fetch_form4_xml", return_value=_form4_xml())
+    mocker.patch.object(insider, "get_existing_insider_ids",
+                        return_value={"0001-23-000001:0"})
+    mocker.patch.object(insider, "insert_insider_disclosures")
+    mocker.patch.object(insider.time, "sleep")
+    buys = insider.run_insider_scraper()
+    assert fetch_xml.call_count == 0
+    assert buys == []
+
+
+def test_run_insider_scraper_falls_back_to_getcurrent(mocker):
+    from bot import insider
+    mocker.patch.object(insider, "_fetch_daily_form4_index", return_value=[])
+    fallback = mocker.patch.object(
+        insider, "_fetch_recent_form4_index",
+        return_value=[{"accession": "0001-23-000002", "href": "http://x/2",
+                       "filing_date": "2026-07-06"}],
+    )
+    mocker.patch.object(insider, "_fetch_form4_xml", return_value=_form4_xml())
+    mocker.patch.object(insider, "get_existing_insider_ids", return_value=set())
+    mocker.patch.object(insider, "insert_insider_disclosures")
+    mocker.patch.object(insider.time, "sleep")
+    buys = insider.run_insider_scraper()
+    fallback.assert_called_once()
+    assert len(buys) == 1
+
+
+def test_run_insider_scraper_dead_feed_when_both_sources_empty(mocker):
+    from bot import insider
+    mocker.patch.object(insider, "_fetch_daily_form4_index", return_value=[])
+    mocker.patch.object(insider, "_fetch_recent_form4_index", return_value=[])
+    emit = mocker.patch.object(insider, "emit_event")
+    assert insider.run_insider_scraper() == []
+    assert emit.call_count == 1
+
+
+def test_getcurrent_count_clamped_to_edgar_max(mocker):
+    from bot import insider
+    get = mocker.patch.object(insider.requests, "get")
+    get.return_value.text = "<feed></feed>"
+    get.return_value.raise_for_status = lambda: None
+    insider._fetch_recent_form4_index(300)
+    assert get.call_args.kwargs["params"]["count"] == 100
+
+
 # ── Qualification + cluster ────────────────────────────────────────────────
 
 def _disc(ticker="AAPL", amount=150_000.0, tx="2026-06-20", disc="2026-06-22",

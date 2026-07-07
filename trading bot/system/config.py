@@ -293,7 +293,9 @@ class InsiderConfig:
     max_lag_days: int = 45               # discard filings older than this (filing - transaction)
     max_per_day: int = 2                 # at most N pure insider-only entries per morning
     max_pct: float = 3.0                 # max position size for insider-only signals (% NAV)
-    max_filings_per_run: int = 120       # cap SEC fetches per run (fair-access + cost guard)
+    max_filings_per_run: int = 300       # cap SEC filing fetches per run (fair-access + runtime
+                                         # guard, ~2-3 min at ~8 req/s; daily form.idx can list
+                                         # several hundred Form 4s — newest day survives truncation)
     cluster_window_days: int = 30        # window for counting multiple insiders on same ticker
     # SEC requires a descriptive User-Agent with a contact email (10 req/s fair-access).
     sec_user_agent: str = field(
