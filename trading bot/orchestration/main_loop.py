@@ -1530,6 +1530,14 @@ class RegimeAwareOrchestrator:
                           misfire_grace_time=_grace)
         scheduler.add_job(self.run_exit_review, "cron", hour=16, minute=0,
                           misfire_grace_time=_grace)
+        # Second daily entry scan (17:00/18:00 = 11:00/12:00 EST) — volatile markets
+        # (2026-07-09) prompted scanning for new candidates twice a day instead of
+        # once; run_morning_pipeline already dedupes against currently-open tickers
+        # and respects can_open_new_position()/capacity, so a second run is safe.
+        scheduler.add_job(self.run_screener_prefetch, "cron", hour=17, minute=0,
+                          misfire_grace_time=_grace)
+        scheduler.add_job(self.run_morning_pipeline, "cron", hour=18, minute=0,
+                          misfire_grace_time=_grace)
         # 15:45 = 15 mins after US open (15:30 Amsterdam = 09:30 EST)
         scheduler.add_job(self.run_intraday_check, "cron", hour=15, minute=45,
                           misfire_grace_time=_intraday_grace)

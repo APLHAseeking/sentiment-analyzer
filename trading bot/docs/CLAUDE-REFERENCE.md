@@ -264,3 +264,11 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 > (14s each); added the same `monkeypatch.setattr(time, "sleep", ...)` pattern already used
 > elsewhere in that file to keep the suite fast. Test count: **861** (full suite green,
 > ~97s).
+> 2026-07-09 (later same day): volatile markets prompted scanning for new entries twice a
+> day instead of once (user explicitly chose scan-frequency over larger position sizes —
+> the regime/instability sizing multipliers in `regime/allocation_engine.py` were left
+> untouched). Added a second `run_screener_prefetch`/`run_morning_pipeline` pair at
+> 17:00/18:00 CEST (11:00/12:00 EST), mirroring the existing 13:00/14:00 pre-market pair.
+> `run_morning_pipeline` already dedupes against currently-open tickers and respects
+> `can_open_new_position()`/invested-pct capacity, so a second run in one day is safe — it
+> can only skip or add, never double-open. Test count: **862** (full suite green, ~98s).

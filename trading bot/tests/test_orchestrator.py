@@ -1734,3 +1734,22 @@ def test_process_insider_signal_no_cap_when_both_signal_type(mocker, orch):
 
     call_kwargs = orch._portfolio.open_position.call_args[1]
     assert call_kwargs["position_pct"] > 3.0
+
+
+def test_start_schedules_second_daily_pipeline_run(mocker, orch):
+    """Volatile markets (2026-07-09) prompted scanning for new entries twice a
+    day instead of once — a second run_screener_prefetch/run_morning_pipeline
+    pair, midday, on top of the existing 13:00/14:00 CEST pre-market pair."""
+    mock_scheduler_cls = mocker.patch("orchestration.main_loop.BlockingScheduler")
+    mock_scheduler = mock_scheduler_cls.return_value
+
+    orch.start()
+
+    scheduled = [
+        (call.args[0], call.kwargs.get("hour"), call.kwargs.get("minute"))
+        for call in mock_scheduler.add_job.call_args_list
+    ]
+    assert (orch.run_screener_prefetch, 13, 0) in scheduled
+    assert (orch.run_morning_pipeline, 14, 0) in scheduled
+    assert (orch.run_screener_prefetch, 17, 0) in scheduled
+    assert (orch.run_morning_pipeline, 18, 0) in scheduled
