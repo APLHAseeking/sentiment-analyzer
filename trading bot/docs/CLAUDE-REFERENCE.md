@@ -254,3 +254,13 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 > returns `False` instead of guessing. The two real dangling orders were cancelled by hand
 > after diagnosis. Test count: **860** (full suite green).
 > Test count: **853** (full suite green).
+> 2026-07-09: root-caused why CF/VTRS's fills were never confirmed in the first place —
+> `AlpacaBroker._poll_order_fill` only polled 3 times at 0.2s apart (~0.4s total), nowhere
+> near enough for Alpaca's paper API to confirm a market-order fill. Even with the
+> `OrderStatus.FILLED`-required fix above, that short a window means most orders would still
+> time out and get cancelled instead of landing as real trades. Widened to 15 attempts at 1s
+> apart (~14s). Three existing `test_broker.py` tests that exercised the never-terminal poll
+> path without mocking `time.sleep` started sleeping for real once the window widened
+> (14s each); added the same `monkeypatch.setattr(time, "sleep", ...)` pattern already used
+> elsewhere in that file to keep the suite fast. Test count: **861** (full suite green,
+> ~97s).

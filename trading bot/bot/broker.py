@@ -73,11 +73,16 @@ class AlpacaBroker(BrokerInterface):
         except Exception as exc:
             raise RuntimeError(f"Alpaca get_positions failed: {exc}") from exc
 
-    def _poll_order_fill(self, order_id: str, attempts: int = 3, delay: float = 0.2):
+    def _poll_order_fill(self, order_id: str, attempts: int = 15, delay: float = 1.0):
         """Poll Alpaca for a terminal order status after submission.
 
         Returns the API order object once it reaches filled/cancelled/rejected,
         or None if still open after `attempts` polls or the API call fails.
+
+        attempts=3/delay=0.2 (~0.4s total) was too short for Alpaca's paper API
+        to confirm a market-order fill and caused CF/VTRS (2026-07-07) to be
+        booked as phantom positions from a stale quote price. 15 attempts at
+        1s apart (~14s) gives a real fill room to land before falling back.
         """
         import time
         for i in range(attempts):

@@ -18,8 +18,10 @@
 > fractional qty; (3) SEC EDGAR daily-index fetch had no delay between consecutive misses,
 > bursting into 403s; (4) the Capitol Trades JSON path treated 429 (rate limit) the same as a
 > genuine 404 and gave up instead of backing off. See `docs/CLAUDE-REFERENCE.md#history` for
-> detail; deferred edge ideas live in `docs/EDGE_BACKLOG.md`. Test count: **860** (full suite
-> green).
+> detail; deferred edge ideas live in `docs/EDGE_BACKLOG.md`. 2026-07-09: the underlying
+> cause of the CF/VTRS fill-poll timeout — `AlpacaBroker._poll_order_fill` only allowed
+> ~0.4s (3 attempts × 0.2s) to confirm a fill — is fixed; widened to ~14s (15 × 1s). Test
+> count: **861** (full suite green).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

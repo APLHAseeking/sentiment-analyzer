@@ -47,7 +47,10 @@ def test_get_positions():
     }]
 
 
-def test_place_order_buy_returns_order():
+def test_place_order_buy_returns_order(monkeypatch):
+    import time as time_module
+    monkeypatch.setattr(time_module, "sleep", lambda *_a, **_kw: None)
+
     mock_api = MagicMock()
     broker = AlpacaBroker(api_client=mock_api)
     order = broker.place_order(ticker="AAPL", side="buy", qty=10.0)
@@ -56,7 +59,10 @@ def test_place_order_buy_returns_order():
     assert order.status == OrderStatus.SUBMITTED
 
 
-def test_place_order_sell():
+def test_place_order_sell(monkeypatch):
+    import time as time_module
+    monkeypatch.setattr(time_module, "sleep", lambda *_a, **_kw: None)
+
     mock_api = MagicMock()
     broker = AlpacaBroker(api_client=mock_api)
     order = broker.place_order(ticker="AAPL", side="sell", qty=5.0)
@@ -118,7 +124,10 @@ def test_place_order_polls_for_fill_and_updates_order():
     assert order.filled_at == "2026-06-15T14:30:00+00:00"
 
 
-def test_place_order_stays_submitted_if_not_yet_filled():
+def test_place_order_stays_submitted_if_not_yet_filled(monkeypatch):
+    import time as time_module
+    monkeypatch.setattr(time_module, "sleep", lambda *_a, **_kw: None)
+
     mock_api = MagicMock()
     mock_api.submit_order.return_value.id = "order-456"
     pending_response = MagicMock(
@@ -181,6 +190,36 @@ def test_get_order_history_returns_empty_list_on_api_failure():
     mock_api.get_orders.side_effect = Exception("network error")
     broker = AlpacaBroker(api_client=mock_api)
     assert broker.get_order_history() == []
+
+
+def test_place_order_confirms_fill_that_lands_a_few_seconds_late(monkeypatch):
+    """CF and VTRS (2026-07-07) were booked as phantom positions because the
+    poll window was only 3 attempts / 0.2s apart (~0.4s total) — nowhere near
+    enough for Alpaca's paper API to confirm a market-order fill, so the order
+    was treated as unconfirmed and the caller fell back to a stale quote
+    price. The poll must keep retrying long enough to catch a fill that
+    confirms a few seconds (several polls) after submission, not just an
+    instant one."""
+    import time as time_module
+    monkeypatch.setattr(time_module, "sleep", lambda *_a, **_kw: None)
+
+    mock_api = MagicMock()
+    mock_api.submit_order.return_value.id = "order-slow-fill"
+    pending = MagicMock(
+        status=AlpacaOrderStatus.NEW, filled_qty="0", filled_avg_price="0", filled_at=None,
+    )
+    filled = MagicMock(
+        status=AlpacaOrderStatus.FILLED, filled_qty="10", filled_avg_price="151.00",
+        filled_at="2026-07-09T14:00:05+00:00",
+    )
+    # 5 pending polls before the 6th confirms FILLED — beyond the old 3-attempt window.
+    mock_api.get_order_by_id.side_effect = [pending] * 5 + [filled]
+
+    broker = AlpacaBroker(api_client=mock_api)
+    order = broker.place_order(ticker="AAPL", side="buy", qty=10.0)
+
+    assert order.status == OrderStatus.FILLED
+    assert order.filled_avg_price == 151.00
 
 
 def test_place_order_fires_alert_when_fill_poll_times_out(monkeypatch):
