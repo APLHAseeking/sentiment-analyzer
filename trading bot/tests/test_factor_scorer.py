@@ -5,6 +5,7 @@ from unittest.mock import patch, MagicMock
 from screener.factor_scorer import (
     _build_factor_df,
     _compute_composite,
+    _fetch_all_infos,
     run_factor_screen,
     FactorCandidate,
 )
@@ -487,3 +488,51 @@ def test_fetch_price_factors_batch_real_computation():
     assert window_len > _MIN_MOMENTUM_BARS
     expected_resid_mom = ((1 + idio_drift) ** window_len - 1) * 100
     assert resid_mom == pytest.approx(expected_resid_mom, rel=1e-4)
+
+
+def test_fetch_all_infos_shares_one_session_across_tickers():
+    """yf.Ticker() with no session creates a brand-new curl_cffi session per
+    call, never closed — with 503 universe tickers/run this leaked enough
+    CLOSE_WAIT sockets to hit the OS file-descriptor limit and hang the live
+    bot for hours. Must share one session across the whole batch."""
+    fake_session = MagicMock()
+    with patch("screener.factor_scorer._make_shared_yf_session", return_value=fake_session), \
+         patch("screener.factor_scorer.yf.Ticker") as mock_ticker_cls:
+        mock_ticker_cls.return_value.info = {"sector": "Technology"}
+
+        _fetch_all_infos(["AAPL", "MSFT"])
+
+        sessions_used = {call.kwargs.get("session") for call in mock_ticker_cls.call_args_list}
+        assert sessions_used == {fake_session}
+
+
+def test_fetch_all_infos_closes_session_after_batch():
+    fake_session = MagicMock()
+    with patch("screener.factor_scorer._make_shared_yf_session", return_value=fake_session), \
+         patch("screener.factor_scorer.yf.Ticker") as mock_ticker_cls:
+        mock_ticker_cls.return_value.info = {"sector": "Technology"}
+
+        _fetch_all_infos(["AAPL"])
+
+        fake_session.close.assert_called_once()
+
+
+def test_fetch_all_infos_closes_session_even_on_fetch_error():
+    fake_session = MagicMock()
+    with patch("screener.factor_scorer._make_shared_yf_session", return_value=fake_session), \
+         patch("screener.factor_scorer.yf.Ticker", side_effect=RuntimeError("boom")):
+        # _fetch_info_with_retry catches per-ticker errors internally (returns
+        # None), so this shouldn't raise — but confirm close() still runs.
+        _fetch_all_infos(["AAPL"])
+
+        fake_session.close.assert_called_once()
+
+
+def test_make_shared_yf_session_falls_back_to_none_on_import_failure():
+    """If curl_cffi ever becomes unavailable (yfinance dependency change),
+    degrade to yfinance's own per-call default instead of crashing the
+    screener."""
+    from screener.factor_scorer import _make_shared_yf_session
+    with patch.dict("sys.modules", {"curl_cffi.requests": None}):
+        result = _make_shared_yf_session()
+    assert result is None

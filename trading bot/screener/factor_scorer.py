@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import functools
 import logging
 import time
 from dataclasses import dataclass
@@ -42,10 +43,10 @@ class FactorCandidate:
     reversal_score: int = 0
 
 
-def _fetch_info_with_retry(ticker: str) -> tuple[str, dict | None]:
+def _fetch_info_with_retry(ticker: str, session=None) -> tuple[str, dict | None]:
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            return ticker, yf.Ticker(ticker).info
+            return ticker, yf.Ticker(ticker, session=session).info
         except Exception as exc:
             if attempt < _MAX_RETRIES:
                 time.sleep(1.0 * (attempt + 1))
@@ -58,17 +59,49 @@ def _fetch_info_with_retry(ticker: str) -> tuple[str, dict | None]:
 _fetch_info = _fetch_info_with_retry
 
 
+def _make_shared_yf_session():
+    """One shared session for a whole fetch batch, matching yfinance's own
+    default construction (yfinance.base.TickerBase: `requests.Session(
+    impersonate="chrome")`, where yfinance internally aliases `requests` to
+    `curl_cffi.requests` for Yahoo's bot-detection bypass — a plain
+    `requests.Session` would not carry that TLS impersonation). curl_cffi is
+    already an installed transitive dependency of yfinance, not a new one;
+    if this ever breaks on a yfinance/curl_cffi upgrade, fall back to
+    yfinance's own per-call default (session=None) rather than crashing.
+    """
+    try:
+        import curl_cffi.requests as curl_requests
+        return curl_requests.Session(impersonate="chrome")
+    except Exception as exc:
+        log.warning("Could not create shared yfinance session (%s) — falling back "
+                    "to per-call sessions (yfinance default, leaks connections)", exc)
+        return None
+
+
 def _fetch_all_infos(tickers: list[str]) -> dict[str, dict | None]:
-    """Fetch yfinance info in chunks to avoid rate limits."""
+    """Fetch yfinance info in chunks to avoid rate limits.
+
+    Shares one yfinance session across the whole batch instead of the
+    yfinance default (a brand-new curl_cffi session per Ticker(), never
+    closed) — with 503 universe tickers per run, up to twice daily, that
+    default leaked ~50+ CLOSE_WAIT sockets/run and eventually starved the
+    live bot's file-descriptor limit, hanging it silently for hours.
+    """
     results: dict[str, dict | None] = {}
-    for i in range(0, len(tickers), _CHUNK_SIZE):
-        chunk = tickers[i:i + _CHUNK_SIZE]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
-            chunk_results = list(pool.map(_fetch_info_with_retry, chunk))
-        for ticker, info in chunk_results:
-            results[ticker] = info
-        if i + _CHUNK_SIZE < len(tickers):
-            time.sleep(_CHUNK_DELAY)
+    session = _make_shared_yf_session()
+    try:
+        fetch_one = functools.partial(_fetch_info_with_retry, session=session)
+        for i in range(0, len(tickers), _CHUNK_SIZE):
+            chunk = tickers[i:i + _CHUNK_SIZE]
+            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+                chunk_results = list(pool.map(fetch_one, chunk))
+            for ticker, info in chunk_results:
+                results[ticker] = info
+            if i + _CHUNK_SIZE < len(tickers):
+                time.sleep(_CHUNK_DELAY)
+    finally:
+        if session is not None:
+            session.close()
     return results
 
 
