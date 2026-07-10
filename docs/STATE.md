@@ -11,6 +11,26 @@ Task mostly complete, committed (0d93f8b + follow-up commit). Bot is RUNNING (PI
 nohup, restarted 12:46PM 2026-07-10, confirmed alive) with all fixes live. Full suite: 877
 passed, 1 pre-existing unrelated failure (test_insert_and_get_disclosure, see Open items).
 
+New session (post-launch review, momentum/LLM/Russell-1000 follow-up): found and fixed a
+test-DB-pollution bug while investigating why the bot had never opened a real position —
+`tests/test_orchestrator.py` was silently writing 287 fake `fundamental_signals` rows
+(ticker=MSFT, composite_score=80, rationale='good') into the LIVE `trading.db` on every
+pytest run (unmocked `insert_fundamental_signal` local-import bypass). Fixed + 287 rows
+deleted (commit 8509964). Real `fundamental_signals` history is now just 2 rows: CF/VTRS,
+both 07-07, both the already-documented phantom-position trades. No real candidate has been
+generated 07-06/07-08/07-09/07-10 — consistent with the (now-fixed) scheduler-dropping-days
+bug. **Today's scheduler fix is still not live-tested**: bot process (PID 20132) started
+12:46 CEST, after the fix landed (12:36); only `run_screener_prefetch` (13:00) has run so
+far; `run_morning_pipeline` (14:00 CEST) — the actual test — had not run as of 13:2x.
+Also created `trading bot/.claude/skills/weekly-factor-review/` (on-demand, report-only,
+never auto-edits weights) + first report `trading bot/docs/factor-reviews/2026-07-10.md`
+(commit 0c6d25e): confirms momentum's 2026 outperformance is real (MTUM +26-30% YTD) and
+consistent with the bot's melt-up weighting, but flags a regime whipsaw (euphoria->melt-up->
+deep-bear->melt-up in 5 days) as the more urgent risk. Approved plan (still pending, deferred
+for the position-opening investigation): cross-model second-opinion debate in ai_analyst.py,
+alternate Russell 1000 data source. Plan file:
+/Users/thomasvromen/.claude/plans/compiled-spinning-stardust.md
+
 Two items attempted but NOT resolved — live-verified broken by different root causes than
 assumed:
 - Russell 1000 universe: header fix did not restore coverage — iShares now serves
@@ -24,15 +44,16 @@ assumed:
   through from here). Bot currently runs via manual nohup (no auto-restart on crash).
 
 ## Next
+- Watch for the 14:00 CEST `run_morning_pipeline` today — first real test of whether the
+  scheduler fix produces an actual filled position. Check `bot.log` / `positions` table after.
 - User: approve the pending LaunchAgent in System Settings (if one appears), then retry
   `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`.
 - Follow-up needed: find a non-iShares Russell 1000 constituent source (iShares CSV endpoints
-  now WAF-gated; CLAUDE.md forbids a headless browser workaround).
+  now WAF-gated; CLAUDE.md forbids a headless browser workaround) — Workstream C of
+  compiled-spinning-stardust.md plan.
+- Cross-model second-opinion debate (Workstream B of same plan) — not started.
 - P2 (deferred per plan, not started): dead-man's-switch alert for missed pipeline runs,
   requirements.txt pinning/lockfile.
-- Live verification: watch bot.log for the 14:00 CEST pipeline run today, confirm trading.db
-  signals/positions populate, dashboard_state.json timestamp advances, expected_return_pct
-  shows sane values.
 
 ## Constraints
 - User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix.
@@ -58,6 +79,10 @@ assumed:
 - docs/guardrails/MIGRATION-LOG.md has PRE-EXISTING uncommitted changes (not this task's) — do not commit blindly
 
 ## Done
+- 2026-07-10 (later) test-DB-pollution fix + weekly-factor-review skill — RESULT: commit
+  8509964 (main_loop.py insert_fundamental_signal import fix + orch/orch_fitted mocks),
+  commit 0c6d25e (skill + first report). 287 fake fundamental_signals rows deleted from
+  live trading.db. Full suite: 877 passed, 1 pre-existing unrelated failure.
 - 2026-07-10 trade-frequency review + fixes — RESULT: scheduler catch-up-on-restart (main_loop.py
   start() + db.py job_runs table), universe.py Russell-1000 User-Agent fix, portfolio.py initial
   stop-placement alert, ai_analyst.py entry hurdle 5x/1.5%->3x/1.0% + expected_return_pct

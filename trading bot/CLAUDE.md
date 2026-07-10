@@ -33,9 +33,14 @@
 > `#data-caveats`) and macOS launchd auto-restart supervision (plist is correct but the
 > spawned process exits immediately with code 78 on every attempt — likely needs manual
 > Background Task Management approval in System Settings; bot runs via manual `nohup` for
-> now, see `docs/RUNBOOK.md`). See `docs/CLAUDE-REFERENCE.md#history` for detail. Test
-> count: **877** (full suite green; one pre-existing unrelated date-dependent test
-> failure, not fixed — see history).
+> now, see `docs/RUNBOOK.md`). Later same day: found and fixed a test-DB-pollution bug —
+> `tests/test_orchestrator.py` was writing fake signals into the live `trading.db` on every
+> pytest run (unmocked `insert_fundamental_signal`); 287 fake rows deleted; real
+> `fundamental_signals` history is just CF/VTRS (07-07) — no real candidate generated since,
+> consistent with the scheduler bug above. Added an on-demand `weekly-factor-review` skill
+> (report-only, never auto-edits weights). See `docs/CLAUDE-REFERENCE.md#history` for
+> detail. Test count: **877** (full suite green; one pre-existing unrelated date-dependent
+> test failure, not fixed — see history).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

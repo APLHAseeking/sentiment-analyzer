@@ -326,3 +326,32 @@ open tickers/capacity.
 > `test_insert_and_get_disclosure` hardcodes a `disclosure_date` that ages out of
 > `get_existing_ids()`'s 90-day window as real time advances; needs a relative-date
 > fixture, tracked as a follow-up, not part of this review).
+> 2026-07-10 (later, momentum/LLM/Russell-1000 follow-up review): while investigating why the
+> bot had never opened a real position despite `fundamental_signals` showing candidates on
+> 07-06/07/09/10, found the actual cause — `tests/test_orchestrator.py` was writing fake rows
+> into the **live** `trading.db` on every `pytest` run. `_process_fundamental_candidate`'s
+> `insert_fundamental_signal` call (`orchestration/main_loop.py:1163`) used a local
+> (function-scoped) `from bot.db import ...`, invisible to the `mocker.patch(
+> "orchestration.main_loop.X")` pattern every other DB write in the file uses (13 other
+> call sites correctly mock `insert_signal` this way) — and no orchestrator test sets
+> `DB_PATH`, so the write landed on the real production file via `bot/db.py`'s relative-path
+> default. 287 of 289 `fundamental_signals` rows (`ticker='MSFT', composite_score=80,
+> rationale='good'` — a literal `tests/test_orchestrator.py` fixture string) were this leaked
+> data, accumulated across every pytest run touching that code path. Did **not** affect real
+> trading — `self._portfolio` is a `MagicMock` in the same tests, so no fake order/position
+> was ever placed, only the signal audit table. Fixed: import moved to module level, mocked
+> in both `orch`/`orch_fitted` fixtures (matching the existing `record_job_run` precedent);
+> confirmed via `trading.db` mtime no longer changing across a test run. The 287 fake rows
+> deleted from the live DB (2 real rows remain: CF/VTRS, both 07-07, the already-documented
+> phantom-position trades). **Corrected picture:** no real fundamental candidate has been
+> generated on 07-06, 07-08, 07-09, or 07-10 — consistent with the scheduler-dropping-days
+> bug fixed earlier the same day; today's fix was not yet live-tested as of this review (bot
+> process restarted 12:46 CEST, after the 12:36 fix, but `run_morning_pipeline` doesn't fire
+> until 14:00 CEST). Also added an on-demand `weekly-factor-review` project skill
+> (`.claude/skills/weekly-factor-review/`, report-only, never auto-edits `_REGIME_WEIGHTS`/
+> `_MOMENTUM_WEIGHTS`) plus its first baseline report (`docs/factor-reviews/2026-07-10.md`):
+> confirmed momentum's 2026 YTD outperformance is real (MTUM +26-30% vs SPY, WebSearch-
+> sourced) and consistent with the bot's current `melt-up`-regime momentum overweight, but
+> flagged a regime whipsaw (`euphoria`→`melt-up`→`deep-bear`→`melt-up` within 5 days,
+> `regime_log`) as the more urgent live risk than the momentum weighting itself. Test count:
+> **877** (full suite green, same one pre-existing unrelated failure as above).
