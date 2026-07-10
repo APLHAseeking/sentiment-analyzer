@@ -456,14 +456,21 @@ def _build_entry_prompt(
     return "\n".join(lines)
 
 
-def _llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
+def _llm_call(
+    system_text: str, user_text: str, max_tokens: int = 512, provider: str | None = None,
+) -> str:
     """Single LLM call, routed to the configured provider.
+
+    `provider` overrides `settings.llm_provider` for this call only (used by
+    `score_entry_with_debate`'s cross-model bear check) — the default routing
+    is unaffected when omitted.
 
     OpenAI's prompt caching is automatic on repeated prefixes >=1024 tokens —
     no cache_control equivalent needed on that path.
     """
     from system.config import settings
-    if settings.llm_provider == "openai":
+    provider = provider or settings.llm_provider
+    if provider == "openai":
         client = _get_openai_client()
         openai_messages = [
             {"role": "system", "content": system_text},
@@ -511,10 +518,9 @@ def _llm_call(system_text: str, user_text: str, max_tokens: int = 512) -> str:
             )
         return content
 
-    if settings.llm_provider != "anthropic":
+    if provider != "anthropic":
         raise ValueError(
-            f"unrecognized LLM_PROVIDER {settings.llm_provider!r}; "
-            "expected 'openai' or 'anthropic'"
+            f"unrecognized LLM provider {provider!r}; expected 'openai' or 'anthropic'"
         )
 
     client = _get_client()
@@ -548,10 +554,10 @@ def _bull_argument(prompt: str) -> str:
     return _call_with_retry(_call)
 
 
-def _bear_argument(prompt: str, bull_text: str) -> str:
+def _bear_argument(prompt: str, bull_text: str, provider: str | None = None) -> str:
     combined = f"{prompt}\n\nBull case:\n{bull_text}"
     def _call():
-        return _llm_call(_BEAR_SYSTEM, combined, max_tokens=512)
+        return _llm_call(_BEAR_SYSTEM, combined, max_tokens=512, provider=provider)
     return _call_with_retry(_call)
 
 
@@ -598,6 +604,13 @@ def score_entry_with_debate(
 
     For conviction < 7: 1 API call.
     For conviction >= 7: bull argument + bear counter + final rescore (4 calls total).
+
+    When `Settings.sizing.enable_cross_model_debate` is on, the bear argument runs
+    on the *other* configured provider (Anthropic if primary is OpenAI, and vice
+    versa) instead of the same model arguing with itself — a genuine second
+    opinion on high-conviction candidates. `Settings.validate()` requires both
+    provider API keys present when this flag is set. Off by default; behavior is
+    unchanged (same-provider debate) when off.
     """
     initial = score_entry(
         disclosure=disclosure, committees=committees, sector=sector,
@@ -608,6 +621,11 @@ def score_entry_with_debate(
     if initial.conviction < 7:
         return initial
 
+    from system.config import settings
+    bear_provider = None
+    if settings.sizing.enable_cross_model_debate:
+        bear_provider = "anthropic" if settings.llm_provider == "openai" else "openai"
+
     prompt = _build_entry_prompt(
         disclosure=disclosure, committees=committees, sector=sector,
         lag_days=lag_days, estimated_cost_pct=estimated_cost_pct,
@@ -615,7 +633,7 @@ def score_entry_with_debate(
         factor_score=factor_score, ticker=ticker,
     )
     bull = _bull_argument(prompt)
-    bear = _bear_argument(prompt, bull)
+    bear = _bear_argument(prompt, bull, provider=bear_provider)
     debate = f"Bull case:\n{bull}\n\nBear case:\n{bear}"
 
     return score_entry(

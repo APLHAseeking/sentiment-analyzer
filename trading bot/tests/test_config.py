@@ -123,3 +123,25 @@ def test_sizing_config_technical_gate_defaults():
     s = Settings()
     assert s.sizing.enable_technical_gate is False
     assert s.sizing.min_reward_risk == 2.0
+
+
+def test_sizing_config_cross_model_debate_defaults_off():
+    s = Settings()
+    assert s.sizing.enable_cross_model_debate is False
+
+
+def test_validate_rejects_cross_model_debate_without_both_keys():
+    from dataclasses import replace
+    creds = Credentials(openai_api_key="key-1", anthropic_api_key="")
+    sizing = replace(Settings().sizing, enable_cross_model_debate=True)
+    s = Settings(credentials=creds, sizing=sizing)
+    with pytest.raises(ValueError, match="enable_cross_model_debate"):
+        s.validate()
+
+
+def test_validate_accepts_cross_model_debate_with_both_keys():
+    from dataclasses import replace
+    creds = Credentials(openai_api_key="key-1", anthropic_api_key="key-2")
+    sizing = replace(Settings().sizing, enable_cross_model_debate=True)
+    s = Settings(credentials=creds, sizing=sizing)
+    s.validate()  # should not raise

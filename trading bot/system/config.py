@@ -196,6 +196,8 @@ class SizingConfig:
     atr_window: int = 14                     # ATR lookback in bars
     enable_technical_gate: bool = False      # config-gated TA layer; False = today's behavior
     min_reward_risk: float = 2.0             # below this, a technical "buy" is treated as skip
+    enable_cross_model_debate: bool = False  # bear argument uses the OTHER provider (needs both
+                                              # API keys); False = today's same-model debate
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +354,13 @@ class Settings:
             raise ValueError("per_trade_risk_pct must be in (0, max_position_pct]")
         if self.llm_provider not in ("anthropic", "openai"):
             raise ValueError(f"llm_provider must be 'anthropic' or 'openai', got {self.llm_provider!r}")
+        if self.sizing.enable_cross_model_debate and not (
+            self.credentials.openai_api_key and self.credentials.anthropic_api_key
+        ):
+            raise ValueError(
+                "enable_cross_model_debate requires both OPENAI_API_KEY and "
+                "ANTHROPIC_API_KEY to be set"
+            )
 
 
 # Module-level singleton — import this everywhere

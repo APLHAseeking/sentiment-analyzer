@@ -424,6 +424,62 @@ def test_debate_returns_entry_score_type(mocker):
     assert result.entry == "buy"
 
 
+def test_debate_bear_call_uses_other_provider_when_cross_model_enabled(mocker):
+    """enable_cross_model_debate=True routes only the bear argument to the other
+    provider (Anthropic primary -> OpenAI bear); initial/bull/final stay primary."""
+    cross_settings = dataclasses.replace(
+        _real_settings, llm_provider="anthropic",
+        sizing=dataclasses.replace(_real_settings.sizing, enable_cross_model_debate=True),
+    )
+    mocker.patch("system.config.settings", cross_settings)
+
+    anthropic_client = MagicMock()
+    anthropic_client.messages.create.side_effect = [
+        _make_anthropic_resp(_high_conviction_payload()),   # call 1: initial score
+        _make_anthropic_resp("Bull: strong fundamentals"),  # call 2: bull
+        _make_anthropic_resp(_high_conviction_payload()),   # call 4: final score
+    ]
+    mocker.patch("bot.ai_analyst._get_client", return_value=anthropic_client)
+
+    openai_client = MagicMock()
+    openai_client.chat.completions.create.return_value = _make_openai_resp(
+        "Bear: overvalued, macro headwinds"
+    )
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=openai_client)
+
+    result = score_entry_with_debate(
+        _disc(), committees=["House Energy"], sector="Technology",
+        lag_days=2, estimated_cost_pct=0.05,
+    )
+
+    assert anthropic_client.messages.create.call_count == 3  # initial, bull, final
+    assert openai_client.chat.completions.create.call_count == 1  # bear only
+    assert isinstance(result, EntryScore)
+
+
+def test_debate_bear_call_stays_same_provider_when_cross_model_disabled(mocker):
+    """Default (enable_cross_model_debate=False): byte-identical to before this
+    feature existed — all 4 calls stay on the primary provider."""
+    mock_client = MagicMock()
+    mock_client.messages.create.side_effect = [
+        _make_anthropic_resp(_high_conviction_payload()),
+        _make_anthropic_resp("Bull: strong fundamentals"),
+        _make_anthropic_resp("Bear: overvalued, macro headwinds"),
+        _make_anthropic_resp(_high_conviction_payload()),
+    ]
+    mocker.patch("bot.ai_analyst._get_client", return_value=mock_client)
+    openai_client = MagicMock()
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=openai_client)
+
+    score_entry_with_debate(
+        _disc(), committees=["House Energy"], sector="Technology",
+        lag_days=2, estimated_cost_pct=0.05,
+    )
+
+    assert mock_client.messages.create.call_count == 4
+    openai_client.chat.completions.create.assert_not_called()
+
+
 def test_score_entry_retries_on_rate_limit(mocker):
     """RateLimitError on first two calls; third call succeeds."""
     import anthropic as _anthropic
