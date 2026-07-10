@@ -1,4 +1,4 @@
-<!-- guardrails-kit: v1.0 | Editing this file? Read docs/guardrails/_FORMAT.md first. Never paraphrase kit text. -->
+<!-- guardrails-kit: v1.1 | Editing this file? Read docs/guardrails/_FORMAT.md first. Never paraphrase kit text. -->
 You are here because you returned from compaction or /resume, the user paused the work ("stop", "later", "tomorrow"), or a task with a TASK block has no docs/STATE.md.
 
 - S1. Returned from compaction or /resume? Do this FIRST, before any file-modifying tool call:
@@ -43,6 +43,7 @@ You are here because you returned from compaction or /resume, the user paused th
 - S5. The moment you start ANY work not in the original request or approved plan, write: `DETOUR(depth n): <sub-problem> — RETURN-TO: <the step you left>` and mirror it in `## Now`; write `RETURNING: <step>` when it resolves. Max depth 2: a depth-2 detour needing another detour -> STOP and present the chain to the user.
 - S6. When a design decision is settled, append `DECISION: <what> — <why>` to `## Decisions` in the same turn. Before introducing any new dependency, pattern, or naming scheme: scan `## Decisions` and either conform or write `REVERSING DECISION '<text>' because <new evidence>` and get user confirmation. Silent deviation is forbidden.
 - S7. `CONSTRAINT CHECK:` — before the first edit of each file; exact format and procedure owned by docs/guardrails/CODE.md C4.
+- S8. Writing a `## Done` entry (S3) for a project with its own permanent changelog (e.g. `CLAUDE-REFERENCE.md#history`)? One-line pointer to that entry, never a duplicate narrative (duplication is what blew STATE.md past its own S2 80-line budget on 2026-07-10).
 
 --- reference ---
 
