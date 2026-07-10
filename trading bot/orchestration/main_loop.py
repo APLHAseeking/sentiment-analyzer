@@ -51,7 +51,7 @@ from bot.insider_signal import filter_insider_disclosures, get_insider_cluster_c
 from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore, score_technical
 from bot.db import (
     get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken,
-    record_job_run, job_ran_today,
+    record_job_run, job_ran_today, insert_fundamental_signal,
 )
 from bot.universe import refresh_universe, get_universe
 from bot.portfolio import Portfolio
@@ -1160,7 +1160,6 @@ class RegimeAwareOrchestrator:
             initial_stop_pct=initial_stop_pct,
         )
         try:
-            from bot.db import insert_fundamental_signal
             insert_fundamental_signal(
                 ticker=ticker,
                 signal_date=date.today().isoformat(),

@@ -29,6 +29,7 @@ def orch(mocker):
     mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[])
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
     mocker.patch("orchestration.main_loop.record_job_run")  # prevent real DB writes
+    mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)  # prevent real DB writes
 
     from system.config import settings
     o = RegimeAwareOrchestrator(settings)
@@ -153,6 +154,7 @@ def orch_fitted(mocker):
     mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[])
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
     mocker.patch("orchestration.main_loop.record_job_run")  # prevent real DB writes
+    mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)  # prevent real DB writes
 
     from system.config import settings
     o = RegimeAwareOrchestrator(settings)
