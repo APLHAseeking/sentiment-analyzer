@@ -513,6 +513,22 @@ def test_open_position_registers_stop_order(mock_broker, db):
     assert call_kwargs["stop_price"] == pytest.approx(expected_stop)
 
 
+def test_open_position_alerts_when_initial_stop_placement_fails(mock_broker, db, mocker):
+    """place_stop_order returns None on failure. The position is still opened
+    (DB insert already committed before the stop call), but a naked position
+    with zero resting stop must fire an alert — not fail silently."""
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+    mock_broker.get_positions.return_value = []
+    mock_broker.place_stop_order.return_value = None
+    portfolio = Portfolio(broker=mock_broker)
+
+    result = portfolio.open_position("AAPL", 5.0, None, "test", 100.0)
+
+    assert result is True
+    mock_broker.place_stop_order.assert_called_once()
+    mock_fire_alert.assert_called_once()
+
+
 def test_open_position_stop_uses_custom_trailing_pct(mock_broker, db):
     """Stop price respects the injected trailing_stop_pct config."""
     from system.config import RiskConfig

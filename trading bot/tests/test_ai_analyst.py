@@ -68,6 +68,19 @@ def test_parse_entry_skip():
                       "rationale": "Weak", "entry": "skip", "risk_flags": []})
     assert parse_entry_response(raw).entry == "skip"
 
+def test_parse_entry_reads_expected_return_pct():
+    raw = json.dumps({"conviction": 7, "position_pct": 4.5, "rationale": "Strong",
+                      "entry": "buy", "risk_flags": [], "expected_return_pct": 4.2})
+    assert parse_entry_response(raw).expected_return_pct == pytest.approx(4.2)
+
+def test_parse_entry_defaults_expected_return_pct_when_missing():
+    """Older/malformed responses without the field must not fail parsing —
+    it's observability-only, not decision-critical (the model already
+    applied the entry hurdle itself when setting `entry`)."""
+    raw = json.dumps({"conviction": 7, "position_pct": 4.5,
+                      "rationale": "Strong", "entry": "buy", "risk_flags": []})
+    assert parse_entry_response(raw).expected_return_pct == 0.0
+
 def test_score_entry_returns_entry_score(mocker):
     payload = json.dumps({"conviction": 8, "position_pct": 5.0,
                           "rationale": "Good", "entry": "buy", "risk_flags": []})

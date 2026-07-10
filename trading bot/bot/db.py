@@ -145,6 +145,13 @@ CREATE TABLE IF NOT EXISTS schema_version (
     description TEXT NOT NULL,
     applied_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS job_runs (
+    job_name TEXT NOT NULL,
+    run_date TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    PRIMARY KEY (job_name, run_date)
+);
 """
 
 def _db_path() -> str:
@@ -195,6 +202,16 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         5,
         "Add stop_pct to positions",
         "ALTER TABLE positions ADD COLUMN stop_pct REAL NOT NULL DEFAULT 15.0",
+    ),
+    (
+        6,
+        "Add expected_return_pct to signals",
+        "ALTER TABLE signals ADD COLUMN expected_return_pct REAL NOT NULL DEFAULT 0.0",
+    ),
+    (
+        7,
+        "Add expected_return_pct to fundamental_signals",
+        "ALTER TABLE fundamental_signals ADD COLUMN expected_return_pct REAL NOT NULL DEFAULT 0.0",
     ),
 ]
 
@@ -255,14 +272,15 @@ def insert_disclosures(disclosures: list[dict]) -> None:
         )
 
 def insert_signal(disclosure_id: str, ticker: str, conviction: int,
-                  position_pct: float, rationale: str, risk_flags: list[str]) -> int:
+                  position_pct: float, rationale: str, risk_flags: list[str],
+                  expected_return_pct: float = 0.0) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO signals (disclosure_id, ticker, conviction, position_pct,
-               rationale, risk_flags, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               rationale, risk_flags, created_at, expected_return_pct)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (disclosure_id, ticker, conviction, position_pct, rationale,
-             json.dumps(risk_flags), datetime.now(UTC).isoformat()),
+             json.dumps(risk_flags), datetime.now(UTC).isoformat(), expected_return_pct),
         )
         return cur.lastrowid
 
@@ -286,6 +304,28 @@ def insert_position(ticker: str, entry_price: float, shares: float,
                 f"Position already exists for {ticker} — cannot open duplicate. "
                 "Close the existing position before re-entering."
             )
+
+def record_job_run(job_name: str, run_date: str) -> None:
+    """Mark job_name as having completed on run_date (idempotent per day).
+
+    Used by the scheduler's startup catch-up check — the in-memory cron
+    scheduler loses today's already-passed windows on every process
+    restart, so this survives restarts and lets start() detect a missed run.
+    """
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO job_runs (job_name, run_date, completed_at)
+               VALUES (?, ?, ?)""",
+            (job_name, run_date, datetime.now(UTC).isoformat()),
+        )
+
+def job_ran_today(job_name: str, run_date: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM job_runs WHERE job_name = ? AND run_date = ? LIMIT 1",
+            (job_name, run_date),
+        ).fetchone()
+        return row is not None
 
 def position_exists(ticker: str) -> bool:
     """Return True if an open position for ticker already exists in the DB."""
@@ -548,14 +588,16 @@ def insert_fundamental_signal(
     position_pct: float,
     rationale: str,
     signal_source: str = "fundamental",
+    expected_return_pct: float = 0.0,
 ) -> int:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO fundamental_signals
-               (ticker, signal_date, composite_score, position_pct, rationale, signal_source, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (ticker, signal_date, composite_score, position_pct, rationale, signal_source,
+                created_at, expected_return_pct)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, signal_date, composite_score, position_pct, rationale,
-             signal_source, datetime.now(UTC).isoformat()),
+             signal_source, datetime.now(UTC).isoformat(), expected_return_pct),
         )
         return cur.lastrowid
 

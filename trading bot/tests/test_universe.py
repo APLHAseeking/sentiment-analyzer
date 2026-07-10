@@ -126,6 +126,31 @@ def test_fetch_sp500_ishares_normalizes_class_share_tickers(mocker):
     assert "BRK.B" not in set(result["Symbol"])
 
 
+def test_fetch_russell1000_sends_user_agent_header(mocker):
+    """iShares 503s requests with no User-Agent (confirmed live, every run) —
+    the fetch must send the same header the S&P 500 iShares fallback uses,
+    or it silently degrades the universe to S&P 500 only."""
+    from bot.universe import _fetch_russell1000
+
+    filler_tickers = [f"{c1}{c2}" for c1 in "ABCD" for c2 in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"]
+    assert len(filler_tickers) >= 100
+    rows = [f"{t},Some Company {t}" for t in filler_tickers]
+    csv_text = (
+        "\n".join([f"metadata line {i}" for i in range(9)])
+        + "\nTicker,Name\n"
+        + "\n".join(rows)
+    )
+    mock_resp = mocker.MagicMock()
+    mock_resp.text = csv_text
+    mock_resp.raise_for_status = mocker.MagicMock()
+    get_spy = mocker.patch("bot.universe.requests.get", return_value=mock_resp)
+
+    _fetch_russell1000()
+
+    _, kwargs = get_spy.call_args
+    assert kwargs.get("headers", {}).get("User-Agent") == "Mozilla/5.0 (compatible; trading-bot/1.0)"
+
+
 def test_fetch_sp500_ishares_not_called_when_wikipedia_succeeds(mocker):
     """iShares fallback must NOT be invoked when Wikipedia succeeds."""
     import io

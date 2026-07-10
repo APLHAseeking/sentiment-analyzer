@@ -16,7 +16,7 @@ _INTER_CALL_SLEEP = 0.5   # throttle: max 2 calls/second
 
 _ENTRY_SCHEMA = """You are a quantitative analyst evaluating a stock trade signal.
 Respond with ONLY valid JSON matching this exact schema:
-{"conviction": <int 1-10>, "position_pct": <float>, "rationale": <str>, "entry": <"buy"|"skip">, "risk_flags": [<str>]}
+{"conviction": <int 1-10>, "position_pct": <float>, "rationale": <str>, "entry": <"buy"|"skip">, "risk_flags": [<str>], "expected_return_pct": <float>}
 
 ## Conviction → Position Size Rules
 - conviction 1-4: entry="skip", position_pct=0
@@ -25,8 +25,10 @@ Respond with ONLY valid JSON matching this exact schema:
 - conviction 9-10: position_pct 6.0-8.0
 
 ## Entry Hurdle
-- Only set entry="buy" if expected return over the holding period (typically 30-90 days)
-  exceeds estimated_cost_pct by at least 5x AND exceeds 1.5% absolute
+- expected_return_pct is your best estimate of the expected return over the holding period
+  (typically 30-90 days), as a percentage. Report it even when you set entry="skip".
+- Only set entry="buy" if expected_return_pct exceeds estimated_cost_pct by at least 3x AND
+  exceeds 1.0% absolute
 - If expected alpha is unclear or weak, set entry="skip" — false negatives are cheaper than false positives"""
 
 _CONGRESSIONAL_RULES = """
@@ -255,6 +257,7 @@ class EntryScore:
     rationale: str
     entry: str
     risk_flags: tuple[str, ...]
+    expected_return_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -304,12 +307,18 @@ def parse_entry_response(text: str) -> EntryScore:
         rationale = data["rationale"]
     except (KeyError, TypeError) as exc:
         raise ValueError(f"missing required field in entry response: {data}") from exc
+    # Observability only (not decision-critical — the model already applied the
+    # entry hurdle itself to set `entry`) — default to 0.0 rather than raising
+    # if an older/malformed response omits it.
+    _expected_return = data.get("expected_return_pct")
+    expected_return_pct = float(_expected_return) if _expected_return is not None else 0.0
     return EntryScore(
         conviction=conviction,
         position_pct=position_pct,
         rationale=rationale,
         entry=entry,
         risk_flags=tuple(str(f) for f in data.get("risk_flags", [])),
+        expected_return_pct=expected_return_pct,
     )
 
 

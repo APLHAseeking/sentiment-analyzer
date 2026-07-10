@@ -30,14 +30,27 @@ python run_bot.py --test-alerts
 
 **Keeping it running unattended (macOS):**
 
-- `tmux` (recommended — lets you reattach and watch live output):
+- **launchd (recommended — auto-restarts on crash):** a plist lives at
+  `~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist` (outside the
+  repo, in your home directory — not version-controlled).
+  ```bash
+  launchctl load ~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist    # start + enable auto-restart
+  launchctl list | grep tradingbot                                          # confirm it's running (shows a PID)
+  launchctl unload ~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist  # stop for real — killing the PID alone just gets restarted
+  ```
+  `KeepAlive` restarts the process on any non-zero/crash exit (with a 30s
+  throttle so a crash-loop doesn't spin). Combined with the scheduler's
+  catch-up-on-restart logic (`orchestration/main_loop.py::start()`), a crash
+  mid-day no longer loses that day's remaining candidate-generation windows.
+  Logs still go to `bot.log` (same file, same tailing workflow as below).
+- `tmux` (manual alternative — lets you reattach and watch live output):
   ```bash
   tmux new -s bot
   python run_bot.py
   # detach: Ctrl-b d
   # reattach later: tmux attach -t bot
   ```
-- Or `nohup` + `disown`:
+- Or `nohup` + `disown` (manual, no auto-restart on crash):
   ```bash
   nohup python run_bot.py > bot.log 2>&1 &
   disown
@@ -85,6 +98,8 @@ pipeline run. Before restarting:
 
 ## Stopping for the month / moving to real cash
 
+- **launchd:** `launchctl unload ~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`
+  — unloading (not just killing the PID) is required, or `KeepAlive` restarts it.
 - **tmux:** reattach (`tmux attach -t bot`) and Ctrl-C.
 - **nohup:** `kill <PID>` (find it with `ps aux | grep run_bot.py`).
 

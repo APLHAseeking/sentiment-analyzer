@@ -28,6 +28,7 @@ def orch(mocker):
     mocker.patch("orchestration.main_loop.get_universe", return_value=[])
     mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[])
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch("orchestration.main_loop.record_job_run")  # prevent real DB writes
 
     from system.config import settings
     o = RegimeAwareOrchestrator(settings)
@@ -151,6 +152,7 @@ def orch_fitted(mocker):
     mocker.patch("orchestration.main_loop.get_universe", return_value=[])
     mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[])
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch("orchestration.main_loop.record_job_run")  # prevent real DB writes
 
     from system.config import settings
     o = RegimeAwareOrchestrator(settings)
@@ -1742,6 +1744,10 @@ def test_start_schedules_second_daily_pipeline_run(mocker, orch):
     pair, midday, on top of the existing 13:00/14:00 CEST pre-market pair."""
     mock_scheduler_cls = mocker.patch("orchestration.main_loop.BlockingScheduler")
     mock_scheduler = mock_scheduler_cls.return_value
+    # Not testing the catch-up-on-restart path here — pretend today's run
+    # already completed so start() doesn't fire a real (unmocked) pipeline
+    # run depending on wall-clock time. See test_start_catch_up_* below.
+    mocker.patch("orchestration.main_loop.job_ran_today", return_value=True)
 
     orch.start()
 
@@ -1753,3 +1759,53 @@ def test_start_schedules_second_daily_pipeline_run(mocker, orch):
     assert (orch.run_morning_pipeline, 14, 0) in scheduled
     assert (orch.run_screener_prefetch, 17, 0) in scheduled
     assert (orch.run_morning_pipeline, 18, 0) in scheduled
+
+
+def test_start_catches_up_pipeline_when_missed_today(mocker, orch):
+    """The in-memory scheduler drops today's already-passed cron windows on
+    every process restart. If today's first window (14:00) has passed and no
+    completed run is recorded for today, start() must run the pipeline once
+    immediately instead of silently waiting for tomorrow's cron window."""
+    mocker.patch("orchestration.main_loop.BlockingScheduler")
+    mock_dt = mocker.patch("orchestration.main_loop.datetime")
+    mock_dt.now.return_value.hour = 16
+    mocker.patch("orchestration.main_loop.job_ran_today", return_value=False)
+    mock_prefetch = mocker.patch.object(orch, "run_screener_prefetch")
+    mock_pipeline = mocker.patch.object(orch, "run_morning_pipeline")
+
+    orch.start()
+
+    mock_prefetch.assert_called_once()
+    mock_pipeline.assert_called_once()
+
+
+def test_start_does_not_catch_up_before_first_window(mocker, orch):
+    """Before 14:00, today's first pipeline window simply hasn't happened yet
+    — that's normal, not a missed run. No catch-up should fire."""
+    mocker.patch("orchestration.main_loop.BlockingScheduler")
+    mock_dt = mocker.patch("orchestration.main_loop.datetime")
+    mock_dt.now.return_value.hour = 10
+    mocker.patch("orchestration.main_loop.job_ran_today", return_value=False)
+    mock_prefetch = mocker.patch.object(orch, "run_screener_prefetch")
+    mock_pipeline = mocker.patch.object(orch, "run_morning_pipeline")
+
+    orch.start()
+
+    mock_prefetch.assert_not_called()
+    mock_pipeline.assert_not_called()
+
+
+def test_start_does_not_catch_up_when_already_ran_today(mocker, orch):
+    """A completed run already recorded for today (via record_job_run) means
+    there's nothing to catch up on, even if it's well past 14:00."""
+    mocker.patch("orchestration.main_loop.BlockingScheduler")
+    mock_dt = mocker.patch("orchestration.main_loop.datetime")
+    mock_dt.now.return_value.hour = 20
+    mocker.patch("orchestration.main_loop.job_ran_today", return_value=True)
+    mock_prefetch = mocker.patch.object(orch, "run_screener_prefetch")
+    mock_pipeline = mocker.patch.object(orch, "run_morning_pipeline")
+
+    orch.start()
+
+    mock_prefetch.assert_not_called()
+    mock_pipeline.assert_not_called()

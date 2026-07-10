@@ -34,6 +34,48 @@ def test_insert_signal_returns_id(db):
     signal_id = db.insert_signal("test-002", "AAPL", 7, 4.5, "Good signal", ["lag"])
     assert isinstance(signal_id, int) and signal_id > 0
 
+def test_insert_signal_stores_expected_return_pct(db):
+    disc = {
+        "id": "test-002b", "politician": "Jane Doe", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-22T08:00:00",
+    }
+    db.insert_disclosures([disc])
+    signal_id = db.insert_signal("test-002b", "AAPL", 7, 4.5, "Good signal", ["lag"],
+                                  expected_return_pct=6.3)
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT expected_return_pct FROM signals WHERE id = ?", (signal_id,)
+        ).fetchone()
+    assert row["expected_return_pct"] == pytest.approx(6.3)
+
+def test_insert_signal_defaults_expected_return_pct_to_zero(db):
+    disc = {
+        "id": "test-002c", "politician": "Jane Doe", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-10",
+        "transaction_type": "purchase", "amount_range": "$15,001 - $50,000",
+        "scraped_at": "2026-04-22T08:00:00",
+    }
+    db.insert_disclosures([disc])
+    signal_id = db.insert_signal("test-002c", "AAPL", 7, 4.5, "Good signal", ["lag"])
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT expected_return_pct FROM signals WHERE id = ?", (signal_id,)
+        ).fetchone()
+    assert row["expected_return_pct"] == pytest.approx(0.0)
+
+def test_insert_fundamental_signal_stores_expected_return_pct(db):
+    signal_id = db.insert_fundamental_signal(
+        "MSFT", "2026-04-01", 85, 5.0, "Good factor score",
+        expected_return_pct=3.1,
+    )
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT expected_return_pct FROM fundamental_signals WHERE id = ?", (signal_id,)
+        ).fetchone()
+    assert row["expected_return_pct"] == pytest.approx(3.1)
+
 def test_insert_and_delete_position(db):
     disc = {
         "id": "test-003", "politician": "Jane Doe", "ticker": "MSFT",
@@ -297,3 +339,30 @@ def test_insert_position_stores_custom_stop_pct(db):
     db.insert_position("MSFT", 200.0, 5.0, 4.0, "2026-04-28", sid, "test", stop_pct=3.5)
     pos = next(p for p in db.get_open_positions() if p["ticker"] == "MSFT")
     assert pos["stop_pct"] == pytest.approx(3.5)
+
+
+def test_job_ran_today_false_when_no_run_recorded(db):
+    assert db.job_ran_today("run_morning_pipeline", "2026-07-10") is False
+
+
+def test_record_job_run_makes_job_ran_today_true(db):
+    db.record_job_run("run_morning_pipeline", "2026-07-10")
+    assert db.job_ran_today("run_morning_pipeline", "2026-07-10") is True
+
+
+def test_job_ran_today_is_per_day(db):
+    db.record_job_run("run_morning_pipeline", "2026-07-09")
+    assert db.job_ran_today("run_morning_pipeline", "2026-07-10") is False
+
+
+def test_record_job_run_is_idempotent_same_day(db):
+    """Calling record_job_run twice for the same job/day (e.g. catch-up firing
+    on top of a job that already ran) must not raise or duplicate the row."""
+    db.record_job_run("run_morning_pipeline", "2026-07-10")
+    db.record_job_run("run_morning_pipeline", "2026-07-10")
+    with db.get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM job_runs WHERE job_name = ? AND run_date = ?",
+            ("run_morning_pipeline", "2026-07-10"),
+        ).fetchall()
+    assert len(rows) == 1

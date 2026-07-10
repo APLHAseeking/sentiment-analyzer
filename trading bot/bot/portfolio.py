@@ -114,7 +114,21 @@ class Portfolio:
         # overnight / between-poll gaps are covered. The polled enforce_stop_losses()
         # acts as backstop and updates (trails) the stop upward as the peak rises.
         stop_price = actual_entry_price * (1 - stop_pct_used / 100)
-        self.broker.place_stop_order(ticker=ticker, qty=actual_shares, stop_price=stop_price)
+        initial_stop_id = self.broker.place_stop_order(
+            ticker=ticker, qty=actual_shares, stop_price=stop_price
+        )
+        if initial_stop_id is None:
+            # Placement failed — the position is open with zero resting stop.
+            # enforce_stop_losses() polling is the backstop, but it's not
+            # instantaneous; alert so a human can check the broker directly.
+            emit_event(
+                log, EventType.ORDER_REJECTED,
+                f"Failed to place initial stop for {ticker} at ${stop_price:.2f} — "
+                "position is open with NO resting stop",
+                data={"ticker": ticker, "attempted_stop_price": stop_price},
+                level=logging.ERROR,
+                alert=True,
+            )
 
         return True
 

@@ -23,8 +23,14 @@
 > ~0.4s (3 attempts × 0.2s) to confirm a fill — is fixed; widened to ~14s (15 × 1s). Later
 > same day: entry-scan pipeline now runs twice daily (13:00/14:00 and 17:00/18:00 CEST)
 > instead of once, per user request to react faster in volatile markets — position sizing
-> multipliers unchanged. See `docs/CLAUDE-REFERENCE.md#history` for detail. Test count:
-> **862** (full suite green).
+> multipliers unchanged. 2026-07-10: the in-memory scheduler was silently losing entire
+> trading days across process restarts (zero signals generated 07-07 through 07-10) —
+> fixed with a DB-backed catch-up-on-restart check, a Russell-1000-fetch 503 bug, an
+> unchecked initial-stop-placement gap, a loosened AI entry hurdle (5x/1.5% → 3x/1.0%,
+> now logged via `EntryScore.expected_return_pct`), and macOS launchd auto-restart
+> supervision. See `docs/CLAUDE-REFERENCE.md#history` for detail. Test count: **875**
+> (full suite green; one pre-existing unrelated date-dependent test failure, not fixed —
+> see history).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 
@@ -63,7 +69,7 @@ Secrets come from environment / `.env` (see `.env.example`): `ANTHROPIC_API_KEY`
 ## Verifying changes
 
 ```bash
-pytest                                 # 819 tests; keep green (run from inside trading bot/)
+pytest                                 # 875 tests; keep green (run from inside trading bot/)
 python backtesting/backtest_price_factors.py  # PIT backtest of low-vol/BAB + residual momentum
 pytest tests/test_simulation.py -q    # example: a single module
 ```

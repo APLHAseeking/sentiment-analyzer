@@ -50,12 +50,23 @@
 Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread executor** so the pipeline and exit review never touch the DB/portfolio concurrently.
 
 - Mon 07:00 — `refresh_universe()`
-- 13:00 — `run_screener_prefetch()` (pre-fetch fundamentals ~1h before pipeline)
-- 14:00 — `run_morning_pipeline()` (Phase 1 + 2 + 3)
+- 13:00 / 17:00 — `run_screener_prefetch()` (pre-fetch fundamentals ~1h before each pipeline run)
+- 14:00 / 18:00 — `run_morning_pipeline()` (Phase 1 + 2 + 3; runs twice daily since 2026-07-09)
 - 16:00 — `run_exit_review()`
 - 15:45 / 17:00 / 20:00 — `run_intraday_check()` (stop-loss + circuit breakers; tighter misfire grace)
 - 22:30 — `run_eod()`
 - Fri 22:45 — `log_weekly_report()`
+
+**Catch-up-on-restart** (added 2026-07-10): `BlockingScheduler` is in-memory
+only — a process restart after 14:00 permanently drops that day's remaining
+cron windows (`misfire_grace_time` only covers a live-but-blocked scheduler,
+not a process that wasn't running). `run_morning_pipeline()` records its own
+completion via `db.record_job_run("run_morning_pipeline", today)`; `start()`
+checks `db.job_ran_today(...)` before entering the blocking loop and, if
+today's first window has passed with no completed run recorded, runs the
+pipeline once immediately. Safe to call any time — both pipeline methods
+no-op on non-trading days and `run_morning_pipeline` already dedupes against
+open tickers/capacity.
 
 <a id="data-caveats"></a>
 ## Known data-source caveats (important)
@@ -104,6 +115,7 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 - **Rejected sells are no-ops at the DB layer:** `close_position`/`reduce_position` book nothing and mutate nothing on a REJECTED order — they alert and leave the position for the next reconcile/poll.
 - The regime lock file (`RISK_LOCKOUT`) is **not** auto-cleared; trading stays halted until a human deletes it.
 - Dates are ISO `YYYY-MM-DD` strings throughout; regime/DB joins assume this.
+- **Entry hurdle is prompt text, not a code-level filter:** `bot/ai_analyst.py`'s `_ENTRY_SCHEMA` tells the LLM the buy/skip rule (currently 3x cost / 1.0% absolute, loosened from 5x/1.5% on 2026-07-10) — there is no separate deterministic check in Python. `EntryScore.expected_return_pct` (added 2026-07-10, default `0.0` for backward compat) is observability only, populated from the LLM's own self-reported estimate and persisted on `signals`/`fundamental_signals`; it does not gate anything in code.
 
 <a id="history"></a>
 ## Review & change history (moved verbatim from the CLAUDE.md status banner, 2026-07-06 — append new entries here)
@@ -272,3 +284,28 @@ Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread exec
 > `run_morning_pipeline` already dedupes against currently-open tickers and respects
 > `can_open_new_position()`/invested-pct capacity, so a second run in one day is safe — it
 > can only skip or add, never double-open. Test count: **862** (full suite green, ~98s).
+> 2026-07-10: user review — the bot had generated **zero** signals/positions since
+> 2026-07-07 14:01 despite being "live." Root cause: `BlockingScheduler` is in-memory
+> only, so 5 process restarts in 3.5 days (chasing the fixes above) each lost that
+> calendar day's already-passed cron windows — `misfire_grace_time` only covers a
+> live-but-blocked scheduler, not a process that wasn't running yet. Fixed with a
+> catch-up-on-restart check in `start()` (see `#scheduler`) backed by a new `job_runs`
+> table (`db.record_job_run`/`db.job_ran_today`). Also fixed: `bot/universe.py`'s
+> Russell 1000 fetch sent no `User-Agent` and was 503ing on every single run (silently
+> degrading the universe to S&P-500-only, ~503 vs ~1400 names) — added the same header
+> the S&P 500 iShares fallback already used. `bot/portfolio.py.open_position`'s
+> *initial* stop placement (as opposed to the trailing-stop call site fixed in the
+> 07-07 phantom-position pass) discarded `place_stop_order`'s return value with no
+> check — now alerts if a fresh position opens with zero resting stop. Also loosened
+> the AI entry hurdle from 5x-cost/1.5%-absolute to 3x/1.0% (user decision — trades were
+> already rare from the scheduler bug) and added `EntryScore.expected_return_pct`
+> (observability only, not decision-critical, default `0.0`) persisted on
+> `signals`/`fundamental_signals` so the hurdle's real bite is measurable going forward
+> instead of only visible in free-text rationale strings. Added macOS launchd
+> supervision (`~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`, outside the
+> repo — see `docs/RUNBOOK.md`) so a crash auto-restarts within ~30s instead of waiting
+> for manual intervention. Test count: **875** (full suite green, one pre-existing
+> unrelated failure noted below, not fixed — `test_insert_and_get_disclosure` hardcodes
+> a `disclosure_date` that ages out of `get_existing_ids()`'s 90-day window as real time
+> advances; needs a relative-date fixture, tracked as a follow-up, not part of this
+> review).

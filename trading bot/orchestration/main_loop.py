@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -49,7 +49,10 @@ from bot.committee import get_committees_for_politician
 from bot.insider import run_insider_scraper
 from bot.insider_signal import filter_insider_disclosures, get_insider_cluster_count
 from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore, score_technical
-from bot.db import get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken
+from bot.db import (
+    get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken,
+    record_job_run, job_ran_today,
+)
 from bot.universe import refresh_universe, get_universe
 from bot.portfolio import Portfolio
 
@@ -641,6 +644,7 @@ class RegimeAwareOrchestrator:
         # ─────────────────────────────────────────────────────────────
 
         self._corr_filter.clear()
+        record_job_run("run_morning_pipeline", date.today().isoformat())
 
     def _size_position(
         self,
@@ -890,6 +894,7 @@ class RegimeAwareOrchestrator:
         signal_id = insert_signal(
             disc["id"], ticker, score.conviction,
             final_pct, score.rationale, list(score.risk_flags),
+            expected_return_pct=score.expected_return_pct,
         )
         self._portfolio.open_position(
             ticker=ticker, position_pct=final_pct,
@@ -1163,6 +1168,7 @@ class RegimeAwareOrchestrator:
                 position_pct=final_pct,
                 rationale=score.rationale,
                 signal_source=signal_type,
+                expected_return_pct=score.expected_return_pct,
             )
         except Exception as exc:
             log.debug("Could not persist fundamental signal for %s: %s", ticker, exc)
@@ -1550,5 +1556,28 @@ class RegimeAwareOrchestrator:
                           misfire_grace_time=_intraday_grace)
         scheduler.add_job(self.run_intraday_check, "cron", hour=20, minute=0,
                           misfire_grace_time=_intraday_grace)
+
+        # Catch-up-on-restart: the scheduler above is in-memory only, so a
+        # process restart after today's first pipeline window (14:00) loses
+        # that window for the rest of the day — misfire_grace_time only covers
+        # a live-but-blocked scheduler, not a process that wasn't running yet.
+        # If today's first window has already passed and no completed run is
+        # recorded for today, run the pipeline once now, synchronously, before
+        # entering the blocking loop. Safe to call any time: both methods
+        # no-op on non-trading days (_NYSE.is_session guard) and
+        # run_morning_pipeline already dedupes against open tickers/capacity.
+        _today = date.today().isoformat()
+        if datetime.now(_AMS).hour >= 14 and not job_ran_today("run_morning_pipeline", _today):
+            log.warning(
+                "Catch-up: no completed pipeline run recorded for %s and today's "
+                "first window has passed — running screener prefetch + morning "
+                "pipeline now instead of waiting for the next cron window", _today,
+            )
+            try:
+                self.run_screener_prefetch()
+                self.run_morning_pipeline()
+            except Exception:
+                log.exception("Catch-up pipeline run failed")
+
         log.info("Regime-aware scheduler started (Amsterdam timezone, single-thread executor)")
         scheduler.start()

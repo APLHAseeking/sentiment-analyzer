@@ -69,7 +69,9 @@ def _fetch_russell1000() -> pd.DataFrame:
         "https://www.ishares.com/us/products/239707/ishares-russell-1000-etf/"
         "1467271812596.ajax?fileType=csv&fileName=IWB_holdings&dataType=fund"
     )
-    resp = requests.get(url, timeout=30)
+    resp = requests.get(
+        url, headers={"User-Agent": "Mozilla/5.0 (compatible; trading-bot/1.0)"}, timeout=30
+    )
     resp.raise_for_status()
     df = pd.read_csv(io.StringIO(resp.text), skiprows=9)
     if "Ticker" not in df.columns:
