@@ -74,6 +74,7 @@ open tickers/capacity.
 - **Capitol Trades is a JavaScript SPA.** `bot/scraper.py` tries the JSON API endpoint first (`_fetch_page_json`); HTML scraper is the fallback. If both fail, a `DEAD_FEED` alert fires and the congressional pipeline receives zero inputs for that run. `run_1year_backtest.py` reads a cached JSON snapshot (`capitol_trades_merged.json`, Oct 2025→May 2026 only). See `docs/DATA_SOURCES.md`.
 - **ProPublica Congress API is discontinued.** `bot/committee.py` now uses the `unitedstates/congress-legislators` GitHub YAML files (no API key). A 30-day shelve disk cache insulates against transient GitHub outages.
 - **`bot/universe.py` uses the *current* S&P 500 + Russell 1000.** Backtests over this set are survivorship-biased; the factor screener reads *current* `yfinance .info` fundamentals (look-ahead) and so is **not** historically reconstructable from yfinance. See `docs/PHASE0_FINDINGS.md`.
+- **Russell 1000 coverage is currently broken (live-verified 2026-07-10) — universe is S&P-500-only in practice.** Both iShares CSV endpoints `_fetch_russell1000` and `_fetch_sp500_ishares` hit (IWB holdings and the IVV S&P 500 fallback) now return a 200-OK bot-protection/interstitial HTML page instead of CSV, regardless of `User-Agent`/`Accept`/`Referer` headers — this is a WAF-style change on iShares' side, not a missing-header issue. Both functions now sniff for an HTML response and raise a clear `ValueError` instead of letting pandas's CSV parser fail cryptically, but that only makes the existing S&P-500-only fallback (`_build_universe`) diagnosable — it does not restore Russell 1000 coverage. S&P 500 itself is unaffected because Wikipedia (the primary source) still works; only the IVV fallback path (Wikipedia-blocked case) would also be hit by this. Needs a non-iShares data source for Russell 1000 constituents — not investigated further this session (CLAUDE.md forbids adding a headless browser, which would otherwise be the obvious workaround for a JS/WAF challenge).
 - **`yfinance` is a single point of failure** (prices, fundamentals, regime data); many call sites fall back to `0.0`/skip silently. Treat missing data as a first-class failure when you touch these paths.
 - **`WalkForwardResult.pooled_attribution` (HAC/Newey-West) is still built from overlapping rolling windows.** The Newey-West standard errors correct for autocorrelation *within* the pooled return series, but the pooled sample itself is assembled from walk-forward windows that share dates by construction (`step_months < test_months`). Read `pooled_attribution["alpha_tstat"]`/`alpha_se` as indicative of a strategy-level alpha estimate, not a formal i.i.d. hypothesis test, until non-overlapping OOS windows are used.
 
@@ -290,10 +291,7 @@ open tickers/capacity.
 > calendar day's already-passed cron windows — `misfire_grace_time` only covers a
 > live-but-blocked scheduler, not a process that wasn't running yet. Fixed with a
 > catch-up-on-restart check in `start()` (see `#scheduler`) backed by a new `job_runs`
-> table (`db.record_job_run`/`db.job_ran_today`). Also fixed: `bot/universe.py`'s
-> Russell 1000 fetch sent no `User-Agent` and was 503ing on every single run (silently
-> degrading the universe to S&P-500-only, ~503 vs ~1400 names) — added the same header
-> the S&P 500 iShares fallback already used. `bot/portfolio.py.open_position`'s
+> table (`db.record_job_run`/`db.job_ran_today`). `bot/portfolio.py.open_position`'s
 > *initial* stop placement (as opposed to the trailing-stop call site fixed in the
 > 07-07 phantom-position pass) discarded `place_stop_order`'s return value with no
 > check — now alerts if a fresh position opens with zero resting stop. Also loosened
@@ -301,11 +299,30 @@ open tickers/capacity.
 > already rare from the scheduler bug) and added `EntryScore.expected_return_pct`
 > (observability only, not decision-critical, default `0.0`) persisted on
 > `signals`/`fundamental_signals` so the hurdle's real bite is measurable going forward
-> instead of only visible in free-text rationale strings. Added macOS launchd
-> supervision (`~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`, outside the
-> repo — see `docs/RUNBOOK.md`) so a crash auto-restarts within ~30s instead of waiting
-> for manual intervention. Test count: **875** (full suite green, one pre-existing
-> unrelated failure noted below, not fixed — `test_insert_and_get_disclosure` hardcodes
-> a `disclosure_date` that ages out of `get_existing_ids()`'s 90-day window as real time
-> advances; needs a relative-date fixture, tracked as a follow-up, not part of this
-> review).
+> instead of only visible in free-text rationale strings.
+> `bot/universe.py`'s Russell 1000 fetch sent no `User-Agent` and 503'd on every run —
+> added the same header the S&P 500 iShares fallback already used, matching the
+> live-log evidence at the time. **Live-verified after landing: this did NOT restore
+> full coverage** — both iShares CSV endpoints (Russell 1000 IWB *and* the S&P 500 IVV
+> fallback) now return a 200-OK bot-protection/interstitial HTML page instead of CSV,
+> regardless of headers (tried two different realistic browser header sets). The
+> universe is still S&P-500-only (~503 tickers, via the working Wikipedia primary
+> source) — same symptom as before, different root cause (WAF-style gating, not a
+> missing header), and not fixable by a header tweak. Added a clear HTML-sniff guard
+> (`resp.text` starting `<!doctype`/`<html`) to both `_fetch_russell1000` and
+> `_fetch_sp500_ishares` so this fails with a diagnosable message instead of a cryptic
+> pandas tokenizer error — **but full Russell 1000 coverage remains unresolved**, needs
+> a different data source (out of scope for this session; CLAUDE.md still says no
+> headless browser). Attempted macOS launchd supervision
+> (`~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`, outside the repo — see
+> `docs/RUNBOOK.md`): the plist is correct (the exact command runs fine invoked
+> directly) but `launchctl`/`bootstrap` registers the job and it then exits immediately
+> with code 78 (`EX_CONFIG`) on every attempt, no process output at all — almost
+> certainly macOS's Background Task Management gate blocking a newly-registered
+> LaunchAgent pending approval in System Settings → General → Login Items &
+> Extensions, which needs the user's GUI interaction. **Not currently active** — the
+> bot runs via the existing manual `nohup` path. Test count: **877** (full suite
+> green, one pre-existing unrelated failure noted below, not fixed —
+> `test_insert_and_get_disclosure` hardcodes a `disclosure_date` that ages out of
+> `get_existing_ids()`'s 90-day window as real time advances; needs a relative-date
+> fixture, tracked as a follow-up, not part of this review).

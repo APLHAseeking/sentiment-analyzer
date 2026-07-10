@@ -7,17 +7,32 @@ placement return value unchecked, entry hurdle too strict. Plan at
 /Users/thomasvromen/.claude/plans/so-i-m-running-this-giggly-church.md.
 
 ## Now
-Task complete — all P0/P1 steps landed on feature/profitable-strategies-lowvol-residmom-insider
-(not yet committed — awaiting user go-ahead to commit). Full suite: 875 passed, 1 pre-existing
-unrelated failure (test_insert_and_get_disclosure, see Open items).
+Task mostly complete, committed (0d93f8b + follow-up commit). Bot is RUNNING (PID via manual
+nohup, restarted 12:46PM 2026-07-10, confirmed alive) with all fixes live. Full suite: 877
+passed, 1 pre-existing unrelated failure (test_insert_and_get_disclosure, see Open items).
+
+Two items attempted but NOT resolved — live-verified broken by different root causes than
+assumed:
+- Russell 1000 universe: header fix did not restore coverage — iShares now serves
+  bot-protection HTML on both its CSV endpoints regardless of headers (live-confirmed with 2
+  header sets). Universe is still S&P-500-only. Added a clear HTML-sniff guard so this fails
+  diagnosably instead of a cryptic pandas error, but coverage itself is unresolved.
+- launchd auto-restart: plist is correct (command runs fine standalone) but every
+  `launchctl bootstrap` attempt exits immediately (code 78/EX_CONFIG, zero output) — likely
+  macOS Background Task Management blocking a new LaunchAgent pending approval in System
+  Settings -> General -> Login Items & Extensions (needs user GUI action, could not push
+  through from here). Bot currently runs via manual nohup (no auto-restart on crash).
 
 ## Next
-- Awaiting user: commit? Then decide whether to `launchctl load` the plist now (a manual bot
-  process is currently running — coordinate stop/start to avoid double-running).
+- User: approve the pending LaunchAgent in System Settings (if one appears), then retry
+  `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`.
+- Follow-up needed: find a non-iShares Russell 1000 constituent source (iShares CSV endpoints
+  now WAF-gated; CLAUDE.md forbids a headless browser workaround).
 - P2 (deferred per plan, not started): dead-man's-switch alert for missed pipeline runs,
   requirements.txt pinning/lockfile.
-- Live verification once running: confirm trading.db signals/positions populate again,
-  dashboard_state.json timestamp advances, expected_return_pct shows sane values.
+- Live verification: watch bot.log for the 14:00 CEST pipeline run today, confirm trading.db
+  signals/positions populate, dashboard_state.json timestamp advances, expected_return_pct
+  shows sane values.
 
 ## Constraints
 - User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix.

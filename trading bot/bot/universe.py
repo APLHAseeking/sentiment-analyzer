@@ -31,6 +31,11 @@ def _fetch_sp500_ishares() -> pd.DataFrame:
         url, headers={"User-Agent": "Mozilla/5.0 (compatible; trading-bot/1.0)"}, timeout=30
     )
     resp.raise_for_status()
+    if resp.text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
+        raise ValueError(
+            "iShares IVV endpoint returned an HTML page instead of CSV "
+            "(likely bot-protection/WAF, not a genuine 404/503) — headers alone don't fix this"
+        )
     df = pd.read_csv(io.StringIO(resp.text), skiprows=9)
     if "Ticker" not in df.columns:
         raise ValueError(
@@ -73,6 +78,11 @@ def _fetch_russell1000() -> pd.DataFrame:
         url, headers={"User-Agent": "Mozilla/5.0 (compatible; trading-bot/1.0)"}, timeout=30
     )
     resp.raise_for_status()
+    if resp.text.lstrip()[:15].lower().startswith(("<!doctype", "<html")):
+        raise ValueError(
+            "iShares IWB endpoint returned an HTML page instead of CSV "
+            "(likely bot-protection/WAF, not a genuine 404/503) — headers alone don't fix this"
+        )
     df = pd.read_csv(io.StringIO(resp.text), skiprows=9)
     if "Ticker" not in df.columns:
         raise ValueError(f"Unexpected iShares CSV format. Columns found: {df.columns.tolist()}")

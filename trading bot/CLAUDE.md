@@ -25,12 +25,17 @@
 > instead of once, per user request to react faster in volatile markets — position sizing
 > multipliers unchanged. 2026-07-10: the in-memory scheduler was silently losing entire
 > trading days across process restarts (zero signals generated 07-07 through 07-10) —
-> fixed with a DB-backed catch-up-on-restart check, a Russell-1000-fetch 503 bug, an
-> unchecked initial-stop-placement gap, a loosened AI entry hurdle (5x/1.5% → 3x/1.0%,
-> now logged via `EntryScore.expected_return_pct`), and macOS launchd auto-restart
-> supervision. See `docs/CLAUDE-REFERENCE.md#history` for detail. Test count: **875**
-> (full suite green; one pre-existing unrelated date-dependent test failure, not fixed —
-> see history).
+> fixed with a DB-backed catch-up-on-restart check, an unchecked initial-stop-placement
+> gap, and a loosened AI entry hurdle (5x/1.5% → 3x/1.0%, now logged via
+> `EntryScore.expected_return_pct`). **Two items attempted but NOT resolved, live-verified
+> broken:** Russell 1000 universe coverage (iShares now serves bot-protection HTML on
+> both its CSV endpoints regardless of headers — universe stays S&P-500-only; see
+> `#data-caveats`) and macOS launchd auto-restart supervision (plist is correct but the
+> spawned process exits immediately with code 78 on every attempt — likely needs manual
+> Background Task Management approval in System Settings; bot runs via manual `nohup` for
+> now, see `docs/RUNBOOK.md`). See `docs/CLAUDE-REFERENCE.md#history` for detail. Test
+> count: **877** (full suite green; one pre-existing unrelated date-dependent test
+> failure, not fixed — see history).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

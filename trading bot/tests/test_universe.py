@@ -151,6 +151,34 @@ def test_fetch_russell1000_sends_user_agent_header(mocker):
     assert kwargs.get("headers", {}).get("User-Agent") == "Mozilla/5.0 (compatible; trading-bot/1.0)"
 
 
+def test_fetch_russell1000_raises_clearly_on_html_response(mocker):
+    """iShares can return a 200 OK bot-protection/interstitial HTML page
+    instead of the CSV (live-confirmed 2026-07-10, headers don't prevent
+    this) — must fail with a clear message, not a cryptic pandas tokenizer
+    error, so the fallback-to-S&P-500-only log line is actually diagnosable."""
+    from bot.universe import _fetch_russell1000
+
+    mock_resp = mocker.MagicMock()
+    mock_resp.text = "<!DOCTYPE html>\n<html><head></head><body>blocked</body></html>"
+    mock_resp.raise_for_status = mocker.MagicMock()
+    mocker.patch("bot.universe.requests.get", return_value=mock_resp)
+
+    with pytest.raises(ValueError, match="HTML page instead of CSV"):
+        _fetch_russell1000()
+
+
+def test_fetch_sp500_ishares_raises_clearly_on_html_response(mocker):
+    from bot.universe import _fetch_sp500_ishares
+
+    mock_resp = mocker.MagicMock()
+    mock_resp.text = "<!DOCTYPE html>\n<html><head></head><body>blocked</body></html>"
+    mock_resp.raise_for_status = mocker.MagicMock()
+    mocker.patch("bot.universe.requests.get", return_value=mock_resp)
+
+    with pytest.raises(ValueError, match="HTML page instead of CSV"):
+        _fetch_sp500_ishares()
+
+
 def test_fetch_sp500_ishares_not_called_when_wikipedia_succeeds(mocker):
     """iShares fallback must NOT be invoked when Wikipedia succeeds."""
     import io
