@@ -896,11 +896,13 @@ class RegimeAwareOrchestrator:
             final_pct, score.rationale, list(score.risk_flags),
             expected_return_pct=score.expected_return_pct,
         )
-        self._portfolio.open_position(
+        opened = self._portfolio.open_position(
             ticker=ticker, position_pct=final_pct,
             signal_id=signal_id, rationale=score.rationale, entry_price=entry_price,
             initial_stop_pct=initial_stop_pct,
         )
+        if not opened:
+            return False
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(log, EventType.ORDER_PLACED,
                    f"Opened {ticker} ({signal_type}) pct={final_pct:.1f}% conv={score.conviction}",
@@ -1016,11 +1018,13 @@ class RegimeAwareOrchestrator:
 
         # No FK into the congressional `signals` table — insider buys are persisted in
         # `insider_disclosures` for audit/cluster counting; the position records source.
-        self._portfolio.open_position(
+        opened = self._portfolio.open_position(
             ticker=ticker, position_pct=final_pct,
             signal_id=None, rationale=score.rationale, entry_price=entry_price,
             signal_source=signal_type, initial_stop_pct=initial_stop_pct,
         )
+        if not opened:
+            return False
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(log, EventType.ORDER_PLACED,
                    f"Opened {ticker} ({signal_type}) pct={final_pct:.1f}% conv={score.conviction}",
@@ -1150,7 +1154,7 @@ class RegimeAwareOrchestrator:
             )
             return False
 
-        self._portfolio.open_position(
+        opened = self._portfolio.open_position(
             ticker=ticker,
             position_pct=final_pct,
             signal_id=None,
@@ -1171,6 +1175,8 @@ class RegimeAwareOrchestrator:
             )
         except Exception as exc:
             log.debug("Could not persist fundamental signal for %s: %s", ticker, exc)
+        if not opened:
+            return False
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(
             log, EventType.ORDER_PLACED,
@@ -1256,7 +1262,7 @@ class RegimeAwareOrchestrator:
                         continue
 
                     effective_pct = order.position_pct * veto.size_multiplier
-                    self._portfolio.open_position(
+                    opened = self._portfolio.open_position(
                         ticker=order.ticker,
                         position_pct=effective_pct,
                         signal_id=None,
@@ -1264,6 +1270,8 @@ class RegimeAwareOrchestrator:
                         entry_price=entry_price,
                         signal_source="hedge",
                     )
+                    if not opened:
+                        continue
                     emit_event(
                         log, EventType.HEDGE_ENTRY,
                         f"Opened hedge {order.ticker} pct={effective_pct:.1f}%",

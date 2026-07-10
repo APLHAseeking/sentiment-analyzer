@@ -356,6 +356,43 @@ def test_process_signal_applies_correlation_multiplier(mocker, orch):
     orch._portfolio.open_position.assert_called_once()
 
 
+def test_process_signal_returns_false_when_open_position_fails(mocker, orch):
+    """A fill-poll timeout (or any other open_position failure) must not be
+    reported as a successful open — the caller uses this return value to decide
+    whether to mark the ticker as handled for the day and consume the
+    congressional daily cap; silently treating a failed fill as success blocks
+    retries at the next pipeline window."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    orch._regime_state = None
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+    orch._portfolio.open_position.return_value = False  # simulates a fill-poll timeout
+
+    disc = {
+        "id": "d1", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    result = orch._process_signal(disc, {})
+
+    assert result is False
+
+
 def test_process_signal_sizes_on_nav_not_cash(mocker, orch):
     """Sizing uses NAV (cash + positions), not just cash alone.
 
@@ -470,6 +507,35 @@ def test_process_fundamental_candidate_applies_correlation_multiplier(mocker, or
     # (b) size does not exceed max_position_pct × NAV
     max_size_usd = settings.risk.max_position_pct / 100 * nav
     assert position_size_usd <= max_size_usd + 1e-9
+
+
+def test_process_fundamental_candidate_returns_false_when_open_position_fails(mocker, orch):
+    """Same failed-fill contract as _process_signal: a False from open_position
+    must propagate, not be swallowed into an unconditional True."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    orch._regime_state = None
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+    orch._portfolio.open_position.return_value = False  # simulates a fill-poll timeout
+
+    candidate = FactorCandidate(
+        ticker="MSFT", composite_score=80, value_score=25,
+        momentum_score=28, quality_score=27, research=None,
+    )
+    result = orch._process_fundamental_candidate(candidate, {}, set())
+
+    assert result is False
 
 
 # ------------------------------------------------------------------
@@ -629,6 +695,37 @@ def test_hedge_pass_applies_size_multiplier(mocker, orch):
 
     call_kwargs = orch._portfolio.open_position.call_args
     assert call_kwargs.kwargs["position_pct"] == pytest.approx(5.0)
+
+
+def test_hedge_pass_skips_alert_when_open_position_fails(mocker, orch):
+    """A failed hedge fill must not fire a HEDGE_ENTRY alert claiming the hedge
+    opened — mirrors the same open_position-return-value bug fixed for the
+    congressional/insider/fundamental entry paths."""
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+    from monitoring.logger import EventType
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
+    mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    orch._portfolio.open_position.return_value = False  # simulates a fill-poll timeout
+    emit_spy = mocker.patch("orchestration.main_loop.emit_event")
+
+    orch._run_hedge_pass()
+
+    hedge_entry_calls = [
+        c for c in emit_spy.call_args_list
+        if c.args[1] is EventType.HEDGE_ENTRY
+    ]
+    assert hedge_entry_calls == []
 
 
 def test_hedge_pass_skips_order_vetoed_by_risk_manager(mocker, orch):
@@ -1703,6 +1800,37 @@ def test_process_insider_signal_caps_at_insider_max_pct_when_insider_only(mocker
 
     call_kwargs = orch._portfolio.open_position.call_args[1]
     assert call_kwargs["position_pct"] <= 3.0
+
+
+def test_process_insider_signal_returns_false_when_open_position_fails(mocker, orch):
+    """Same failed-fill contract as _process_signal/_process_fundamental_candidate."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    orch._regime_state = None
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_insider_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch("orchestration.main_loop.score_entry_with_debate",
+                 return_value=EntryScore(conviction=8, position_pct=4.0,
+                                         rationale="good", entry="buy", risk_flags=()))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+    orch._portfolio.open_position.return_value = False  # simulates a fill-poll timeout
+
+    disc = {
+        "id": "AAPL:CEO", "insider_name": "X", "ticker": "AAPL", "title": "CEO",
+        "transaction_date": "2026-06-20", "disclosure_date": "2026-06-22",
+        "transaction_type": "buy", "amount_usd": 500_000.0, "scraped_at": "x",
+    }
+    result = orch._process_insider_signal(disc, {}, fundamental_tickers=frozenset())
+
+    assert result is False
 
 
 def test_process_insider_signal_no_cap_when_both_signal_type(mocker, orch):
