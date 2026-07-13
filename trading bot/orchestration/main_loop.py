@@ -79,6 +79,18 @@ _AMS = ZoneInfo("Europe/Amsterdam")
 _NYSE = xcals.get_calendar("XNYS")
 _SCREENER_TOP_N = 12
 
+
+def _nyse_is_open_now() -> bool:
+    """True only while NYSE is *currently* in its regular trading session.
+
+    `_NYSE.is_session(date)` only says today is a trading day — it says
+    nothing about the current wall-clock time. Placing entry orders while
+    this is False (pre-open or post-close) means they can never fill within
+    any short poll window; see history 2026-07-13 (fill-poll-timeout root
+    cause) in docs/CLAUDE-REFERENCE.md#history.
+    """
+    return _NYSE.is_open_on_minute(pd.Timestamp.now(tz="UTC"), ignore_breaks=True)
+
 # Congressional signals are supplementary. They boost conviction when combined with a
 # strong factor score ("both" type), but pure congressional-only entries are capped in
 # size and frequency so the portfolio isn't overweight on a single signal source.
@@ -379,6 +391,13 @@ class RegimeAwareOrchestrator:
     def run_morning_pipeline(self) -> None:
         if not _NYSE.is_session(date.today().isoformat()):
             log.info("Market closed — skipping morning pipeline")
+            return
+        if not _nyse_is_open_now():
+            log.warning(
+                "Market not currently open (pre-open or post-close) — skipping "
+                "morning pipeline. Entry orders placed outside the session can "
+                "never fill within a short poll window (see history 2026-07-13)."
+            )
             return
 
         # Refresh broker position prices once per pipeline (avoids repeated yfinance calls)
@@ -1312,7 +1331,7 @@ class RegimeAwareOrchestrator:
                     if not exit_price:
                         log.warning("No price for hedge exit %s — skipping", ticker)
                         continue
-                    self._portfolio.close_position(
+                    closed = self._portfolio.close_position(
                         ticker=ticker,
                         shares=pos_meta["shares"],
                         exit_price=exit_price,
@@ -1322,16 +1341,22 @@ class RegimeAwareOrchestrator:
                         entry_date=pos_meta["entry_date"],
                         signal_source="hedge",
                     )
-                    emit_event(
-                        log, EventType.HEDGE_EXIT,
-                        f"Closed hedge {ticker}: regime → {current_label}",
-                        data={
-                            "ticker": ticker,
-                            "exit_reason": "regime_transition",
-                            "exit_regime": current_label,
-                        },
-                        alert=True,
-                    )
+                    # close_position() returns False on a no-fill sell (REJECTED/
+                    # CANCELLED/SUBMITTED) and already alerts internally — only
+                    # claim success here if the sell actually filled, or this
+                    # repeats the 2026-07-10 open_position() bool-ignored bug on
+                    # the exit side.
+                    if closed:
+                        emit_event(
+                            log, EventType.HEDGE_EXIT,
+                            f"Closed hedge {ticker}: regime → {current_label}",
+                            data={
+                                "ticker": ticker,
+                                "exit_reason": "regime_transition",
+                                "exit_regime": current_label,
+                            },
+                            alert=True,
+                        )
                 except Exception:
                     log.exception("Failed to close hedge position %s", ticker)
         except Exception as exc:
@@ -1373,20 +1398,27 @@ class RegimeAwareOrchestrator:
                 decision = review_exit(pos["ticker"], pos["entry_price"],
                                        current_price, days_held, research=research)
                 if decision.action == "exit":
-                    self._portfolio.close_position(
+                    # close_position() returns False on a no-fill sell and already
+                    # alerts internally — only log success if it actually filled.
+                    closed = self._portfolio.close_position(
                         pos["ticker"], pos["shares"], exit_price=current_price,
                         exit_reason="ai_exit", signal_id=pos["signal_id"] or 0,
                         entry_price=pos["entry_price"], entry_date=pos["entry_date"],
                     )
-                    log.info("Closed %s: %s", pos["ticker"], decision.rationale)
+                    if closed:
+                        log.info("Closed %s: %s", pos["ticker"], decision.rationale)
                 elif decision.action == "reduce":
-                    self._portfolio.reduce_position(
+                    # reduce_position() returns False on a no-fill sell — don't mark
+                    # take-profit taken (which would suppress future exit checks) for
+                    # a reduce that never actually happened.
+                    reduced = self._portfolio.reduce_position(
                         pos["ticker"], pos["shares"], exit_price=current_price,
                         signal_id=pos["signal_id"] or 0, entry_price=pos["entry_price"],
                         entry_date=pos["entry_date"],
                     )
-                    mark_take_profit_taken(pos["ticker"])
-                    log.info("Reduced %s: %s", pos["ticker"], decision.rationale)
+                    if reduced:
+                        mark_take_profit_taken(pos["ticker"])
+                        log.info("Reduced %s: %s", pos["ticker"], decision.rationale)
             except Exception:
                 log.exception("Exit review failed for %s", pos.get("ticker", "?"))
 
@@ -1443,13 +1475,17 @@ class RegimeAwareOrchestrator:
                     price = 0.0
                 if not price:
                     continue
-                self._portfolio.close_position(
+                # close_position() returns False on a no-fill sell and already
+                # alerts internally — a deleverage force-close that silently fails
+                # must not be logged as if risk exposure was actually reduced.
+                closed = self._portfolio.close_position(
                     pos["ticker"], pos["shares"], exit_price=price,
                     exit_reason=reason, signal_id=pos.get("signal_id"),
                     entry_price=pos["entry_price"], entry_date=pos["entry_date"],
                     signal_source=pos.get("signal_source", "congressional"),
                 )
-                log.info("Force-closed %s: %s", pos["ticker"], reason)
+                if closed:
+                    log.info("Force-closed %s: %s", pos["ticker"], reason)
             except Exception:
                 log.exception("Failed to force-close %s", pos.get("ticker", "?"))
 
@@ -1537,10 +1573,17 @@ class RegimeAwareOrchestrator:
 
         scheduler.add_job(refresh_universe, "cron", day_of_week="mon", hour=7, minute=0,
                           misfire_grace_time=_grace)
-        # 13:00: pre-fetch screener data 1 hour before the morning pipeline
+        # 13:00: pre-fetch screener data ahead of the morning pipeline (NYSE
+        # opens 15:30 Amsterdam — prefetch itself needs no open market).
         scheduler.add_job(self.run_screener_prefetch, "cron", hour=13, minute=0,
                           misfire_grace_time=_grace)
-        scheduler.add_job(self.run_morning_pipeline, "cron", hour=14, minute=0,
+        # 15:40 = 10 min after NYSE open (15:30 Amsterdam = 09:30 EDT). Was
+        # 14:00 (1.5h *before* open) until 2026-07-13 — every entry order
+        # placed that early timed out on fill confirmation every single run
+        # (see history), since a closed market can never fill within any
+        # short poll window. run_morning_pipeline also self-guards via
+        # _nyse_is_open_now() as defense in depth.
+        scheduler.add_job(self.run_morning_pipeline, "cron", hour=15, minute=40,
                           misfire_grace_time=_grace)
         scheduler.add_job(self.run_exit_review, "cron", hour=16, minute=0,
                           misfire_grace_time=_grace)
@@ -1566,16 +1609,18 @@ class RegimeAwareOrchestrator:
                           misfire_grace_time=_intraday_grace)
 
         # Catch-up-on-restart: the scheduler above is in-memory only, so a
-        # process restart after today's first pipeline window (14:00) loses
+        # process restart after today's first pipeline window (15:40) loses
         # that window for the rest of the day — misfire_grace_time only covers
         # a live-but-blocked scheduler, not a process that wasn't running yet.
         # If today's first window has already passed and no completed run is
         # recorded for today, run the pipeline once now, synchronously, before
         # entering the blocking loop. Safe to call any time: both methods
-        # no-op on non-trading days (_NYSE.is_session guard) and
-        # run_morning_pipeline already dedupes against open tickers/capacity.
+        # no-op on non-trading days (_NYSE.is_session guard); run_morning_pipeline
+        # also self-guards on _nyse_is_open_now() so a restart after the close
+        # (e.g. 22:09, 2026-07-13) skips instead of placing doomed orders into a
+        # closed market, and already dedupes against open tickers/capacity.
         _today = date.today().isoformat()
-        if datetime.now(_AMS).hour >= 14 and not job_ran_today("run_morning_pipeline", _today):
+        if datetime.now(_AMS).hour >= 16 and not job_ran_today("run_morning_pipeline", _today):
             log.warning(
                 "Catch-up: no completed pipeline run recorded for %s and today's "
                 "first window has passed — running screener prefetch + morning "

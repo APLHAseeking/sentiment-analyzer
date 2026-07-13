@@ -20,6 +20,7 @@ def _mock_broker(cash: float, position_value: float) -> MagicMock:
 @pytest.fixture
 def orch(mocker):
     mocker.patch("orchestration.main_loop._NYSE.is_session", return_value=True)
+    mocker.patch("orchestration.main_loop._nyse_is_open_now", return_value=True)
     mocker.patch("orchestration.main_loop.get_regime_data", return_value=MagicMock())
     mocker.patch("orchestration.main_loop.run_scraper", return_value=[])
     mocker.patch("orchestration.main_loop.filter_disclosures", return_value=[])
@@ -145,6 +146,7 @@ from datetime import date, timedelta
 def orch_fitted(mocker):
     """Orchestrator with a fitted engine for refit scheduling tests."""
     mocker.patch("orchestration.main_loop._NYSE.is_session", return_value=True)
+    mocker.patch("orchestration.main_loop._nyse_is_open_now", return_value=True)
     mocker.patch("orchestration.main_loop.get_regime_data", return_value=MagicMock())
     mocker.patch("orchestration.main_loop.run_scraper", return_value=[])
     mocker.patch("orchestration.main_loop.filter_disclosures", return_value=[])
@@ -728,6 +730,32 @@ def test_hedge_pass_skips_alert_when_open_position_fails(mocker, orch):
     assert hedge_entry_calls == []
 
 
+def test_hedge_exits_skips_alert_when_close_position_fails(mocker, orch):
+    """A failed hedge-exit sell must not fire a HEDGE_EXIT alert claiming the
+    hedge closed — same open_position-return-value bug class, on the exit
+    side (close_position also returns False on a no-fill sell)."""
+    from monitoring.logger import EventType
+
+    orch._regime_state = _neutral_regime()
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[
+        {"ticker": "SH", "shares": 5, "entry_price": 20.0, "entry_date": "2026-01-01",
+         "signal_id": None, "signal_source": "hedge"},
+    ])
+    mocker.patch.object(orch._hedge_engine, "get_exits_needed", return_value=["SH"])
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._portfolio.close_position.return_value = False  # simulates a no-fill sell
+    emit_spy = mocker.patch("orchestration.main_loop.emit_event")
+
+    orch._run_hedge_exits()
+
+    hedge_exit_calls = [
+        c for c in emit_spy.call_args_list
+        if c.args[1] is EventType.HEDGE_EXIT
+    ]
+    assert hedge_exit_calls == []
+
+
 def test_hedge_pass_skips_order_vetoed_by_risk_manager(mocker, orch):
     from risk.risk_manager import RiskVeto
     from hedge.hedge_engine import HedgeOrder
@@ -765,6 +793,24 @@ def test_close_all_positions_excludes_hedge_by_default_param(mocker, orch):
     assert orch._portfolio.close_position.call_count == 1
     call_kwargs = orch._portfolio.close_position.call_args
     assert call_kwargs[0][0] == "AAPL"
+
+
+def test_close_all_positions_does_not_log_force_closed_when_sell_fails(mocker, orch, caplog):
+    """A deleverage force-close whose sell doesn't fill (close_position()
+    returns False) must not log "Force-closed" — that would tell an operator
+    risk exposure was cut when the position is still fully open."""
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[
+        {"ticker": "AAPL", "shares": 10, "entry_price": 100.0, "entry_date": "2026-01-01",
+         "signal_id": 1, "signal_source": "fundamental"},
+    ])
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=50.0))
+    orch._portfolio.close_position.return_value = False  # simulates a no-fill sell
+
+    with caplog.at_level("INFO"):
+        orch._close_all_positions(reason="intraday_deleverage")
+
+    assert "Force-closed" not in caplog.text
 
 
 def test_intraday_check_deleverage_excludes_hedges(mocker, orch):
@@ -1069,6 +1115,55 @@ def test_run_exit_review_reduce_marks_take_profit_taken(mocker, orch):
 
     mark_spy.assert_called_once_with("AAPL")
     orch._portfolio.reduce_position.assert_called_once()
+
+
+def test_run_exit_review_reduce_does_not_mark_take_profit_when_sell_fails(mocker, orch):
+    """reduce_position() returns False on a no-fill sell — mark_take_profit_taken
+    must not fire in that case, or a later enforce_take_profits() would think
+    the (never-reduced) position already had its take-profit taken and skip
+    re-checking it."""
+    from bot.ai_analyst import ExitDecision
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
+        "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
+        "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+    }])
+    mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=MagicMock(info={"regularMarketPrice": 120.0}))
+    mocker.patch("orchestration.main_loop.review_exit",
+                 return_value=ExitDecision(action="reduce", rationale="partial profit-take"))
+    orch._portfolio.reduce_position.return_value = False  # simulates a no-fill sell
+    mark_spy = mocker.patch("orchestration.main_loop.mark_take_profit_taken")
+
+    orch.run_exit_review()
+
+    mark_spy.assert_not_called()
+
+
+def test_run_exit_review_exit_does_not_log_closed_when_sell_fails(mocker, orch, caplog):
+    """close_position() returns False on a no-fill sell — run_exit_review must
+    not log "Closed" (the same silent-success bug class as open_position, on
+    the exit side)."""
+    from bot.ai_analyst import ExitDecision
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
+        "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
+        "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+    }])
+    mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=MagicMock(info={"regularMarketPrice": 120.0}))
+    mocker.patch("orchestration.main_loop.review_exit",
+                 return_value=ExitDecision(action="exit", rationale="stop hit"))
+    orch._portfolio.close_position.return_value = False  # simulates a no-fill sell
+
+    with caplog.at_level("INFO"):
+        orch.run_exit_review()
+
+    assert "Closed AAPL" not in caplog.text
 
 
 def test_process_signal_uses_conservative_atr_fallback_on_history_failure(mocker, orch):
@@ -1871,7 +1966,9 @@ def test_process_insider_signal_no_cap_when_both_signal_type(mocker, orch):
 def test_start_schedules_second_daily_pipeline_run(mocker, orch):
     """Volatile markets (2026-07-09) prompted scanning for new entries twice a
     day instead of once — a second run_screener_prefetch/run_morning_pipeline
-    pair, midday, on top of the existing 13:00/14:00 CEST pre-market pair."""
+    pair, midday, on top of the first (13:00 prefetch / 15:40 pipeline, the
+    latter moved from 14:00 on 2026-07-13 — 14:00 CEST is 1.5h *before* NYSE's
+    15:30 CEST open, so entry orders placed then could never fill)."""
     mock_scheduler_cls = mocker.patch("orchestration.main_loop.BlockingScheduler")
     mock_scheduler = mock_scheduler_cls.return_value
     # Not testing the catch-up-on-restart path here — pretend today's run
@@ -1886,7 +1983,7 @@ def test_start_schedules_second_daily_pipeline_run(mocker, orch):
         for call in mock_scheduler.add_job.call_args_list
     ]
     assert (orch.run_screener_prefetch, 13, 0) in scheduled
-    assert (orch.run_morning_pipeline, 14, 0) in scheduled
+    assert (orch.run_morning_pipeline, 15, 40) in scheduled
     assert (orch.run_screener_prefetch, 17, 0) in scheduled
     assert (orch.run_morning_pipeline, 18, 0) in scheduled
 
@@ -1939,3 +2036,39 @@ def test_start_does_not_catch_up_when_already_ran_today(mocker, orch):
 
     mock_prefetch.assert_not_called()
     mock_pipeline.assert_not_called()
+
+
+def test_morning_pipeline_skips_when_market_not_intraday_open(mocker, orch):
+    """2026-07-13 root cause: `_NYSE.is_session()` only says today is a
+    trading day, never that NYSE is open *right now*. A restart at 22:09
+    Amsterdam (9 min after the 22:00 close) tripped catch-up, which placed
+    real buy orders into a closed market — every one timed out on fill
+    confirmation (bot.log) since a closed market can never fill within any
+    short poll window. run_morning_pipeline must refuse to run when
+    _nyse_is_open_now() is False, even on a valid trading day."""
+    mocker.patch("orchestration.main_loop._nyse_is_open_now", return_value=False)
+
+    orch.run_morning_pipeline()
+
+    orch._portfolio.reconcile_with_broker.assert_not_called()
+    orch._portfolio.enforce_stop_losses.assert_not_called()
+
+
+def test_start_catch_up_after_close_does_not_open_positions(mocker, orch):
+    """Reproduces the live 2026-07-13 22:09 restart: process comes back up
+    well after NYSE's close, catch-up's hour check alone would fire, but
+    run_morning_pipeline's own _nyse_is_open_now() guard must stop it from
+    placing any orders."""
+    mocker.patch("orchestration.main_loop.BlockingScheduler")
+    mock_dt = mocker.patch("orchestration.main_loop.datetime")
+    mock_dt.now.return_value.hour = 22
+    mocker.patch("orchestration.main_loop.job_ran_today", return_value=False)
+    mocker.patch("orchestration.main_loop._nyse_is_open_now", return_value=False)
+    mock_prefetch = mocker.patch.object(orch, "run_screener_prefetch")
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    orch.start()
+
+    mock_prefetch.assert_called_once()  # prefetch has no market-hours guard
+    orch._portfolio.reconcile_with_broker.assert_not_called()
+    orch._portfolio.enforce_stop_losses.assert_not_called()

@@ -50,15 +50,17 @@
 Defined in `RegimeAwareOrchestrator.start()`. Jobs run on a **single-thread executor** so the pipeline and exit review never touch the DB/portfolio concurrently.
 
 - Mon 07:00 — `refresh_universe()`
-- 13:00 / 17:00 — `run_screener_prefetch()` (pre-fetch fundamentals ~1h before each pipeline run)
-- 14:00 / 18:00 — `run_morning_pipeline()` (Phase 1 + 2 + 3; runs twice daily since 2026-07-09)
+- 13:00 / 17:00 — `run_screener_prefetch()` (pre-fetch fundamentals; the first no longer needs
+  a 1h lead-time relationship to the pipeline since it fetches no live market data)
+- 15:40 / 18:00 — `run_morning_pipeline()` (Phase 1 + 2 + 3; runs twice daily since 2026-07-09).
+  First window moved from 14:00 on 2026-07-13 — see `#history`.
 - 16:00 — `run_exit_review()`
 - 15:45 / 17:00 / 20:00 — `run_intraday_check()` (stop-loss + circuit breakers; tighter misfire grace)
 - 22:30 — `run_eod()`
 - Fri 22:45 — `log_weekly_report()`
 
 **Catch-up-on-restart** (added 2026-07-10): `BlockingScheduler` is in-memory
-only — a process restart after 14:00 permanently drops that day's remaining
+only — a process restart after 15:40 permanently drops that day's remaining
 cron windows (`misfire_grace_time` only covers a live-but-blocked scheduler,
 not a process that wasn't running). `run_morning_pipeline()` records its own
 completion via `db.record_job_run("run_morning_pipeline", today)`; `start()`
@@ -66,7 +68,11 @@ checks `db.job_ran_today(...)` before entering the blocking loop and, if
 today's first window has passed with no completed run recorded, runs the
 pipeline once immediately. Safe to call any time — both pipeline methods
 no-op on non-trading days and `run_morning_pipeline` already dedupes against
-open tickers/capacity.
+open tickers/capacity. `run_morning_pipeline` also refuses to run when
+`_nyse_is_open_now()` is False (added 2026-07-13, see `#history`) — day-level
+`is_session` alone can't tell pre-open/post-close from a live session, which
+is exactly what let a post-close catch-up run place real orders into a
+closed market.
 
 <a id="data-caveats"></a>
 ## Known data-source caveats (important)
@@ -355,3 +361,87 @@ open tickers/capacity.
 > flagged a regime whipsaw (`euphoria`→`melt-up`→`deep-bear`→`melt-up` within 5 days,
 > `regime_log`) as the more urgent live risk than the momentum weighting itself. Test count:
 > **877** (full suite green, same one pre-existing unrelated failure as above).
+> Later same day: added `Settings.sizing.enable_cross_model_debate` (default off) —
+> `score_entry_with_debate`'s bear argument can run on the OTHER configured provider instead
+> of the same model arguing with itself, via a new `provider` param threaded through
+> `_llm_call`/`_bear_argument`; `Settings.validate()` requires both API keys when on.
+> Then the 14:00 CEST `run_morning_pipeline` (first live run since the scheduler fix) exposed
+> a new Critical bug: the regime whipsaw continued (rolling HMM refit reclassified
+> `melt-up`→`bear`, its first refit since deployment) and **8/8 buy orders timed out on fill
+> confirmation** — correctly cancelled per the 07-07 phantom-position fix (`positions` stayed
+> empty), but all 4 of `main_loop.py`'s `open_position()` call sites (`_process_signal`,
+> `_process_insider_signal`, `_process_fundamental_candidate`, hedge entry) discarded its
+> `bool` return value, so every failed fill still logged "Opened ..." and fired an
+> `ORDER_PLACED`/`HEDGE_ENTRY` alert claiming success. Worse: that same return value gates
+> `all_open_tickers` and the congressional/insider daily caps, so a fill-timeout day silently
+> marks every real candidate "handled" and can exhaust the day's quota on phantom failures
+> alone, blocking retries at the 18:00 window. Not caught by tests — every `orch`/
+> `orch_fitted` fixture mocks `_portfolio` as a `MagicMock`, whose default truthy return value
+> matched the "success" path in every existing test; no test ever set
+> `open_position.return_value`. Fixed: all 4 sites now check the return value (fundamental
+> path keeps `insert_fundamental_signal` firing unconditionally — separate, intentional
+> signal-audit behavior). 4 new regression tests, proven red/green via `git stash` of just the
+> fix. Test count: **886** (full suite green, same pre-existing unrelated failure).
+> 2026-07-13: bot found completely dead for ~3 days (`job_runs` had zero rows after Fri
+> 07-10 14:09 CEST, through a full Monday trading day) — a prior fix that day
+> (`fba2143`, shared curl_cffi session in `screener/factor_scorer.py`) stopped the
+> file-descriptor leak but never added a request timeout anywhere, so a single stalled
+> yfinance/curl_cffi call could still block the caller — and, on the single-thread
+> APScheduler executor, every subsequent scheduled job — forever; confirmed via a live
+> `sample` stack trace (executor thread idle, main scheduler thread parked on a
+> lock/semaphore, ~2.5s CPU over 3 real days) and cross-referenced against two earlier,
+> shorter versions of the same silent-hang signature (2026-07-06→07, ~11.5h; 2026-07-10→11,
+> ~13h — this time nothing recovered it). Restarted the bot; root-caused and fixed: added
+> `market_data/yf_session.py` (a shared, 10s-timeout curl_cffi session — `make_shared_yf_session()`
+> for batch callers that explicitly close it, `get_shared_yf_session()` a process-lifetime
+> singleton for scattered one-off calls) and wired it into every reachable `yf.Ticker(...)`
+> construction that had none: `orchestration/main_loop.py` (8 sites), `bot/researcher.py`,
+> `bot/signal_engine.py` (both `@lru_cache`'d), `utils/event_calendar.py`.
+> `screener/factor_scorer.py`'s own `_make_shared_yf_session` now re-exports the shared
+> module's factory (existing mock-patch tests keep working unchanged — `unittest.mock.patch`
+> targets the importing module's attribute). `yf.download(...)` call sites (`risk/correlation.py`,
+> `market_data/market_feed.py`, factor_scorer's own momentum/price fetches) were NOT touched —
+> confirmed via `inspect.signature(yf.download)` that it already defaults `timeout=10`,
+> unlike bare `Ticker()`. Separately, alpaca-py's `TradingClient`/`RESTClient` exposes no
+> timeout parameter at all and funnels every call through one `requests.Session()` with none
+> set (confirmed via `inspect.getsource(RESTClient._one_request)`) — same latent-hang class,
+> reachable on every scheduled job regardless of the yfinance fix. Fixed in `bot/broker.py`
+> via `_apply_request_timeout()`, which patches the client's `_session.request` to default in
+> a 15s timeout without overriding an explicit one. 8 new regression tests
+> (`tests/test_yf_session.py`, plus session-propagation assertions in
+> `test_researcher.py`/`test_signal_engine.py`/`test_event_calendar.py`/`test_broker.py`).
+> Also found, NOT fixed (reported to user, needs a design decision, unrelated bug kind):
+> `bot/db.py::get_nav_baselines` can't distinguish week-start from day-start NAV when both
+> fall on the same calendar date (every Monday) — see `docs/STATE.md#open-items`. Test
+> count: **899** (full suite green; the 2 known pre-existing unrelated failures — see
+> `docs/STATE.md#open-items` — are date-dependent, not this session's).
+>
+> Concurrent session, same evening: root-caused the underlying reason every fill attempt
+> times out (the timeout fix above explains why the process goes *silent* for days; this
+> explains why it never actually trades even while awake). `run_morning_pipeline`'s cron was
+> at 14:00 Amsterdam — 1.5h *before* NYSE's 15:30 CEST (09:30 EDT) open, confirmed directly
+> via `exchange_calendars.get_calendar("XNYS").schedule` — and the catch-up-on-restart trigger
+> (`main_loop.py`, added 2026-07-10) checked only `hour >= 14` plus day-level `_NYSE.is_session()`,
+> never whether NYSE was *currently* open. Tonight's 22:09 restart landed 9 min *after* the
+> 22:00 close, tripped catch-up, and placed 7 real orders (BIIB, HIG, NEM, SH, PSQ, RWM, EFZ)
+> into a closed market — all 7 timed out on fill confirmation exactly like every prior
+> fill-timeout incident this month (07-07 phantom fills, 07-10 8/8 timeouts): the fix in each
+> case patched the symptom (poll width, bool-return) and never the reason fills structurally
+> could not happen. `is_stable: false` / bear regime was checked and ruled out — confirmed via
+> `regime/allocation_engine.py` it is only a 0.5× sizing multiplier, not a hard veto (no
+> `is_stable` check in `risk/risk_manager.py`; the log shows orders reaching the broker, past
+> `validate_order`). Fixed: new `_nyse_is_open_now()` (`main_loop.py`, uses
+> `exchange_calendars`' `is_open_on_minute`) gating `run_morning_pipeline`; first entry window
+> moved 14:00→15:40 (10 min after open); catch-up threshold 14→16. Live-verified: called
+> `_nyse_is_open_now()` directly against the real post-close wall clock, got `False` as
+> expected. Sweep of the order-execution path for the same silent-failure class (the
+> `open_position()` bool-ignored bug fixed 2026-07-10, commit 72ed02e) found it on the exit
+> side too: `close_position()`/`reduce_position()` also return `False` on a no-fill sell, but
+> all 4 call sites (`_run_hedge_exits`, `run_exit_review`'s exit and reduce branches,
+> `_close_all_positions`'s deleverage force-close) ignored the return value and logged
+> "Closed"/"Force-closed"/called `mark_take_profit_taken` unconditionally — a no-fill sell on
+> the *most* safety-critical path (deleverage force-close, triggered by the circuit breaker)
+> would have logged risk as reduced while the position stayed fully open. Fixed all 4. 6 new
+> regression tests total (2 schedule/guard, 4 exit-path), each proven red before the fix and
+> green after. Test count: **903** (full suite green; same 2 pre-existing failures, still
+> unrelated — see `docs/STATE.md#open-items`).

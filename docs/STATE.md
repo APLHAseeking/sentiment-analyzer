@@ -17,14 +17,20 @@ has made zero real trades ever — all activity so far is phantom/timed-out fill
 Implementing the timeout fix now, file by file, per TASK block below.
 
 ## Next
-- Confirm the in-progress 14:00 CEST `run_morning_pipeline` result (background monitor armed)
-  — check `bot.log` / `positions` table once it lands.
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's russell1000_constituent
-  endpoint (existence unconfirmed — see Open items), wire up if it works.
+  endpoint (existence unconfirmed — see Open items), wire up if it works. Re-checked
+  2026-07-13 22:4x: `.env` still has no `FMP_API_KEY` — unchanged, still blocked on the user.
 - User: approve the pending LaunchAgent in System Settings (if one appears), then retry
   `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`.
-- P2 (deferred per plan, not started): dead-man's-switch alert for missed pipeline runs,
-  requirements.txt pinning/lockfile.
+  Re-checked 2026-07-13 22:4x: `launchctl print gui/$(id -u)/com.thomasvromen.tradingbot` ->
+  "Could not find service ... in domain for user gui" — still not loaded, unchanged since
+  07-10. Bot still runs via manual `nohup` (PID 38576).
+- Dead-man's-switch alert for missed pipeline runs: recommend building this now, not deferring
+  further — the bot sat completely dead for 3 days (07-10 to 07-13, zero job_runs rows, zero
+  dashboard.log activity) with no alert of any kind, and was only caught because a human
+  happened to check. Not built this session (new alerting subsystem — flagging for a scope
+  decision rather than building it unasked). requirements.txt pinning/lockfile: still not
+  started.
 
 ## Constraints
 - User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix.
@@ -52,6 +58,13 @@ Implementing the timeout fix now, file by file, per TASK block below.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3).
+- 2026-07-13 (concurrent session, same evening as the network-timeout fix above): root-caused
+  why the bot has made zero real trades ever, not just why it goes silent — entry orders were
+  being placed when NYSE wasn't actually open (14:00 CEST cron fired 1.5h pre-open; catch-up
+  had no intraday-open check, so tonight's 22:09 post-close restart placed 7 doomed orders).
+  Fixed with a `_nyse_is_open_now()` guard + corrected schedule. Sweep found the same
+  open_position-bool-ignored bug class on the exit side (close_position/reduce_position
+  ignored at all 4 exit call sites) — fixed. 6 new regression tests, full suite 903 passed.
 - 2026-07-10 (session 3): test-DB-pollution fix (8509964), weekly-factor-review skill (0c6d25e),
   cross-model debate (f372606), open_position-return-value fix (72ed02e). Full suite 886
   passed, 1 pre-existing unrelated failure.

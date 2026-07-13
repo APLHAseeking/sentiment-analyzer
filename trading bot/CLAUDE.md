@@ -38,9 +38,31 @@
 > pytest run (unmocked `insert_fundamental_signal`); 287 fake rows deleted; real
 > `fundamental_signals` history is just CF/VTRS (07-07) — no real candidate generated since,
 > consistent with the scheduler bug above. Added an on-demand `weekly-factor-review` skill
-> (report-only, never auto-edits weights). See `docs/CLAUDE-REFERENCE.md#history` for
-> detail. Test count: **877** (full suite green; one pre-existing unrelated date-dependent
-> test failure, not fixed — see history).
+> (report-only, never auto-edits weights) and `Settings.sizing.enable_cross_model_debate`
+> (default off). First 14:00 CEST run post-scheduler-fix then exposed a Critical bug: all 4
+> `open_position()` call sites in `main_loop.py` ignored its bool return, so 8/8 fill-timeouts
+> logged/alerted as successful opens and could silently exhaust the daily entry quota —
+> fixed, 4 regression tests. See `docs/CLAUDE-REFERENCE.md#history` for detail. Test count:
+> **886** (full suite green; one pre-existing unrelated date-dependent test failure — history).
+> 2026-07-13: bot found dead for ~3 days (missing-timeout hang, not the fd-leak fba2143 already
+> fixed) — restarted; every reachable `yf.Ticker(...)` call and the Alpaca client now carry an
+> explicit timeout (new `market_data/yf_session.py`) so a stalled network call can no longer
+> wedge the single-thread scheduler forever. Also found, not fixed: `get_nav_baselines` NAV
+> baseline collision on Mondays (see `docs/STATE.md#open-items`). Test count: **899** (full
+> suite green; 2 known pre-existing unrelated failures — history).
+> Later same session: root-caused *why* every fill attempt times out in the first place (not
+> just why the process itself went silent) — `run_morning_pipeline` was cron-scheduled at
+> 14:00 Amsterdam, 1.5h *before* NYSE's 15:30 CEST open, and the catch-up-on-restart trigger
+> had no check for whether NYSE was *currently* open (only that today is a trading day),
+> so tonight's 22:09 restart (9 min after the 22:00 close) placed 7 real buy orders into a
+> closed market — all 7 timed out on fill confirmation, as every prior fill-timeout incident
+> this month has. Fixed: new `_nyse_is_open_now()` intraday guard in `run_morning_pipeline`,
+> first entry window moved 14:00→15:40 (10 min after open), catch-up threshold 14→16. Sweep
+> found the same open_position-bool-ignored bug class on the **exit** side: `close_position`/
+> `reduce_position`'s bool returns were ignored at all 4 exit call sites (hedge exit, AI exit,
+> reduce, deleverage force-close) — a no-fill sell would still log "Closed"/"Force-closed"/
+> mark take-profit-taken as if it succeeded. Fixed all 4, 6 new regression tests total (proven
+> red/green). Test count: **903** (full suite green; same 2 pre-existing failures — history).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 
