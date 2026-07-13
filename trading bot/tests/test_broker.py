@@ -4,12 +4,43 @@ from alpaca.trading.enums import (
     OrderType as AlpacaOrderType,
     OrderSide as AlpacaSide,
 )
-from bot.broker import AlpacaBroker
+from bot.broker import AlpacaBroker, _apply_request_timeout, _ALPACA_TIMEOUT_SECONDS
 from execution.broker_interface import BrokerInterface, Order, OrderSide, OrderStatus, OrderType
 
 
 def test_alpaca_broker_implements_interface():
     assert issubclass(AlpacaBroker, BrokerInterface)
+
+
+def test_apply_request_timeout_defaults_timeout_when_absent():
+    """alpaca-py's RESTClient exposes no timeout param and its bare
+    requests.Session() has none set — a stalled call blocks forever (same
+    fix class as the yfinance hang, market_data/yf_session.py). Patching
+    session.request must default one in when the caller didn't pass one."""
+    fake_client = MagicMock()
+    original_request = fake_client._session.request
+    _apply_request_timeout(fake_client)
+    fake_client._session.request("GET", "https://paper-api.alpaca.markets/v2/account")
+    original_request.assert_called_once_with(
+        "GET", "https://paper-api.alpaca.markets/v2/account", timeout=_ALPACA_TIMEOUT_SECONDS
+    )
+
+
+def test_apply_request_timeout_does_not_override_explicit_timeout():
+    fake_client = MagicMock()
+    original_request = fake_client._session.request
+    _apply_request_timeout(fake_client)
+    fake_client._session.request("GET", "https://x", timeout=5)
+    original_request.assert_called_once_with("GET", "https://x", timeout=5)
+
+
+def test_alpaca_broker_real_construction_applies_timeout_patch(monkeypatch):
+    """The real (non-injected) construction branch — used in production —
+    must wire the timeout patch onto the client it builds."""
+    monkeypatch.setenv("ALPACA_API_KEY", "test-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "test-secret")
+    broker = AlpacaBroker()
+    assert broker._api._session.request.__name__ == "_request_with_timeout"
 
 
 def test_is_paper():

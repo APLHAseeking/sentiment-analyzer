@@ -11,6 +11,8 @@ from typing import Any
 
 import yfinance as yf
 
+from market_data.yf_session import get_shared_yf_session
+
 log = logging.getLogger(__name__)
 
 # Official FOMC announcement dates (second day of each two-day meeting).
@@ -33,7 +35,7 @@ _FOMC_DATES: list[date] = _FOMC_DATES_2026  # extend here for future years
 def _get_next_earnings(ticker: str) -> date | None:
     """Return the next scheduled earnings date for ticker via yfinance, or None."""
     try:
-        cal: Any = yf.Ticker(ticker).calendar
+        cal: Any = yf.Ticker(ticker, session=get_shared_yf_session()).calendar
         if not cal:
             return None
         dates = cal.get("Earnings Date", [])

@@ -18,6 +18,31 @@ from monitoring.logger import EventType, emit_event
 
 log = logging.getLogger(__name__)
 
+_ALPACA_TIMEOUT_SECONDS = 15  # > _poll_order_fill's ~14s budget; must still be finite
+
+
+def _apply_request_timeout(client: TradingClient) -> None:
+    """alpaca-py's RESTClient exposes no timeout parameter at all (confirmed
+    via inspect.signature(TradingClient.__init__)/inspect.signature(
+    RESTClient.__init__), v0.43.2) and every call — get_account,
+    get_all_positions, submit_order, get_order_by_id, cancel_order_by_id,
+    get_orders — funnels through one choke point, `self._session.request()`
+    (a bare `requests.Session()` with no timeout set; confirmed via
+    inspect.getsource(RESTClient._one_request)). A stalled request there
+    blocks the caller — and, on the live bot's single-thread scheduler
+    executor, every subsequent scheduled job — forever. Patch the session's
+    `request` to default one in, same fix class as the yfinance hang
+    (market_data/yf_session.py).
+    """
+    session = client._session
+    original_request = session.request
+
+    def _request_with_timeout(method, url, **kwargs):
+        kwargs.setdefault("timeout", _ALPACA_TIMEOUT_SECONDS)
+        return original_request(method, url, **kwargs)
+
+    session.request = _request_with_timeout
+
 
 class AlpacaBroker(BrokerInterface):
     """Alpaca paper trading client.
@@ -42,6 +67,7 @@ class AlpacaBroker(BrokerInterface):
                 )
             self._is_paper = "paper" in base_url
             self._api = TradingClient(api_key, secret_key, paper=self._is_paper)
+            _apply_request_timeout(self._api)
 
     @property
     def is_paper(self) -> bool:

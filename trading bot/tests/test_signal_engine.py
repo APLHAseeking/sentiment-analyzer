@@ -127,7 +127,8 @@ def test_get_sector_is_cached():
         result2 = get_sector_for_ticker("AAPL")
     assert result1 == "Technology"
     assert result2 == "Technology"
-    mock_yf.assert_called_once_with("AAPL")
+    assert mock_yf.call_count == 1
+    assert mock_yf.call_args.args == ("AAPL",)
     clear_sector_cache()  # cleanup
 
 
@@ -176,5 +177,6 @@ def test_get_etf_close_history_is_cached():
         result1 = get_etf_close_history("SPY")
         result2 = get_etf_close_history("SPY")
     assert result1 is result2
-    mock_yf.assert_called_once_with("SPY")
+    assert mock_yf.call_count == 1
+    assert mock_yf.call_args.args == ("SPY",)
     clear_etf_cache()  # cleanup

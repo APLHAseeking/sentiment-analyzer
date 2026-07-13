@@ -62,6 +62,16 @@ def test_gather_research_returns_report(mocker):
     assert report.ticker == "AAPL"
 
 
+def test_gather_research_passes_shared_session(mocker):
+    """yf.Ticker() with no session leaks a fresh curl_cffi session per call
+    and never times out — gather_research must pass the shared, timeout-
+    bound session (market_data/yf_session.py) instead of yfinance's default."""
+    mock_ticker = _make_mock_ticker(mocker)
+    mock_yf_ticker = mocker.patch("bot.researcher.yf.Ticker", return_value=mock_ticker)
+    gather_research("AAPL")
+    assert mock_yf_ticker.call_args.kwargs.get("session") is not None
+
+
 def test_gather_research_includes_short_interest(mocker):
     _make_mock_ticker(mocker)
     report = gather_research("AAPL")

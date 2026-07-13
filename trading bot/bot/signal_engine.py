@@ -5,6 +5,7 @@ import pandas as pd
 import yfinance as yf
 
 import bot.db as db
+from market_data.yf_session import get_shared_yf_session
 from bot.universe import is_in_universe
 from bot.committee import get_committees_for_politician, sector_has_committee_overlap
 from system.config import settings
@@ -20,7 +21,7 @@ def compute_lag_days(transaction_date: str, disclosure_date: str) -> int:
 
 @functools.lru_cache(maxsize=2000)
 def get_sector_for_ticker(ticker: str) -> str:
-    return yf.Ticker(ticker).info.get("sector", "Unknown")
+    return yf.Ticker(ticker, session=get_shared_yf_session()).info.get("sector", "Unknown")
 
 
 def clear_sector_cache() -> None:
@@ -29,7 +30,7 @@ def clear_sector_cache() -> None:
 
 @functools.lru_cache(maxsize=32)
 def get_etf_close_history(etf_ticker: str, period: str = "2y") -> pd.Series:
-    return yf.Ticker(etf_ticker).history(period=period)["Close"]
+    return yf.Ticker(etf_ticker, session=get_shared_yf_session()).history(period=period)["Close"]
 
 
 def clear_etf_cache() -> None:

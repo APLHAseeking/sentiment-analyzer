@@ -49,6 +49,18 @@ def test_yfinance_failure_does_not_raise(mocker):
     assert isinstance(result, bool)
 
 
+def test_earnings_lookup_passes_shared_session(mocker):
+    """yf.Ticker() with no session leaks a fresh curl_cffi session per call
+    and never times out — _get_next_earnings must pass the shared, timeout-
+    bound session (market_data/yf_session.py) instead of yfinance's default."""
+    from utils.event_calendar import has_upcoming_event
+    mock_ticker = MagicMock()
+    mock_ticker.calendar = {"Earnings Date": [date(2026, 4, 20)]}
+    mock_yf_ticker = mocker.patch("utils.event_calendar.yf.Ticker", return_value=mock_ticker)
+    has_upcoming_event("AAPL", window_days=2, today=date(2026, 4, 9))
+    assert mock_yf_ticker.call_args.kwargs.get("session") is not None
+
+
 def test_process_signal_skips_on_upcoming_event(mocker):
     """_process_signal must return early without calling score_entry_with_debate."""
     from unittest.mock import MagicMock

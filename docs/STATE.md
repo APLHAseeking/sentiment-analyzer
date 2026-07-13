@@ -1,15 +1,20 @@
 # STATE
 
 ## Goal
-Fix why the live paper bot isn't trading (root-caused, mostly fixed — see Done); now executing
-follow-up plan compiled-spinning-stardust.md (weekly-factor-review, cross-model debate,
-Russell 1000, guardrails-kit STATE.md/SESSION.md cost cleanup).
+Fix why the live paper bot isn't trading (root-caused, mostly fixed — see Done). Current
+session (2026-07-13): bot found dead for 3 days (scheduler wedged, zero jobs since Fri 14:09
+CEST) — restarted; now fixing the root cause (missing timeouts on every yfinance/curl_cffi
+call and the Alpaca REST client, so one stalled network call blocks APScheduler's
+single-thread executor forever) across all reachable call sites, then reporting a full
+activity overview to the user.
 
 ## Now
-14:00 CEST run_morning_pipeline completed — found + fixed a new Critical bug (72ed02e, see
-Done). Russell 1000 (Workstream C) blocked on user adding FMP_API_KEY. Guardrails-kit cost
-cleanup (this Now/Done rewrite + pending SESSION.md/README.md edit) in progress. Full history:
-CLAUDE-REFERENCE.md#history.
+Restarted the bot (PID 38576, 2026-07-13 22:09 CEST); catch-up-on-restart fired and is
+re-running Friday/Monday's missed pipeline. Two research agents confirmed: (1) exact call
+sites missing timeouts (screener/factor_scorer.py + orchestration/main_loop.py are the
+CRITICAL/reachable ones; bot/broker.py's Alpaca client has no timeout at all); (2) the bot
+has made zero real trades ever — all activity so far is phantom/timed-out fill attempts.
+Implementing the timeout fix now, file by file, per TASK block below.
 
 ## Next
 - Confirm the in-progress 14:00 CEST `run_morning_pipeline` result (background monitor armed)
@@ -56,6 +61,17 @@ project's permanent changelog — pointers only here per SESSION.md S3).
   commits 6c77981..868aa2d, EDGE_BACKLOG.md. Plan: iterative-hugging-quasar.md.
 
 ## Open items
+- 2026-07-13: `bot/db.py::get_nav_baselines`'s `_baseline()` helper (line ~446) can't
+  distinguish week-start from day-start when `day_start == week_start` (i.e. every Monday) —
+  both queries become identical (`date >= since ORDER BY date ASC, id ASC LIMIT 1`), so if
+  any portfolio_log row already exists for today at restart time, `week_start_nav` gets
+  seeded from today's NAV instead of the correct prior-Friday close, understating that
+  week's real loss for the rest of the week. Reproduced via
+  `tests/test_risk_manager.py::test_restore_baselines_recovers_weekly_baseline` (fails on
+  Mondays specifically — confirmed via `check_circuit_breakers` log: daily loss computed as
+  9% off the wrong 100k baseline instead of ~0.5% off the intended 91.5k day-start).
+  NOT fixed — reported to user, needs a design decision (e.g. week_start baseline query
+  should exclude same-day rows), out of scope for the current scheduler-hang task.
 - SUE PIT backtest (companyfacts filed dates) before raising its 0.15 weight — recorded in EDGE_BACKLOG.md
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
 - Insider routine-buyer filter — recorded in EDGE_BACKLOG.md, viable after ~1yr of insider history

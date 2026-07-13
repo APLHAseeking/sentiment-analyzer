@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 import yfinance as yf
 
+from market_data.yf_session import get_shared_yf_session
+
 log = logging.getLogger(__name__)
 
 
@@ -193,7 +195,7 @@ def gather_research(
     momentum_12m_override: float | None = None,
 ) -> ResearchReport | None:
     try:
-        t = yf.Ticker(ticker)
+        t = yf.Ticker(ticker, session=get_shared_yf_session())
         info = t.info
 
         # Skip the history download if the caller already computed momentum

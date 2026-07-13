@@ -60,6 +60,7 @@ from bot.portfolio import Portfolio
 from utils.event_calendar import has_upcoming_event
 from system.config import Settings, settings as _default_settings
 from market_data.market_feed import get_regime_data
+from market_data.yf_session import get_shared_yf_session
 from features.feature_pipeline import FeatureConfig
 from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
@@ -662,7 +663,7 @@ class RegimeAwareOrchestrator:
         (base_pct, initial_stop_pct) on success, or None if the candidate should
         be rejected.
         """
-        _t = yf.Ticker(ticker)
+        _t = yf.Ticker(ticker, session=get_shared_yf_session())
         ma_delta = 0
         try:
             hist = _t.history(period="2y")
@@ -815,7 +816,7 @@ class RegimeAwareOrchestrator:
         log.debug("%s: LLM position_pct=%.2f%% (ignored for sizing)", ticker, score.position_pct)
 
         # Price fetch — fast_info.last_price is available pre/post market; avoids stale close
-        _t = yf.Ticker(ticker)
+        _t = yf.Ticker(ticker, session=get_shared_yf_session())
         try:
             entry_price = _t.fast_info.last_price or 0.0
         except Exception:
@@ -948,7 +949,7 @@ class RegimeAwareOrchestrator:
             log.info("Skipping insider %s: AI conviction %d", ticker, score.conviction)
             return False
 
-        _t = yf.Ticker(ticker)
+        _t = yf.Ticker(ticker, session=get_shared_yf_session())
         try:
             entry_price = _t.fast_info.last_price or 0.0
         except Exception:
@@ -1075,7 +1076,7 @@ class RegimeAwareOrchestrator:
         log.debug("%s: LLM position_pct=%.2f%% (ignored for sizing)", ticker, score.position_pct)
 
         # Price fetch — fast_info.last_price is available pre/post market; avoids stale close
-        _t = yf.Ticker(ticker)
+        _t = yf.Ticker(ticker, session=get_shared_yf_session())
         try:
             entry_price = _t.fast_info.last_price or 0.0
         except Exception:
@@ -1235,7 +1236,7 @@ class RegimeAwareOrchestrator:
             for order in orders:
                 try:
                     try:
-                        entry_price = yf.Ticker(order.ticker).fast_info.last_price or 0.0
+                        entry_price = yf.Ticker(order.ticker, session=get_shared_yf_session()).fast_info.last_price or 0.0
                     except Exception:
                         entry_price = 0.0
                     if not entry_price:
@@ -1305,7 +1306,7 @@ class RegimeAwareOrchestrator:
                     if pos_meta is None:
                         continue
                     try:
-                        exit_price = yf.Ticker(ticker).fast_info.last_price or 0.0
+                        exit_price = yf.Ticker(ticker, session=get_shared_yf_session()).fast_info.last_price or 0.0
                     except Exception:
                         exit_price = 0.0
                     if not exit_price:
@@ -1364,7 +1365,7 @@ class RegimeAwareOrchestrator:
         for pos in positions:
             try:
                 try:
-                    current_price = yf.Ticker(pos["ticker"]).fast_info.last_price or pos["entry_price"]
+                    current_price = yf.Ticker(pos["ticker"], session=get_shared_yf_session()).fast_info.last_price or pos["entry_price"]
                 except Exception:
                     current_price = pos["entry_price"]
                 days_held = (date.today() - date.fromisoformat(pos["entry_date"])).days
@@ -1437,7 +1438,7 @@ class RegimeAwareOrchestrator:
                 continue
             try:
                 try:
-                    price = yf.Ticker(pos["ticker"]).fast_info.last_price or 0.0
+                    price = yf.Ticker(pos["ticker"], session=get_shared_yf_session()).fast_info.last_price or 0.0
                 except Exception:
                     price = 0.0
                 if not price:

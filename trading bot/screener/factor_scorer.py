@@ -11,6 +11,7 @@ import pandas as pd
 import yfinance as yf
 
 from bot.researcher import gather_research, ResearchReport
+from market_data.yf_session import make_shared_yf_session as _make_shared_yf_session
 from screener.xbrl_fundamentals import fetch_xbrl_factors
 from system.config import settings
 
@@ -57,25 +58,6 @@ def _fetch_info_with_retry(ticker: str, session=None) -> tuple[str, dict | None]
 
 # Keep _fetch_info as an alias so existing tests that mock it still work.
 _fetch_info = _fetch_info_with_retry
-
-
-def _make_shared_yf_session():
-    """One shared session for a whole fetch batch, matching yfinance's own
-    default construction (yfinance.base.TickerBase: `requests.Session(
-    impersonate="chrome")`, where yfinance internally aliases `requests` to
-    `curl_cffi.requests` for Yahoo's bot-detection bypass — a plain
-    `requests.Session` would not carry that TLS impersonation). curl_cffi is
-    already an installed transitive dependency of yfinance, not a new one;
-    if this ever breaks on a yfinance/curl_cffi upgrade, fall back to
-    yfinance's own per-call default (session=None) rather than crashing.
-    """
-    try:
-        import curl_cffi.requests as curl_requests
-        return curl_requests.Session(impersonate="chrome")
-    except Exception as exc:
-        log.warning("Could not create shared yfinance session (%s) — falling back "
-                    "to per-call sessions (yfinance default, leaks connections)", exc)
-        return None
 
 
 def _fetch_all_infos(tickers: list[str]) -> dict[str, dict | None]:
