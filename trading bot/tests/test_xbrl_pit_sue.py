@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pandas as pd
 import pytest
+import requests
 
 from screener.xbrl_pit_sue import fetch_companyfacts_eps
 
@@ -69,3 +70,31 @@ def test_fetch_companyfacts_eps_missing_concept_returns_empty(tmp_path):
         mock_get.return_value.raise_for_status.return_value = None
         df = fetch_companyfacts_eps(cik=1, cache_dir=tmp_path)
     assert df.empty
+
+
+def test_fetch_companyfacts_eps_404_caches_empty_result(tmp_path):
+    """A 404 (no such CIK) is a confirmed absence — cache it so we don't refetch."""
+    cache_file = tmp_path / "0000000002.parquet"
+    with patch("screener.xbrl_pit_sue.requests.get") as mock_get:
+        mock_get.return_value.status_code = 404
+        df = fetch_companyfacts_eps(cik=2, cache_dir=tmp_path)
+
+    assert df.empty
+    assert cache_file.exists()
+
+    # A second call must hit the cache, not the network again.
+    with patch("screener.xbrl_pit_sue.requests.get") as mock_get2:
+        df2 = fetch_companyfacts_eps(cik=2, cache_dir=tmp_path)
+        mock_get2.assert_not_called()
+    assert df2.empty
+
+
+def test_fetch_companyfacts_eps_request_exception_does_not_cache(tmp_path):
+    """A transient network failure is NOT a confirmed absence — must not poison the cache."""
+    cache_file = tmp_path / "0000000003.parquet"
+    with patch("screener.xbrl_pit_sue.requests.get") as mock_get:
+        mock_get.side_effect = requests.exceptions.RequestException("connection reset")
+        df = fetch_companyfacts_eps(cik=3, cache_dir=tmp_path)
+
+    assert df.empty
+    assert not cache_file.exists()

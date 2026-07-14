@@ -70,6 +70,6 @@ def fetch_companyfacts_eps(cik: int, cache_dir: Path) -> pd.DataFrame:
         df.to_parquet(cache_path)
         return df
 
-    df = pd.DataFrame(facts)[["start", "end", "val", "form", "filed", "accn"]]
+    df = pd.DataFrame(facts).reindex(columns=["start", "end", "val", "form", "filed", "accn"])
     df.to_parquet(cache_path)
     return df
