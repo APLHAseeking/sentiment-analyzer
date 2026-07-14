@@ -231,3 +231,84 @@ def compute_drift(events: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
             col.append(float(series.iloc[exit_idx] / series.iloc[entry_idx] - 1.0))
         out[f"drift_{h}d"] = col
     return out.dropna(subset=[f"drift_{h}d" for h in HORIZONS], how="all")
+
+
+_SUE_TOP_QUANTILE = 0.8  # top quintile threshold, computed once over the full sample
+
+
+def daily_calendar_excess_returns(events: pd.DataFrame, prices: pd.DataFrame, horizon: int) -> pd.Series:
+    """Genuine daily calendar-time excess-return series for the top-SUE-
+    quintile portfolio over `horizon` trading days — the construction
+    confirmed with the user before this backtest was built: on each calendar
+    trading day, average the DAILY returns of whatever top-quintile-SUE
+    names are currently within their [tradable_date, tradable_date+horizon]
+    holding window, then subtract the same day's average across ALL
+    PIT-eligible open positions (the contemporaneous-universe benchmark).
+    This gives an evenly-spaced daily series where Newey-West HAC with
+    bandwidth=horizon is the textbook-correct treatment for the serial
+    correlation induced by overlapping holding periods (Jegadeesh-Titman-
+    style calendar-time portfolios) — NOT a shortcut of one observation per
+    event valued at its total h-day return, which would leave irregularly-
+    spaced, event-clustered observations that HAC's lag structure doesn't
+    cleanly correspond to.
+
+    The top-quintile SUE threshold is computed ONCE over the full sample —
+    a standard anomaly-study convention (not a live-deployable rule), and a
+    narrower, different-in-kind form of look-ahead than the filed-date/
+    period-end issue this whole exercise exists to fix: it affects which
+    names get studied as "high SUE" for this research question, not the
+    date on which any individual signal became known. Documented explicitly
+    in the report rather than left implicit.
+    """
+    col = f"drift_{horizon}d"
+    valid = events.dropna(subset=[col]).copy()
+    threshold = valid["sue"].quantile(_SUE_TOP_QUANTILE)
+    valid["is_top"] = valid["sue"] >= threshold
+
+    daily_returns = prices.pct_change(fill_method=None)
+    top_rows: list[pd.Series] = []
+    all_rows: list[pd.Series] = []
+    for _, row in valid.iterrows():
+        ticker = row["ticker"]
+        if ticker not in daily_returns.columns:
+            continue
+        series = daily_returns[ticker]
+        entry = series.index[series.index >= pd.Timestamp(row["tradable_date"])]
+        if entry.empty:
+            continue
+        entry_idx = series.index.get_loc(entry[0])
+        exit_idx = entry_idx + horizon
+        if exit_idx >= len(series):
+            continue
+        # Returns REALIZED while holding: the day after entry through exit.
+        window = series.iloc[entry_idx + 1: exit_idx + 1]
+        all_rows.append(window)
+        if row["is_top"]:
+            top_rows.append(window)
+
+    if not top_rows:
+        return pd.Series(dtype=float)
+    top_daily = pd.concat(top_rows).groupby(level=0).mean()
+    all_daily = pd.concat(all_rows).groupby(level=0).mean()
+    excess = (top_daily - all_daily).dropna().sort_index()
+    return excess
+
+
+def run_gate(events: pd.DataFrame, prices: pd.DataFrame) -> dict:
+    """HAC mean/t-stat/IR of the top-quintile-SUE daily calendar-time excess
+    return, independently per horizon (never pooled/stacked — confirmed
+    with the user). IR is annualized and GROSS of costs — validates signal
+    content, not live-achievable net returns (confirmed with the user).
+    """
+    results = {}
+    for h in HORIZONS:
+        daily = daily_calendar_excess_returns(events, prices, h)
+        mean, tstat = hac_mean_tstat(daily, bandwidth=h)
+        std = daily.std(ddof=1) if len(daily) > 1 else float("nan")
+        annualization = 252 ** 0.5
+        ir = (mean / std) * annualization if std and std > 0 else float("nan")
+        results[h] = {
+            "mean_daily_excess": mean, "tstat": tstat, "ir": ir,
+            "n_days": len(daily),
+        }
+    return results
