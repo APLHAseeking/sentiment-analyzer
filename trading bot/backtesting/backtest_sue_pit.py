@@ -4,10 +4,16 @@ gate). Recommendation-only: never writes to screener/factor_scorer.py.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
 from backtesting.attribution import _hac_standard_errors
+from backtesting.pit_constituents import fetch_sp500_pit_constituents
+from screener.xbrl_fundamentals import _fetch_ticker_cik_map
+from screener.xbrl_pit_sue import fetch_companyfacts_eps, original_quarterly_eps, pit_sue_asof
 
 
 def hac_mean_tstat(returns: pd.Series, bandwidth: int) -> tuple[float, float]:
@@ -38,3 +44,72 @@ def hac_mean_tstat(returns: pd.Series, bandwidth: int) -> tuple[float, float]:
     degenerate_tol = max(abs(mean), 1.0) * np.finfo(float).eps * n
     tstat = mean / se if se > degenerate_tol else float("nan")
     return mean, tstat
+
+
+SAMPLE_START = date(2012, 1, 1)
+SAMPLE_END = date(2026, 4, 15)
+_CACHE_DIR = Path("pit_cache/companyfacts")
+_CONSTITUENTS_CACHE = Path("pit_cache/sp500_constituents.parquet")
+
+
+def universe_tickers() -> set[str]:
+    """Every ticker that was ever an S&P 500 PIT member during the sample window."""
+    constituents = fetch_sp500_pit_constituents(_CONSTITUENTS_CACHE)
+    mask = (constituents["date"] >= SAMPLE_START) & (constituents["date"] <= SAMPLE_END)
+    return set(constituents.loc[mask, "ticker"])
+
+
+_MAX_PLAUSIBLE_SUE = 50.0  # sanity ceiling — a genuine SUE z-score is rarely beyond ~10-20
+
+
+def build_pit_sue_events(tickers: set[str]) -> pd.DataFrame:
+    """One row per (ticker, quarter) with a PIT SUE value: ticker, tradable_date
+    (filed + 1 trading day — added in a later step), sue. `filed_date` is the
+    actual signal date; every downstream drift/regime computation anchors here.
+
+    quarterly["filed"] is a raw ISO date string (see pit_eps_asof's docstring
+    in xbrl_pit_sue.py) — parse explicitly with date.fromisoformat, not
+    .dt/.date() accessors.
+
+    IMPORTANT: `pit_sue_asof` is called on the FULL (unfiltered) per-company
+    quarterly history, not a SAMPLE_START-truncated slice — the SAMPLE_START/
+    SAMPLE_END window controls which events are OUTPUT (in-sample for the
+    study), not which prior quarters the seasonal-random-walk denominator
+    is allowed to see. Using genuinely-filed pre-SAMPLE_START quarters as
+    denominator history is not look-ahead (they were real, PIT-known
+    history as of any as_of date after them) — it's exactly what a live
+    trader standing on that date would have had. Filtering the INPUT history
+    instead (as an earlier version of this function did) starves the
+    seasonal-random-walk denominator down to as few as `_MIN_SUE_CHANGE_OBS`
+    prior YoY changes, which occasionally coincides with a near-zero (but
+    not exactly zero, so not caught by sue_from_quarterly_eps's `sd <= 0`
+    guard) standard deviation and produces an enormous, meaningless SUE
+    value — reproduced concretely on PTC's 2013-08-07 event (7.2e15 with a
+    truncated 43-quarter history vs 1.3 with PTC's full 51-quarter history).
+    `_MAX_PLAUSIBLE_SUE` is a second, independent safety net for any
+    residual near-zero-variance case even with full history (e.g. a company
+    with genuinely flat EPS for an unusually long stretch) — excluded, not
+    clipped, consistent with this module's "unknown/degenerate is not
+    neutral" convention; never silently reached in practice once the root
+    cause above is fixed, but cheap insurance against trusting a garbage
+    value in the drift/gate computation.
+    """
+    cik_map = _fetch_ticker_cik_map(cache=None)
+    rows = []
+    for ticker in sorted(tickers):
+        cik = cik_map.get(ticker)
+        if cik is None:
+            continue
+        facts = fetch_companyfacts_eps(cik, _CACHE_DIR)
+        quarterly = original_quarterly_eps(facts)
+        if quarterly.empty:
+            continue
+        in_window = quarterly[
+            quarterly["filed"].apply(lambda f: SAMPLE_START <= date.fromisoformat(str(f)) <= SAMPLE_END)
+        ]
+        for _, q_row in in_window.iterrows():
+            as_of = date.fromisoformat(str(q_row["filed"]))
+            sue = pit_sue_asof(quarterly, as_of)  # full history — see docstring
+            if sue is not None and abs(sue) <= _MAX_PLAUSIBLE_SUE:
+                rows.append({"ticker": ticker, "filed_date": as_of, "sue": sue})
+    return pd.DataFrame(rows, columns=["ticker", "filed_date", "sue"])
