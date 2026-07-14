@@ -437,22 +437,32 @@ def get_nav_baselines(day_start: str, week_start: str) -> dict[str, float | None
     """NAV baselines for RiskManager restart recovery.
 
     peak_nav — all-time max total_nav ever logged.
-    week_start_nav — first NAV logged on/after ``week_start`` (ISO date), else
-        the last NAV before it (prior Friday close = start-of-week equity).
+    week_start_nav — the last NAV logged strictly before ``week_start`` (prior
+        Friday close = true start-of-week equity), else the first NAV on/after
+        it if no earlier row exists at all (the bot's first-ever week). Must
+        prefer "before" first: ``week_start`` and ``day_start`` are the same
+        calendar date every Monday, so if today's NAV is picked with equal
+        priority, a Monday restart with any NAV already logged that day would
+        seed the week's baseline from today's (already in-progress) equity
+        instead of Friday's true close, understating the week's real loss for
+        the circuit breakers.
     day_start_nav — first NAV logged on/after ``day_start``, else the last NAV
         before it (yesterday's close = start-of-day equity).
     Every value is None when portfolio_log has no usable row.
     """
-    def _baseline(conn, since: str) -> float | None:
-        row = conn.execute(
+    def _baseline(conn, since: str, prefer_before: bool = False) -> float | None:
+        on_or_after = (
             "SELECT total_nav FROM portfolio_log WHERE date >= ? ORDER BY date ASC, id ASC LIMIT 1",
             (since,),
-        ).fetchone()
+        )
+        before = (
+            "SELECT total_nav FROM portfolio_log WHERE date < ? ORDER BY date DESC, id DESC LIMIT 1",
+            (since,),
+        )
+        first, second = (before, on_or_after) if prefer_before else (on_or_after, before)
+        row = conn.execute(*first).fetchone()
         if row is None:
-            row = conn.execute(
-                "SELECT total_nav FROM portfolio_log WHERE date < ? ORDER BY date DESC, id DESC LIMIT 1",
-                (since,),
-            ).fetchone()
+            row = conn.execute(*second).fetchone()
         return float(row["total_nav"]) if row is not None else None
 
     with get_conn() as conn:
@@ -460,7 +470,7 @@ def get_nav_baselines(day_start: str, week_start: str) -> dict[str, float | None
         peak = float(peak_row["m"]) if peak_row is not None and peak_row["m"] is not None else None
         return {
             "peak_nav": peak,
-            "week_start_nav": _baseline(conn, week_start),
+            "week_start_nav": _baseline(conn, week_start, prefer_before=True),
             "day_start_nav": _baseline(conn, day_start),
         }
 

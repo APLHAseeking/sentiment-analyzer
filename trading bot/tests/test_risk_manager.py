@@ -447,11 +447,17 @@ def test_restore_baselines_day_start_falls_back_to_last_close(tmp_path, db):
 
 def test_restore_baselines_recovers_weekly_baseline(tmp_path, db):
     """A restart mid-week must keep the week-start NAV so the weekly halt
-    still sees the full week's loss."""
-    from datetime import date
+    still sees the full week's loss. Also covers a Monday restart specifically
+    (week_start == today): the prior week's close must seed week_start_nav,
+    not get contaminated by NAV already logged today (bot/db.py::
+    get_nav_baselines' prefer_before fix) — the seed row here is 3 days
+    before week_start so this holds regardless of which weekday the suite
+    itself happens to run on."""
+    from datetime import date, timedelta
     week_start = RiskManager._get_week_start()
     today = date.today().isoformat()
-    db.log_portfolio(week_start, 20_000, 80_000, 100_000)
+    prior_week_close = (date.fromisoformat(week_start) - timedelta(days=3)).isoformat()
+    db.log_portfolio(prior_week_close, 20_000, 80_000, 100_000)
     # A log row near current NAV so the daily breakers stay quiet.
     db.log_portfolio(today, 20_000, 71_500, 91_500)
     mgr = _make_manager(tmp_path)
