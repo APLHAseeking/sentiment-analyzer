@@ -133,3 +133,32 @@ def add_tradable_date(events: pd.DataFrame) -> pd.DataFrame:
     events = events.copy()
     events["tradable_date"] = events["filed_date"].apply(_next_session)
     return events.dropna(subset=["tradable_date"])
+
+
+def restrict_to_pit_universe(events: pd.DataFrame) -> pd.DataFrame:
+    """Drop events where the ticker was not an S&P 500 PIT member as of
+    `tradable_date` — otherwise the fundamentals side is PIT-correct but the
+    universe side quietly reintroduces survivorship (the exact leak flagged
+    before this backtest was built). Same "most recent snapshot on or before
+    as_of" semantics as backtesting/pit_data.py's CSVPITProvider.constituents()
+    — reimplemented here (not calling CSVPITProvider directly) because that
+    class requires fundamentals/prices files this backtest doesn't use.
+    """
+    constituents = fetch_sp500_pit_constituents(_CONSTITUENTS_CACHE)
+    snapshot_dates = pd.DataFrame(
+        {"snapshot_date": pd.to_datetime(sorted(constituents["date"].unique()))}
+    )
+
+    events = events.sort_values("tradable_date").reset_index(drop=True)
+    events["_tradable_dt"] = pd.to_datetime(events["tradable_date"])
+    # merge_asof requires numeric/datetime64 "on" columns — object-dtype
+    # python `date` columns (as produced by add_tradable_date and
+    # fetch_sp500_pit_constituents) raise a MergeError, hence the explicit
+    # to_datetime conversion above and on snapshot_dates.
+    matched = pd.merge_asof(
+        events, snapshot_dates,
+        left_on="_tradable_dt", right_on="snapshot_date", direction="backward",
+    )
+    member_pairs = set(zip(pd.to_datetime(constituents["date"]), constituents["ticker"]))
+    mask = matched.apply(lambda r: (r["snapshot_date"], r["ticker"]) in member_pairs, axis=1)
+    return matched.loc[mask].drop(columns=["snapshot_date", "_tradable_dt"]).reset_index(drop=True)

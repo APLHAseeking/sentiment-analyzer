@@ -11,6 +11,7 @@ from backtesting.backtest_sue_pit import (
     SAMPLE_START,
     add_tradable_date,
     build_pit_sue_events,
+    restrict_to_pit_universe,
 )
 
 
@@ -100,3 +101,34 @@ def test_add_tradable_date_always_strictly_after_filed_date():
     result = add_tradable_date(events)
     assert len(result) == 2
     assert (result["tradable_date"] > result["filed_date"]).all()
+
+
+def test_restrict_to_pit_universe_drops_pre_membership_events():
+    """Regression coverage for a real finding: a ticker's SUE events that
+    predate its actual S&P 500 index inclusion (e.g. FIX/Comfort Systems USA,
+    which only joined the index in March 2026) must be dropped, or the
+    universe side silently reintroduces survivorship bias even though the
+    fundamentals side is PIT-correct. Verified against the real 25,545-event
+    set: 6,253 events (24.5%) dropped, concentrated in recently-added names.
+    """
+    constituents = pd.DataFrame([
+        {"date": date(2020, 1, 1), "ticker": "REAL"},
+        {"date": date(2023, 1, 1), "ticker": "LATE"},  # joined the index later
+    ])
+    events = pd.DataFrame([
+        {"ticker": "REAL", "filed_date": date(2021, 1, 1), "sue": 1.0},
+        {"ticker": "LATE", "filed_date": date(2021, 1, 1), "sue": 1.0},  # before LATE joined
+        {"ticker": "LATE", "filed_date": date(2023, 6, 1), "sue": 1.0},  # after LATE joined
+    ])
+    events = add_tradable_date(events)
+
+    with patch(
+        "backtesting.backtest_sue_pit.fetch_sp500_pit_constituents",
+        return_value=constituents,
+    ):
+        result = restrict_to_pit_universe(events)
+
+    kept = set(zip(result["ticker"], result["filed_date"]))
+    assert (("REAL", date(2021, 1, 1))) in kept
+    assert (("LATE", date(2021, 1, 1))) not in kept  # pre-membership — dropped
+    assert (("LATE", date(2023, 6, 1))) in kept  # post-membership — kept
