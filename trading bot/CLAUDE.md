@@ -85,6 +85,13 @@
 > no-`KeepAlive` test plist (same binary, ran fine). A `StartInterval`-based supervisor
 > workaround was proposed and declined by the user — bot stays on manual `nohup`
 > indefinitely; see `docs/RUNBOOK.md`'s launchd status note and `docs/STATE.md#open-items`.
+> 2026-07-14 (independent verification session): full suite re-confirmed 909/909 green.
+> Live-health check caught a real deploy gap: the running bot process pre-dated the
+> NYSE-hours fix (commit b4938bb) by 37 minutes, so it was still on the pre-fix in-memory
+> schedule and would have repeated the prior night's all-orders-timeout incident at 14:00
+> CEST today. Restarted (user-approved) to load the fix; new process confirmed on the
+> correct 15:40 schedule with the guard active. See `docs/CLAUDE-REFERENCE.md#history` for
+> detail.
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

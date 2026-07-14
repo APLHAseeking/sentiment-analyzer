@@ -492,3 +492,17 @@ closed market.
 >
 > Test count: **909** (full suite green, zero known failures — first time in this project's
 > history the suite has had none).
+>
+> **2026-07-14 (independent verification session)**: re-ran the full suite (909 passed,
+> matches the count above) and live-verified health rather than trusting the banner —
+> found the running bot process (PID 38576) had started at 22:09:09, 37 minutes *before*
+> commit b4938bb (22:46:52) landed the NYSE-hours fix, so it was still running the
+> pre-fix in-memory schedule (14:00 entry, no `_nyse_is_open_now()` guard) and would have
+> repeated the prior night's all-orders-timeout incident at 14:00 CEST today. User
+> approved a restart; stopped PID 38576 (nothing mid-run — last completed job was 22:30
+> EOD) and relaunched via the documented `nohup` command (new PID 51755, confirmed
+> `hour=15, minute=40` schedule and the guard active in the fresh process). Also
+> confirmed: dead-man's-switch logging "Pipeline healthy" via launchd on schedule,
+> `RISK_LOCKOUT` absent, `job_runs` current through the last completed session
+> (2026-07-13), `requirements.txt` still unpinned and Russell 1000 still blocked on
+> `FMP_API_KEY` (both unchanged, by design — not touched).

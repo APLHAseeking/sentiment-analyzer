@@ -6,10 +6,11 @@ several sessions (dead-for-3-days hang, phantom fills, wrong pipeline timing, NA
 bug — see Done); bot is currently live, restarted, healthy.
 
 ## Now
-"Fix everything" follow-up complete, including the launchd investigation to its actual end.
-Full suite green, 909 passed, zero known failures. Dead-man's-switch is ACTIVE (confirmed
-running via launchd). Main bot's launchd auto-restart is a closed decision, not active — see
-Done. Russell 1000 remains genuinely blocked on the user obtaining an API key — see Next.
+Independent verification session (2026-07-14) complete: re-ran full suite (909 passed,
+matches claim), live-verified bot health, found and fixed a real deploy gap (see Done).
+Dead-man's-switch confirmed ACTIVE via launchd. Main bot's launchd auto-restart is a closed
+decision, not active. Russell 1000 remains genuinely blocked on the user obtaining an API
+key — see Next. Bot now running current code (PID 51755, restarted 11:06 CEST).
 
 ## Next
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's russell1000_constituent
@@ -44,6 +45,17 @@ Done. Russell 1000 remains genuinely blocked on the user obtaining an API key �
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3).
+- 2026-07-14 (independent verification session): re-ran full suite (909 passed, 0 failures,
+  matches morning's claim). Live-verified bot health rather than trusting the banner — found
+  the running bot process (PID 38576) pre-dated commit b4938bb (the NYSE-hours fix) by 37
+  minutes, still running the pre-fix in-memory 14:00 schedule with no open-market guard;
+  would have repeated the prior night's all-orders-timeout incident at 14:00 CEST today.
+  User approved a restart; verified nothing was mid-run first, stopped PID 38576, relaunched
+  via documented `nohup` (new PID 51755), confirmed correct 15:40 schedule + guard active in
+  the new process. Also confirmed dead-man's-switch actively logging healthy checks,
+  RISK_LOCKOUT absent, job_runs current through last completed session — everything else in
+  this morning's claims held up unchanged (Russell 1000 still blocked, requirements.txt still
+  unpinned, both by design).
 - 2026-07-13/14 (this session): found bot dead ~3 days (zero job_runs since Fri 14:09 CEST);
   restarted; root-caused and fixed a missing-timeout hang across every reachable
   yf.Ticker(...) call site + the Alpaca broker client (commit ebc0951, 8 new tests, RESULT:
