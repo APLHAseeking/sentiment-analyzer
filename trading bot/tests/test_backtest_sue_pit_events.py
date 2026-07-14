@@ -1,11 +1,17 @@
 # tests/test_backtest_sue_pit_events.py
 from __future__ import annotations
 
+from datetime import date
 from unittest.mock import patch
 
 import pandas as pd
 
-from backtesting.backtest_sue_pit import SAMPLE_END, SAMPLE_START, build_pit_sue_events
+from backtesting.backtest_sue_pit import (
+    SAMPLE_END,
+    SAMPLE_START,
+    add_tradable_date,
+    build_pit_sue_events,
+)
 
 
 def test_build_pit_sue_events_passes_full_history_not_window_truncated():
@@ -74,3 +80,23 @@ def test_build_pit_sue_events_excludes_implausible_sue_values():
 
     assert len(events) == 1
     assert events.iloc[0]["sue"] == 0.8
+
+
+def test_add_tradable_date_skips_weekend():
+    # Friday filing -> tradable date must be the following Monday, not Saturday.
+    events = pd.DataFrame([
+        {"ticker": "ZZZ", "filed_date": date(2013, 9, 6), "sue": 1.0},  # a Friday
+    ])
+    result = add_tradable_date(events)
+    assert len(result) == 1
+    assert result.iloc[0]["tradable_date"] == date(2013, 9, 9)  # the following Monday
+
+
+def test_add_tradable_date_always_strictly_after_filed_date():
+    events = pd.DataFrame([
+        {"ticker": "ZZZ", "filed_date": date(2020, 1, 2), "sue": 1.0},
+        {"ticker": "ZZZ", "filed_date": date(2020, 6, 15), "sue": -1.0},
+    ])
+    result = add_tradable_date(events)
+    assert len(result) == 2
+    assert (result["tradable_date"] > result["filed_date"]).all()

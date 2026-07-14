@@ -7,6 +7,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from pathlib import Path
 
+import exchange_calendars as xcals
 import numpy as np
 import pandas as pd
 
@@ -113,3 +114,22 @@ def build_pit_sue_events(tickers: set[str]) -> pd.DataFrame:
             if sue is not None and abs(sue) <= _MAX_PLAUSIBLE_SUE:
                 rows.append({"ticker": ticker, "filed_date": as_of, "sue": sue})
     return pd.DataFrame(rows, columns=["ticker", "filed_date", "sue"])
+
+
+def add_tradable_date(events: pd.DataFrame) -> pd.DataFrame:
+    """Tradable date = the first NYSE session strictly after `filed_date` —
+    the confirmed PIT lag (filed date + 1 trading day), agreed with the user
+    before this backtest was built. Events with no following NYSE session in
+    the lookup range (filed right at the end of the sample) are dropped.
+    """
+    nyse = xcals.get_calendar("XNYS")
+    sessions = nyse.sessions_in_range(str(SAMPLE_START), str(SAMPLE_END + timedelta(days=14)))
+    sessions = pd.DatetimeIndex(sessions).normalize()
+
+    def _next_session(d) -> object | None:
+        after = sessions[sessions > pd.Timestamp(d)]
+        return after[0].date() if len(after) else None
+
+    events = events.copy()
+    events["tradable_date"] = events["filed_date"].apply(_next_session)
+    return events.dropna(subset=["tradable_date"])
