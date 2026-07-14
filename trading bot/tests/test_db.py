@@ -10,15 +10,21 @@ def test_init_creates_tables(db):
     assert {"disclosures", "signals", "positions", "portfolio_log", "closed_positions"} <= tables
 
 def test_insert_and_get_disclosure(db):
+    # Relative to today, not hardcoded -- get_existing_ids() only returns
+    # disclosures within its rolling 90-day window (bot/db.py), so a fixed
+    # past date eventually falls outside it as real time advances.
+    disclosure_date = (date.today() - timedelta(days=9)).isoformat()
+    transaction_date = (date.today() - timedelta(days=18)).isoformat()
+    scraped_at = date.today().isoformat() + "T08:00:00"
     disc = {
         "id": "test-001",
         "politician": "Jane Doe",
         "ticker": "AAPL",
-        "transaction_date": "2026-04-01",
-        "disclosure_date": "2026-04-10",
+        "transaction_date": transaction_date,
+        "disclosure_date": disclosure_date,
         "transaction_type": "purchase",
         "amount_range": "$15,001 - $50,000",
-        "scraped_at": "2026-04-22T08:00:00",
+        "scraped_at": scraped_at,
     }
     db.insert_disclosures([disc])
     assert "test-001" in db.get_existing_ids()
