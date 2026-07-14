@@ -34,3 +34,15 @@ def test_fetch_sp500_pit_constituents_uses_cache(tmp_path):
         mock_dl.reset_mock()
         fetch_sp500_pit_constituents(cache_path=cache_path)
         mock_dl.assert_not_called()
+
+
+def test_fetch_sp500_pit_constituents_skips_blank_tickers_row(tmp_path):
+    csv_with_blank = (
+        "date,tickers\n"
+        '2012-01-03,"AAPL,MSFT,XOM"\n'
+        "2012-02-01,\n"  # blank tickers cell
+    )
+    with patch("backtesting.pit_constituents._download_raw_csv", return_value=csv_with_blank):
+        df = fetch_sp500_pit_constituents(cache_path=tmp_path / "constituents.parquet")
+    assert "NAT" not in set(df["ticker"])
+    assert len(df) == 3  # only the 2012-01-03 row's 3 tickers

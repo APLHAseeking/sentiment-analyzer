@@ -38,14 +38,13 @@ def fetch_sp500_pit_constituents(cache_path: Path) -> pd.DataFrame:
 
     raw = _download_raw_csv()
     wide = pd.read_csv(io.StringIO(raw), parse_dates=["date"])
-    rows = []
-    for _, row in wide.iterrows():
-        d = row["date"].date()
-        for ticker in str(row["tickers"]).split(","):
-            ticker = ticker.strip().upper()
-            if ticker:
-                rows.append((d, ticker))
-    long_df = pd.DataFrame(rows, columns=["date", "ticker"])
+    long_df = (
+        wide.dropna(subset=["tickers"])
+        .assign(ticker=lambda d: d["tickers"].str.split(","))
+        .explode("ticker")
+        .assign(ticker=lambda d: d["ticker"].str.strip().str.upper(), date=lambda d: d["date"].dt.date)
+    )
+    long_df = long_df.loc[long_df["ticker"] != "", ["date", "ticker"]].reset_index(drop=True)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     long_df.to_parquet(cache_path)
     log.info("PIT S&P 500 constituents: %d (date,ticker) rows cached to %s", len(long_df), cache_path)
