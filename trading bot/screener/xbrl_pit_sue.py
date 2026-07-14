@@ -117,3 +117,39 @@ def original_quarterly_eps(facts: pd.DataFrame) -> pd.DataFrame:
 
     result = earliest.sort_values("_filed_dt")[["cy_year", "cy_quarter", "val", "filed"]]
     return result.reset_index(drop=True)
+
+
+from screener.xbrl_fundamentals import _completed_quarters, sue_from_quarterly_eps
+
+
+def pit_eps_asof(quarterly: pd.DataFrame, as_of: date, n_quarters: int) -> list[float | None]:
+    """Build the `eps_newest_first` list `sue_from_quarterly_eps` expects, as
+    it would have looked to someone standing on `as_of` — mirrors
+    `_completed_quarters(as_of, n_quarters)`'s calendar-quarter walk exactly,
+    but a quarter's value is only visible if its true `filed` date <= as_of
+    (not merely calendar-completed, which is what `_completed_quarters`
+    alone assumes for the LIVE frames-sourced path).
+
+    `quarterly["filed"]` is a raw ISO date STRING (e.g. "2022-05-01"), not a
+    Timestamp — `original_quarterly_eps` deliberately keeps the original
+    string. Parse explicitly with `date.fromisoformat`; do not call `.date()`
+    on it directly (str has no such method) and do not assume `.dt`
+    accessors work on this column.
+    """
+    quarters = _completed_quarters(as_of, n_quarters)
+    lookup = {
+        (int(r.cy_year), int(r.cy_quarter)): r
+        for r in quarterly.itertuples()
+        if date.fromisoformat(str(r.filed)) <= as_of
+    }
+    return [
+        float(lookup[(y, q)].val) if (y, q) in lookup else None
+        for y, q in quarters
+    ]
+
+
+def pit_sue_asof(quarterly: pd.DataFrame, as_of: date) -> float | None:
+    """PIT-correct SUE as of `as_of`, using the unmodified production formula."""
+    from screener.xbrl_fundamentals import _EPS_QUARTERS
+    series = pit_eps_asof(quarterly, as_of, n_quarters=_EPS_QUARTERS)
+    return sue_from_quarterly_eps(series)

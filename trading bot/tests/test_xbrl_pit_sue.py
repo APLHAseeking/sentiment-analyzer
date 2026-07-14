@@ -150,3 +150,48 @@ def test_original_quarterly_eps_no_original_excludes_period():
 def test_original_quarterly_eps_empty_input():
     result = original_quarterly_eps(pd.DataFrame(columns=["start", "end", "val", "form", "filed", "accn"]))
     assert result.empty
+
+
+from datetime import date
+from screener.xbrl_pit_sue import pit_eps_asof, pit_sue_asof
+
+
+def _quarterly(rows):
+    return pd.DataFrame(rows, columns=["cy_year", "cy_quarter", "val", "filed"])
+
+
+def test_pit_eps_asof_excludes_not_yet_filed_quarters():
+    quarterly = _quarterly([
+        (2023, 4, 1.50, "2024-02-01"),
+        (2023, 3, 1.40, "2023-11-01"),
+        (2023, 2, 1.30, "2023-08-01"),
+        (2023, 1, 1.20, "2023-05-01"),
+        (2022, 4, 1.45, "2023-02-01"),
+    ])
+    # as_of is BEFORE the 2023Q4 filing date -> that quarter must not appear.
+    series = pit_eps_asof(quarterly, as_of=date(2024, 1, 15), n_quarters=6)
+    assert series[0] is None  # 2023Q4 (today's/newest calendar quarter) not yet filed
+    # 2023Q3 should be the first populated slot.
+    assert series[1] == 1.40
+
+
+def test_pit_sue_asof_delegates_to_unmodified_formula():
+    quarterly = _quarterly([
+        (2023, 4, 1.50, "2024-02-01"),
+        (2023, 3, 1.40, "2023-11-01"),
+        (2023, 2, 1.30, "2023-08-01"),
+        (2023, 1, 1.20, "2023-05-01"),
+        (2022, 4, 1.30, "2023-02-01"),
+        (2022, 3, 1.25, "2022-11-01"),
+        (2022, 2, 1.15, "2022-08-01"),
+        (2022, 1, 1.05, "2022-05-01"),
+        (2021, 4, 1.20, "2022-02-01"),
+    ])
+    result = pit_sue_asof(quarterly, as_of=date(2024, 2, 5))
+    # Anchor = 2023Q4 (1.50), t-4 = 2022Q4 (1.30) -> latest_change = 0.20
+    from screener.xbrl_fundamentals import sue_from_quarterly_eps
+    expected = sue_from_quarterly_eps(
+        pit_eps_asof(quarterly, as_of=date(2024, 2, 5), n_quarters=14)
+    )
+    assert result == expected
+    assert result is not None
