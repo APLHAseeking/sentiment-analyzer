@@ -38,3 +38,16 @@ def test_hac_tstat_smaller_than_naive_iid_under_induced_autocorrelation():
     naive_t = overlapping.mean() / naive_se
 
     assert abs(hac_t) < abs(naive_t)
+
+
+def test_hac_mean_tstat_empty_series_returns_nan():
+    mean, tstat = hac_mean_tstat(pd.Series(dtype=float), bandwidth=20)
+    assert np.isnan(mean)
+    assert np.isnan(tstat)
+
+
+def test_hac_mean_tstat_degenerate_series_returns_nan_tstat_not_zero():
+    constant = pd.Series([0.01] * 10)
+    mean, tstat = hac_mean_tstat(constant, bandwidth=5)
+    assert mean == pytest_approx_close(0.01)
+    assert np.isnan(tstat)  # degenerate (zero-variance) input, not a genuine null
