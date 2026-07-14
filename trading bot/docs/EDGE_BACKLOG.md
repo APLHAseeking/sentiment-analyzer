@@ -21,11 +21,26 @@ Baseline for cost deltas: ~15 scored candidates/day × 1–3 LLM calls each
   NOT implemented.
 - Correlation caution: high overlap with momentum + PEAD/SUE.
 
-### SUE weight increase — CONDITIONAL on a PIT backtest
+### SUE weight increase — RESOLVED: gate failed, weight stays 0.15 (2026-07-14)
 - SUE entered the momentum sleeve at a deliberately small 0.15 sub-weight.
-- Before increasing: build a PIT backtest using the SEC **companyfacts** API's
-  `filed` dates (frames API lacks them), judge by the Phase 0 gate rules
-  (t-stat > 2, IR > 0.5, stable across periods).
+- Built a PIT backtest using the SEC **companyfacts** API's `filed` dates
+  (frames API lacks them), reusing `sue_from_quarterly_eps` from
+  `screener/xbrl_fundamentals.py` unmodified. Full report:
+  `docs/SUE_PIT_BACKTEST_2026-07-14.md`.
+- **Result: gate failed on both horizons (20d t=0.87/IR=0.24, 60d
+  t=1.41/IR=0.30, need t>2 AND IR>0.5 independently), and additionally on
+  the first/second-half stability condition at 60d (sign flip). Per the
+  pre-committed decision rule, the weight stays at 0.15 — no change made.**
+  Honesty check confirmed no residual look-ahead (PIT reads weaker than a
+  naive T+0 anchor at both horizons, as expected). Effect is directionally
+  positive across all 7 market regimes (no sign flips, satisfies that gate
+  condition) but not statistically distinguishable from zero pooled, and
+  reverses sign between sample halves at 60d. Two real bugs found and fixed
+  during the build (quarter-bucketing calendar-boundary logic; a history-
+  truncation bug that produced absurd SUE outliers) — see report and commit
+  history on `screener/xbrl_pit_sue.py` / `backtesting/backtest_sue_pit.py`.
+  Not revisiting without a genuinely new argument — this was a clean,
+  honest null result, not a data or methodology gap.
 - Related open decision: the event-calendar gate blocks entries within 2 days
   of earnings — exactly when PEAD fires. A carve-out was consciously NOT made;
   decide explicitly if drift capture matters more than event risk.

@@ -506,3 +506,29 @@ closed market.
 > `RISK_LOCKOUT` absent, `job_runs` current through the last completed session
 > (2026-07-13), `requirements.txt` still unpinned and Russell 1000 still blocked on
 > `FMP_API_KEY` (both unchanged, by design — not touched).
+>
+> **2026-07-14 (SUE PIT backtest, same session)**: built a point-in-time-correct backtest
+> of the SUE signal (`docs/SUE_PIT_BACKTEST_2026-07-14.md`), per a plan confirmed with the
+> user before building (`docs/superpowers/plans/2026-07-14-sue-pit-backtest.md`) —
+> per-horizon independent gate (not pooled), HAC/Newey-West not naive i.i.d., real PIT
+> S&P 500 universe (fja05680/sp500, not current constituents projected backward), d+1
+> drift anchor. New modules: `screener/xbrl_pit_sue.py` (companyfacts fetch/cache,
+> earliest-original-filing quarterly EPS, PIT SUE reusing the unmodified production
+> formula), `backtesting/pit_constituents.py`, `backtesting/backtest_sue_pit.py`. Found and
+> fixed two real bugs against real data: `original_quarterly_eps`'s calendar-quarter
+> bucketing (SEC buckets by the calendar quarter-end boundary NEAREST a fact's `end` date,
+> not a fixed end-month or start-month rule — took 3 iterations to get right, needed a
+> collision-exclusion rule for 52/53-week retail fiscal calendars like Costco where the
+> per-fact rule breaks down; verified against 7 real tickers plus a full Costco 55-quarter
+> history scan) and a history-truncation bug in `build_pit_sue_events` that starved the SUE
+> seasonal-random-walk denominator and produced absurd outlier values (7.2e15 on one real
+> PTC event) — fixed by passing the full company history into the SUE computation and using
+> the sample window only to decide which events are output. Also deduped same-day
+> multi-quarter filings (993 duplicate-valued rows). Full real-data run: 18,708 events,
+> 570 tickers, 2012-2026. **Result: gate failed** on both horizons (20d t=0.87/IR=0.24, 60d
+> t=1.41/IR=0.30) and on the 60d first/second-half stability condition (sign flip); the
+> regime-consistency condition passed (positive mean drift in all 7 regimes, no sign
+> flips); the PIT-vs-naive honesty check confirmed no residual look-ahead (PIT reads weaker
+> than a naive T+0 anchor at both horizons, as expected). Per the pre-committed decision
+> rule, the SUE sub-weight stays at 0.15 — `screener/factor_scorer.py` untouched. Test
+> count: **942** (full suite green, zero known failures).

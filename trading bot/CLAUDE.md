@@ -92,6 +92,14 @@
 > CEST today. Restarted (user-approved) to load the fix; new process confirmed on the
 > correct 15:40 schedule with the guard active. See `docs/CLAUDE-REFERENCE.md#history` for
 > detail.
+> Later same day: SUE PIT backtest complete (`docs/SUE_PIT_BACKTEST_2026-07-14.md`,
+> `docs/EDGE_BACKLOG.md`) — the pre-committed gate failed on both horizons and on time-
+> stability at 60d, so the SUE sub-weight stays at 0.15 (no code change). Two real bugs
+> found and fixed while building it: `original_quarterly_eps`'s calendar-quarter bucketing
+> (SEC buckets by nearest quarter-end boundary to a fact's `end` date, not end/start month;
+> needed a collision-exclusion rule for 52/53-week retail fiscal calendars), and a history-
+> truncation bug that starved the SUE seasonal-random-walk denominator and produced absurd
+> outlier values. Honesty check (PIT vs. naive T+0 anchor) confirmed no residual look-ahead.
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

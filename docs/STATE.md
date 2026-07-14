@@ -11,6 +11,8 @@ matches claim), live-verified bot health, found and fixed a real deploy gap (see
 Dead-man's-switch confirmed ACTIVE via launchd. Main bot's launchd auto-restart is a closed
 decision, not active. Russell 1000 remains genuinely blocked on the user obtaining an API
 key — see Next. Bot now running current code (PID 51755, restarted 11:06 CEST).
+Same-day follow-up: built and ran the SUE PIT backtest end to end (see Done) — gate failed,
+SUE sub-weight stays at 0.15, full suite now 942 passed.
 
 ## Next
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's russell1000_constituent
@@ -35,7 +37,7 @@ key — see Next. Bot now running current code (PID 51755, restarted 11:06 CEST)
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
-- Test command: cd "trading bot" && pytest — 909 tests green as of 2026-07-14, 0 known failures
+- Test command: cd "trading bot" && pytest — 942 tests green as of 2026-07-14 (SUE PIT backtest session), 0 known failures
 - Branch: feature/profitable-strategies-lowvol-residmom-insider; task commits 6c77981..868aa2d + docs commit
 - New module: screener/xbrl_fundamentals.py (fetch_xbrl_factors, sue_from_quarterly_eps, accruals_ratio)
 - RiskManager.restore_baselines() (risk/risk_manager.py) + db.get_nav_baselines (bot/db.py); wired in main_loop initialize()
@@ -45,6 +47,24 @@ key — see Next. Bot now running current code (PID 51755, restarted 11:06 CEST)
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3).
+- 2026-07-14 (SUE PIT backtest, same session as the verification above): built a full
+  point-in-time-correct backtest of the SUE signal per a pre-committed plan
+  (`docs/superpowers/plans/2026-07-14-sue-pit-backtest.md`), using subagent-driven
+  development with spec + code-quality review per task. Confirmed PIT semantics and the
+  decision rule with the user BEFORE building (t-stat/IR gate per horizon, independently,
+  not pooled; HAC not naive i.i.d.; real PIT S&P 500 universe from fja05680/sp500; XBRL-era
+  sample window; d+1 drift anchor). Found and fixed two real bugs while running against real
+  data: `original_quarterly_eps`'s calendar-quarter bucketing (SEC buckets by nearest
+  quarter-end boundary to `end`, not end/start month — took 3 iterations, verified against 7
+  real tickers + a full Costco 55-quarter history scan for the 52/53-week-fiscal-calendar
+  collision case) and a history-truncation bug that starved the SUE denominator and produced
+  absurd outlier values (7.2e15 on one real event) — both root-caused to file:line and fixed
+  with regression tests. RESULT: gate failed on both horizons (20d t=0.87/IR=0.24, 60d
+  t=1.41/IR=0.30) and on 60d time-stability (sign flip between sample halves); honesty check
+  confirmed PIT reads weaker than a naive T+0 anchor as expected (no residual look-ahead).
+  Per the pre-committed rule, SUE sub-weight stays at 0.15 — no code change to
+  `_MOMENTUM_WEIGHTS`. Full report: `docs/SUE_PIT_BACKTEST_2026-07-14.md`. Full suite 942
+  passed, 0 known failures.
 - 2026-07-14 (independent verification session): re-ran full suite (909 passed, 0 failures,
   matches morning's claim). Live-verified bot health rather than trusting the banner — found
   the running bot process (PID 38576) pre-dated commit b4938bb (the NYSE-hours fix) by 37
@@ -92,7 +112,6 @@ project's permanent changelog — pointers only here per SESSION.md S3).
   passed, 0 known failures.
 
 ## Open items
-- SUE PIT backtest (companyfacts filed dates) before raising its 0.15 weight — recorded in EDGE_BACKLOG.md
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
 - Insider routine-buyer filter — recorded in EDGE_BACKLOG.md, viable after ~1yr of insider history
 - 2026-07-10: `docs/guardrails/MIGRATION-LOG.md` still shows as modified in `git status` —
