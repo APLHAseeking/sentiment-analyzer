@@ -132,3 +132,35 @@ def test_restrict_to_pit_universe_drops_pre_membership_events():
     assert (("REAL", date(2021, 1, 1))) in kept
     assert (("LATE", date(2021, 1, 1))) not in kept  # pre-membership — dropped
     assert (("LATE", date(2023, 6, 1))) in kept  # post-membership — kept
+
+
+def test_build_pit_sue_events_dedupes_same_day_multi_quarter_filings():
+    """Regression test for a real bug found running Task 7 against real
+    data: some filings (typically an annual report's "selected quarterly
+    financial data" footnote) report SEVERAL distinct historical quarters
+    under the same filed date. original_quarterly_eps correctly keeps all
+    of them as distinct (cy_year, cy_quarter) rows (they're genuinely
+    different periods), but pit_sue_asof(quarterly, as_of) depends only on
+    as_of — so iterating per quarter-row generated identical-value duplicate
+    "events" on the same day for the same ticker. Found on real data: 1,652
+    such rows (659 distinct ticker/date groups), always with matching SUE
+    values, confirming duplicated computation of the same signal rather than
+    independent information. Must collapse to exactly one event per
+    (ticker, filed_date).
+    """
+    quarterly = pd.DataFrame([
+        {"cy_year": 2011, "cy_quarter": 4, "val": 0.70, "filed": "2012-10-26"},
+        {"cy_year": 2012, "cy_quarter": 1, "val": 0.46, "filed": "2012-10-26"},
+        {"cy_year": 2012, "cy_quarter": 2, "val": 0.79, "filed": "2012-10-26"},
+        {"cy_year": 2012, "cy_quarter": 3, "val": 0.78, "filed": "2012-10-26"},
+    ])
+
+    with patch("backtesting.backtest_sue_pit._fetch_ticker_cik_map", return_value={"ZZZ": 999}), \
+         patch("backtesting.backtest_sue_pit.fetch_companyfacts_eps", return_value=pd.DataFrame()), \
+         patch("backtesting.backtest_sue_pit.original_quarterly_eps", return_value=quarterly), \
+         patch("backtesting.backtest_sue_pit.pit_sue_asof", return_value=1.23):
+        events = build_pit_sue_events({"ZZZ"})
+
+    assert len(events) == 1  # not 4
+    assert events.iloc[0]["filed_date"] == date(2012, 10, 26)
+    assert events.iloc[0]["sue"] == 1.23

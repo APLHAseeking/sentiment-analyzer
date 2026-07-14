@@ -10,9 +10,11 @@ from pathlib import Path
 import exchange_calendars as xcals
 import numpy as np
 import pandas as pd
+import yfinance as yf
 
 from backtesting.attribution import _hac_standard_errors
 from backtesting.pit_constituents import fetch_sp500_pit_constituents
+from market_data.yf_session import make_shared_yf_session
 from screener.xbrl_fundamentals import _fetch_ticker_cik_map
 from screener.xbrl_pit_sue import fetch_companyfacts_eps, original_quarterly_eps, pit_sue_asof
 
@@ -108,8 +110,16 @@ def build_pit_sue_events(tickers: set[str]) -> pd.DataFrame:
         in_window = quarterly[
             quarterly["filed"].apply(lambda f: SAMPLE_START <= date.fromisoformat(str(f)) <= SAMPLE_END)
         ]
-        for _, q_row in in_window.iterrows():
-            as_of = date.fromisoformat(str(q_row["filed"]))
+        # One event per unique filed DATE, not per quarter-row: some filings
+        # (typically an annual report's "selected quarterly data" footnote)
+        # reveal several historical quarters on the same accession/filed
+        # date. pit_sue_asof(quarterly, as_of) depends only on as_of, so
+        # iterating per quarter-row produced identical-value duplicate
+        # "events" on the same day for the same ticker — 1,652 such rows
+        # (659 distinct ticker/date groups) found in the real run, always
+        # with matching SUE values, confirming this is the same underlying
+        # information becoming known once, not several independent signals.
+        for as_of in sorted({date.fromisoformat(str(f)) for f in in_window["filed"]}):
             sue = pit_sue_asof(quarterly, as_of)  # full history — see docstring
             if sue is not None and abs(sue) <= _MAX_PLAUSIBLE_SUE:
                 rows.append({"ticker": ticker, "filed_date": as_of, "sue": sue})
@@ -162,3 +172,62 @@ def restrict_to_pit_universe(events: pd.DataFrame) -> pd.DataFrame:
     member_pairs = set(zip(pd.to_datetime(constituents["date"]), constituents["ticker"]))
     mask = matched.apply(lambda r: (r["snapshot_date"], r["ticker"]) in member_pairs, axis=1)
     return matched.loc[mask].drop(columns=["snapshot_date", "_tradable_dt"]).reset_index(drop=True)
+
+
+HORIZONS = (20, 60)
+
+
+def fetch_prices(tickers: list[str]) -> pd.DataFrame:
+    """Split/dividend-adjusted daily closes for `tickers`, wide format (date
+    index, one column per ticker). Uses the repo's shared, timeout-bound
+    yfinance session (market_data/yf_session.py) rather than yfinance's
+    per-call default, which sets no network timeout at all — the exact
+    class of bug that caused a multi-day scheduler hang in the live bot
+    this week (see trading bot/CLAUDE.md history, 2026-07-13).
+    """
+    session = make_shared_yf_session()
+    try:
+        raw = yf.download(
+            tickers, start=str(SAMPLE_START), end=str(SAMPLE_END + timedelta(days=90)),
+            auto_adjust=True, progress=False, session=session,
+        )
+    finally:
+        if session is not None:
+            session.close()
+    if raw is None or raw.empty:
+        return pd.DataFrame()
+    if isinstance(raw.columns, pd.MultiIndex):
+        return raw["Close"]
+    return raw[["Close"]].rename(columns={"Close": tickers[0]})
+
+
+def compute_drift(events: pd.DataFrame, prices: pd.DataFrame) -> pd.DataFrame:
+    """Per-event forward drift over each horizon in HORIZONS, anchored at
+    `tradable_date` (d+1) — NOT filed_date or period-end — per the confirmed
+    PIT semantics: drift = close(d+1+horizon) / close(d+1) - 1, excluding
+    the announcement-day/pre-tradable-date jump by construction. Events for
+    tickers missing from `prices`, or too close to the end of available
+    price history to observe the full horizon, are dropped (not padded/
+    guessed).
+    """
+    out = events.copy()
+    for h in HORIZONS:
+        col = []
+        for _, row in events.iterrows():
+            ticker = row["ticker"]
+            if ticker not in prices.columns:
+                col.append(None)
+                continue
+            series = prices[ticker].dropna()
+            entry = series[series.index >= pd.Timestamp(row["tradable_date"])]
+            if entry.empty:
+                col.append(None)
+                continue
+            entry_idx = series.index.get_loc(entry.index[0])
+            exit_idx = entry_idx + h
+            if exit_idx >= len(series):
+                col.append(None)
+                continue
+            col.append(float(series.iloc[exit_idx] / series.iloc[entry_idx] - 1.0))
+        out[f"drift_{h}d"] = col
+    return out.dropna(subset=[f"drift_{h}d" for h in HORIZONS], how="all")
