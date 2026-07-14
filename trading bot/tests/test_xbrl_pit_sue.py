@@ -195,3 +195,13 @@ def test_pit_sue_asof_delegates_to_unmodified_formula():
     )
     assert result == expected
     assert result is not None
+
+
+def test_pit_eps_asof_includes_quarter_filed_exactly_on_as_of():
+    # _completed_quarters(date(2024, 2, 1), 1) == [(2023, 4)]: Feb 1 2024 sits in
+    # Q1 2024 (not yet completed), so the most recent completed quarter is 2023Q4.
+    quarterly = _quarterly([
+        (2023, 4, 1.10, "2024-02-01"),
+    ])
+    series = pit_eps_asof(quarterly, as_of=date(2024, 2, 1), n_quarters=1)
+    assert series[0] == 1.10

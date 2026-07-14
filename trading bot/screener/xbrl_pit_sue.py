@@ -122,6 +122,16 @@ def original_quarterly_eps(facts: pd.DataFrame) -> pd.DataFrame:
 from screener.xbrl_fundamentals import _completed_quarters, sue_from_quarterly_eps
 
 
+def _parse_filed(raw) -> date | None:
+    """Parse a raw `filed` value; fail soft (None, warn) rather than crash the
+    whole backtest on one malformed row (NaN/None/malformed string)."""
+    try:
+        return date.fromisoformat(str(raw))
+    except (ValueError, TypeError):
+        log.warning("Unparseable filed date %r — excluding this quarter from PIT lookup", raw)
+        return None
+
+
 def pit_eps_asof(quarterly: pd.DataFrame, as_of: date, n_quarters: int) -> list[float | None]:
     """Build the `eps_newest_first` list `sue_from_quarterly_eps` expects, as
     it would have looked to someone standing on `as_of` — mirrors
@@ -137,11 +147,11 @@ def pit_eps_asof(quarterly: pd.DataFrame, as_of: date, n_quarters: int) -> list[
     accessors work on this column.
     """
     quarters = _completed_quarters(as_of, n_quarters)
-    lookup = {
-        (int(r.cy_year), int(r.cy_quarter)): r
-        for r in quarterly.itertuples()
-        if date.fromisoformat(str(r.filed)) <= as_of
-    }
+    lookup = {}
+    for r in quarterly.itertuples():
+        filed = _parse_filed(r.filed)
+        if filed is not None and filed <= as_of:
+            lookup[(int(r.cy_year), int(r.cy_quarter))] = r
     return [
         float(lookup[(y, q)].val) if (y, q) in lookup else None
         for y, q in quarters
