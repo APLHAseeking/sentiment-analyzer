@@ -1,36 +1,29 @@
 # STATE
 
 ## Goal
-Fix why the live paper bot isn't trading (root-caused, mostly fixed — see Done). Current
-session (2026-07-13): bot found dead for 3 days (scheduler wedged, zero jobs since Fri 14:09
-CEST) — restarted; now fixing the root cause (missing timeouts on every yfinance/curl_cffi
-call and the Alpaca REST client, so one stalled network call blocks APScheduler's
-single-thread executor forever) across all reachable call sites, then reporting a full
-activity overview to the user.
+Fix why the live paper bot isn't trading and keep it trading reliably. Root-caused across
+several sessions (dead-for-3-days hang, phantom fills, wrong pipeline timing, NAV-baseline
+bug — see Done); bot is currently live, restarted, healthy.
 
 ## Now
-Restarted the bot (PID 38576, 2026-07-13 22:09 CEST); catch-up-on-restart fired and is
-re-running Friday/Monday's missed pipeline. Two research agents confirmed: (1) exact call
-sites missing timeouts (screener/factor_scorer.py + orchestration/main_loop.py are the
-CRITICAL/reachable ones; bot/broker.py's Alpaca client has no timeout at all); (2) the bot
-has made zero real trades ever — all activity so far is phantom/timed-out fill attempts.
-Implementing the timeout fix now, file by file, per TASK block below.
+"Fix everything" follow-up complete. Full suite green, 909 passed, zero known failures — the
+first time this repo's suite has had none. Both pre-existing failures resolved (one by a
+concurrent session, one by this one). Dead-man's-switch built and tested (not yet enabled —
+needs the same System Settings approval as the main bot's LaunchAgent). Russell 1000 and
+launchd remain genuinely blocked on external actions only the user can take — see Next.
 
 ## Next
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's russell1000_constituent
   endpoint (existence unconfirmed — see Open items), wire up if it works. Re-checked
-  2026-07-13 22:4x: `.env` still has no `FMP_API_KEY` — unchanged, still blocked on the user.
-- User: approve the pending LaunchAgent in System Settings (if one appears), then retry
-  `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`.
-  Re-checked 2026-07-13 22:4x: `launchctl print gui/$(id -u)/com.thomasvromen.tradingbot` ->
-  "Could not find service ... in domain for user gui" — still not loaded, unchanged since
-  07-10. Bot still runs via manual `nohup` (PID 38576).
-- Dead-man's-switch alert for missed pipeline runs: recommend building this now, not deferring
-  further — the bot sat completely dead for 3 days (07-10 to 07-13, zero job_runs rows, zero
-  dashboard.log activity) with no alert of any kind, and was only caught because a human
-  happened to check. Not built this session (new alerting subsystem — flagging for a scope
-  decision rather than building it unasked). requirements.txt pinning/lockfile: still not
-  started.
+  2026-07-14: `.env` still has no `FMP_API_KEY`. Tried 3 more free/no-signup sources this
+  session (FTSE Russell, stockanalysis.com, SlickCharts) — none viable, see Open items.
+- User: approve BOTH LaunchAgents in System Settings -> General -> Login Items & Extensions ->
+  Allow in the Background (`tradingbot` and the new `tradingbot-deadmansswitch`). Confirmed
+  2026-07-14 via `log show` that macOS Background Task Management is what's blocking them
+  (registers the identifier, `launchd` logs "service inactive" every ~30s after) — not a
+  plist bug. Both already loaded/waiting (`launchctl bootstrap` now succeeds); no retry
+  needed once approved.
+- requirements.txt pinning/lockfile: still not started.
 
 ## Constraints
 - User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix.
@@ -48,7 +41,7 @@ Implementing the timeout fix now, file by file, per TASK block below.
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
-- Test command: cd "trading bot" && pytest — 853 tests green as of 2026-07-07
+- Test command: cd "trading bot" && pytest — 909 tests green as of 2026-07-14, 0 known failures
 - Branch: feature/profitable-strategies-lowvol-residmom-insider; task commits 6c77981..868aa2d + docs commit
 - New module: screener/xbrl_fundamentals.py (fetch_xbrl_factors, sue_from_quarterly_eps, accruals_ratio)
 - RiskManager.restore_baselines() (risk/risk_manager.py) + db.get_nav_baselines (bot/db.py); wired in main_loop initialize()
@@ -58,6 +51,13 @@ Implementing the timeout fix now, file by file, per TASK block below.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3).
+- 2026-07-13/14 (this session): found bot dead ~3 days (zero job_runs since Fri 14:09 CEST);
+  restarted; root-caused and fixed a missing-timeout hang across every reachable
+  yf.Ticker(...) call site + the Alpaca broker client (commit ebc0951, 8 new tests, RESULT:
+  full suite green). Then fixed a Monday-only bug in `get_nav_baselines` that could seed the
+  weekly-loss circuit-breaker baseline from today's NAV instead of the prior week's true
+  close (commit 9a82022) — proven via git-stash red/green. RESULT: full suite 904 passed,
+  0 known failures.
 - 2026-07-13 (concurrent session, same evening as the network-timeout fix above): root-caused
   why the bot has made zero real trades ever, not just why it goes silent — entry orders were
   being placed when NYSE wasn't actually open (14:00 CEST cron fired 1.5h pre-open; catch-up
@@ -65,45 +65,40 @@ project's permanent changelog — pointers only here per SESSION.md S3).
   Fixed with a `_nyse_is_open_now()` guard + corrected schedule. Sweep found the same
   open_position-bool-ignored bug class on the exit side (close_position/reduce_position
   ignored at all 4 exit call sites) — fixed. 6 new regression tests, full suite 903 passed.
-- 2026-07-10 (session 3): test-DB-pollution fix (8509964), weekly-factor-review skill (0c6d25e),
-  cross-model debate (f372606), open_position-return-value fix (72ed02e). Full suite 886
-  passed, 1 pre-existing unrelated failure.
-- 2026-07-10 (session 2): scheduler catch-up, universe/stop/entry-hurdle fixes (0d93f8b),
-  iShares WAF hardening (76f0da9). Plan: so-i-m-running-this-giggly-church.md.
-- 2026-07-06/07: Phase 1 review + remediation A1-A8, B1-B3 XBRL/short-interest/insider —
-  commits 6c77981..868aa2d, EDGE_BACKLOG.md. Plan: iterative-hugging-quasar.md.
+- 2026-07-10: test-DB-pollution (8509964), cross-model debate (f372606), open_position
+  return-value fix (72ed02e), scheduler catch-up (0d93f8b), iShares hardening (76f0da9).
+- 2026-07-06/07: Phase 1 review A1-A8, B1-B3 XBRL/short-interest/insider (6c77981..868aa2d).
+- 2026-07-14 ("fix everything" follow-up, this session): fixed `test_db.py`'s hardcoded-date
+  drift (relative to `date.today()` now). Built the dead-man's-switch
+  (`monitoring/dead_mans_switch.py`, `bot.db.get_last_job_run_date`, separate LaunchAgent
+  `tradingbot-deadmansswitch.plist`, `docs/RUNBOOK.md#dead-mans-switch`) — 4 new tests, one
+  proven red via a deliberate `sed` weakening before restoring. Confirmed (not just
+  hypothesized) that macOS Background Task Management is blocking both LaunchAgents, via
+  `log show`. Tried 3 more Russell 1000 sources, none viable. Full suite 909 passed, 0 known
+  failures.
 
 ## Open items
-- 2026-07-13: `bot/db.py::get_nav_baselines`'s `_baseline()` helper (line ~446) can't
-  distinguish week-start from day-start when `day_start == week_start` (i.e. every Monday) —
-  both queries become identical (`date >= since ORDER BY date ASC, id ASC LIMIT 1`), so if
-  any portfolio_log row already exists for today at restart time, `week_start_nav` gets
-  seeded from today's NAV instead of the correct prior-Friday close, understating that
-  week's real loss for the rest of the week. Reproduced via
-  `tests/test_risk_manager.py::test_restore_baselines_recovers_weekly_baseline` (fails on
-  Mondays specifically — confirmed via `check_circuit_breakers` log: daily loss computed as
-  9% off the wrong 100k baseline instead of ~0.5% off the intended 91.5k day-start).
-  NOT fixed — reported to user, needs a design decision (e.g. week_start baseline query
-  should exclude same-day rows), out of scope for the current scheduler-hang task.
 - SUE PIT backtest (companyfacts filed dates) before raising its 0.15 weight — recorded in EDGE_BACKLOG.md
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
 - Insider routine-buyer filter — recorded in EDGE_BACKLOG.md, viable after ~1yr of insider history
-- 2026-07-10: `tests/test_db.py::test_insert_and_get_disclosure` fails — hardcodes
-  `disclosure_date: "2026-04-10"`, now outside `get_existing_ids()`'s 90-day window as real
-  time advances. Pre-existing, confirmed via `git stash` on clean tree, unrelated to this
-  session's changes — NOT fixed (out of scope). Needs a relative-date fixture.
 - 2026-07-10: `docs/guardrails/MIGRATION-LOG.md` still shows as modified in `git status` —
   pre-existing uncommitted drift from before this session, not touched this session either.
 - Russell 1000 universe unresolved: iShares WAF-blocks both its CSV endpoints regardless of
   headers (`bot/universe.py`, hardened to fail diagnosably, commit 76f0da9). No free/no-signup
   alternate found (Vanguard = JS app shell, GitHub community CSV = dead since 2013, Wikipedia
-  has no constituent table). User signing up for a free FMP API key to live-test their
-  constituents endpoint next — existence unconfirmed, not in FMP's documented S&P500/Nasdaq100/
-  Dow-only index list.
-- launchd auto-restart unresolved: plist correct, but every `launchctl bootstrap` exits
-  immediately (code 78/EX_CONFIG, zero output) — likely macOS Background Task Management
-  blocking a new LaunchAgent pending approval in System Settings -> General -> Login Items &
-  Extensions (needs user GUI action). Bot runs via manual `nohup` in the meantime.
+  has no constituent table, FTSE Russell redirects, stockanalysis.com is a JS shell with no
+  exposed API, SlickCharts 403s). Genuinely blocked on the user obtaining `FMP_API_KEY` (or a
+  paid data source) — nothing more to try without one.
+- launchd auto-restart unresolved, root cause now confirmed: `launchctl bootstrap` succeeds
+  and the job reaches `state = spawn scheduled`, but the spawned process exits immediately
+  (code 78/EX_CONFIG, zero log output). `log show --predicate 'eventMessage contains
+  "tradingbot"'` confirms `backgroundtaskmanagementd` registered this LaunchAgent's identifier
+  at bootstrap time and `launchd` logs "service inactive" every ~30s after — this is macOS
+  Background Task Management blocking it, not a plist bug (ruled out env-var causes too via
+  `env -i` reproduction). Needs user GUI action: System Settings -> General -> Login Items &
+  Extensions -> Allow in the Background, for BOTH `tradingbot` and the new
+  `tradingbot-deadmansswitch` (same gate applies to both). Bot runs via manual `nohup` in the
+  meantime.
 
 ## Failed attempts
 (none — two test failures during work were fixture/expectation updates, resolved same turn)

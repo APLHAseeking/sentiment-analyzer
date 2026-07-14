@@ -327,6 +327,17 @@ def job_ran_today(job_name: str, run_date: str) -> bool:
         ).fetchone()
         return row is not None
 
+def get_last_job_run_date() -> str | None:
+    """Most recent run_date across all recorded job_runs, or None if empty.
+
+    Used by monitoring/dead_mans_switch.py to detect the whole bot process
+    having gone silent (as opposed to a single job failing) -- see its
+    docstring for why this check must live outside the bot's own process.
+    """
+    with get_conn() as conn:
+        row = conn.execute("SELECT MAX(run_date) AS d FROM job_runs").fetchone()
+        return row["d"] if row is not None else None
+
 def position_exists(ticker: str) -> bool:
     """Return True if an open position for ticker already exists in the DB."""
     with get_conn() as conn:

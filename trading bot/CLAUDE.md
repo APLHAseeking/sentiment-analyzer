@@ -63,6 +63,21 @@
 > reduce, deleverage force-close) — a no-fill sell would still log "Closed"/"Force-closed"/
 > mark take-profit-taken as if it succeeded. Fixed all 4, 6 new regression tests total (proven
 > red/green). Test count: **903** (full suite green; same 2 pre-existing failures — history).
+> 2026-07-14: both known pre-existing failures resolved. A concurrent session fixed the
+> Monday NAV-baseline collision (`bot/db.py::get_nav_baselines`, commit 9a82022) — week_start_nav
+> now prefers the last NAV strictly before week_start instead of "on/after", so it no longer
+> collides with day_start_nav on Mondays. `test_db.py::test_insert_and_get_disclosure`'s
+> hardcoded date (drifted outside `get_existing_ids()`'s 90-day window) made relative to
+> `date.today()`. Added a dead-man's-switch (`monitoring/dead_mans_switch.py` + a second,
+> separate LaunchAgent, `com.thomasvromen.tradingbot-deadmansswitch.plist`) — alerts if no
+> `job_runs` row exists for the most recently completed NYSE session, since nothing inside the
+> bot's own process can detect its own death (the exact 07-10→07-13 gap). Confirmed via
+> `log show`/`launchctl` that macOS Background Task Management, not a plist bug, is what's
+> blocking both LaunchAgents — needs approval in System Settings, see `docs/RUNBOOK.md`.
+> Russell 1000 still blocked: no `FMP_API_KEY` yet; tried three more free/no-signup sources
+> (FTSE Russell redirects, stockanalysis.com is a JS-rendered shell with no exposed API,
+> SlickCharts 403s) — no viable alternative found, confirms the prior conclusion. Test count:
+> **909** (full suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

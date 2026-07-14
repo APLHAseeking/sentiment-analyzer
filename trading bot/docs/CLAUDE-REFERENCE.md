@@ -445,3 +445,50 @@ closed market.
 > regression tests total (2 schedule/guard, 4 exit-path), each proven red before the fix and
 > green after. Test count: **903** (full suite green; same 2 pre-existing failures, still
 > unrelated — see `docs/STATE.md#open-items`).
+>
+> 2026-07-14 ("fix everything" follow-up): closed out both remaining pre-existing failures and
+> the deferred dead-man's-switch item.
+> - **NAV baseline collision** — already fixed by a concurrent session (commit `9a82022`)
+>   moments before this session investigated it independently (traced the exact mechanism via
+>   an instrumented repro before discovering the commit — should have checked `git log` first).
+>   Asked the user two design questions on `start_of_day()`/`get_nav_baselines()` semantics
+>   before realizing the fix already existed; their answers (protect the restored baseline,
+>   earliest-row-wins for day_start) turned out consistent with what was actually shipped
+>   (`week_start_nav` now prefers the last NAV *strictly before* `week_start` instead of
+>   "on/after", so it stops colliding with `day_start_nav`'s query on Mondays; `day_start_nav`
+>   itself untouched). The test's own fixture had the identical flaw one level up (computed
+>   `week_start` as literally `date.today()`, so it only failed when the suite ran on a
+>   Monday) — rewritten to seed a genuinely earlier prior-week-close row.
+> - **`test_db.py::test_insert_and_get_disclosure`** — hardcoded `disclosure_date: "2026-04-10"`
+>   had drifted outside `get_existing_ids()`'s rolling 90-day window as real time advanced past
+>   ~07-09. Made all three dates relative to `date.today()`.
+> - **Dead-man's switch, built**: `monitoring/dead_mans_switch.py` + `bot.db.get_last_job_run_date()`
+>   — fires the existing webhook alert (`monitoring/alerts.py`) if no `job_runs` row exists for
+>   the most recently completed NYSE session (via `exchange_calendars`, so weekends/holidays
+>   never false-alarm). Must run as a **separate** process from `run_bot.py` — nothing inside
+>   the bot's own process can detect its own death, which is exactly what happened 07-10→07-13.
+>   New, separate LaunchAgent `com.thomasvromen.tradingbot-deadmansswitch.plist` (`StartInterval`
+>   14400s + `RunAtLoad`), logs to `dead_mans_switch.log`. 4 new regression tests, one proven
+>   red via a deliberate `sed` weakening of the comparison before restoring. See
+>   `docs/RUNBOOK.md#dead-mans-switch`.
+> - **launchd, root cause now confirmed (not just hypothesized)**: `launchctl bootstrap` now
+>   succeeds (previously "Bad request") and the job reaches `state = spawn scheduled`, but the
+>   spawned process still exits immediately (`last exit code = 78`) with zero log output.
+>   `log show --predicate 'eventMessage contains "tradingbot"'` shows `backgroundtaskmanagementd`
+>   registered this exact LaunchAgent's identifier at the moment of bootstrap, and `launchd`
+>   logging "service inactive" every ~30s (matching `ThrottleInterval`) after — i.e. launchd
+>   keeps retrying and macOS Background Task Management keeps blocking it pending the user's
+>   approval in System Settings. Manually reproduced with `env -i` (no HOME, minimal PATH) to
+>   rule out an environment-variable cause first — ran fine, isolating it to the OS-level gate.
+>   Did not pursue `sudo sfltool dumpbtm` for a definitive per-user disposition read after it
+>   triggered an authorization prompt — stopped and asked first, per explicit user feedback.
+>   Both this bot's LaunchAgent and the new dead-man's-switch one need the same one-time
+>   System Settings approval.
+> - **Russell 1000, still blocked**: no `FMP_API_KEY` added yet. Tried three more free/no-signup
+>   sources beyond the ones already ruled out: FTSE Russell (redirects, not a direct download),
+>   stockanalysis.com (JS-rendered shell, no exposed JSON API found in its static HTML),
+>   SlickCharts (403, same WAF-style block as iShares). No viable alternative found — genuinely
+>   needs either the FMP key or a heavier scraping investment not justified here.
+>
+> Test count: **909** (full suite green, zero known failures — first time in this project's
+> history the suite has had none).

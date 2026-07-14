@@ -44,17 +44,24 @@ python run_bot.py --test-alerts
   mid-day no longer loses that day's remaining candidate-generation windows.
   Logs still go to `bot.log` (same file, same tailing workflow as below).
 
-  **Status (2026-07-10): not currently active.** The plist is correct — the
-  exact `ProgramArguments`/`WorkingDirectory` command runs fine when invoked
-  directly — but every `launchctl bootstrap` attempt registers the job and it
-  then exits immediately with code 78 (`EX_CONFIG`), with zero process output
-  (`launchctl print gui/$(id -u)/com.thomasvromen.tradingbot` shows `state =
-  spawn scheduled`, `last exit code = 78`). This almost certainly means macOS
-  is blocking the newly-registered LaunchAgent pending approval — check
-  **System Settings → General → Login Items & Extensions** for a pending item
-  to approve, then retry `launchctl bootstrap`. Until resolved, the bot runs
-  via the manual `nohup` path below (no auto-restart on crash — restart it
-  yourself if it dies, same as before this session).
+  **Status (2026-07-14): still not active — confirmed the exact cause.**
+  `launchctl bootstrap` now succeeds (previously returned "Bad request");
+  the job registers and shows `state = spawn scheduled`, but the spawned
+  process still exits immediately with `last exit code = 78` and zero log
+  output. Confirmed directly via
+  `log show --predicate 'eventMessage contains "tradingbot"'`: macOS's
+  `backgroundtaskmanagementd` recorded this exact LaunchAgent's identifier
+  the moment it was bootstrapped, and `launchd` logs "service inactive"
+  for it every ~30s (matching `ThrottleInterval`) — i.e. launchd keeps
+  trying and macOS Background Task Management keeps blocking it. This is
+  the same mechanism behind **System Settings → General → Login Items &
+  Extensions → Allow in the Background** — approve `tradingbot` (and
+  `tradingbot-deadmansswitch`, see below) there, then no further action is
+  needed; both are already loaded and waiting. Manually re-checking
+  `sfltool dumpbtm`'s per-user disposition needs an admin authorization
+  prompt — did not do that without asking first. Until approved, the bot
+  runs via the manual `nohup` path below (no auto-restart on crash —
+  restart it yourself if it dies).
 - `tmux` (manual alternative — lets you reattach and watch live output):
   ```bash
   tmux new -s bot
@@ -67,6 +74,31 @@ python run_bot.py --test-alerts
   nohup python run_bot.py > bot.log 2>&1 &
   disown
   ```
+
+<a id="dead-mans-switch"></a>
+## Dead-man's switch (added 2026-07-14)
+
+The bot went completely dead for 3 days (2026-07-10 → 07-13, zero `job_runs`
+rows, zero `dashboard.log` activity) with no alert at all — only a human
+happened to check. Nothing running *inside* the bot process can ever detect
+its own death, so `monitoring/dead_mans_switch.py` runs as a **separate**
+process/LaunchAgent and fires the same webhook alert
+(`monitoring/alerts.py`) if no `job_runs` row exists for the most recently
+completed NYSE session.
+
+```bash
+python -m monitoring.dead_mans_switch    # one-off manual check, exit 0 = healthy
+```
+
+**Enable (once — separate approval from the main bot's LaunchAgent):**
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot-deadmansswitch.plist
+launchctl list | grep deadmansswitch   # confirm registered
+```
+Runs every 4h (`StartInterval`) plus once immediately on load. Same
+Background Task Management approval gate as the main bot applies here too
+(see the launchd status note above) — approve both in the same System
+Settings visit. Logs to `dead_mans_switch.log` (separate from `bot.log`).
 
 ## Daily health check
 
