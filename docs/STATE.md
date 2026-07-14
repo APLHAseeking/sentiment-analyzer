@@ -6,23 +6,16 @@ several sessions (dead-for-3-days hang, phantom fills, wrong pipeline timing, NA
 bug — see Done); bot is currently live, restarted, healthy.
 
 ## Now
-"Fix everything" follow-up complete. Full suite green, 909 passed, zero known failures — the
-first time this repo's suite has had none. Both pre-existing failures resolved (one by a
-concurrent session, one by this one). Dead-man's-switch built and tested (not yet enabled —
-needs the same System Settings approval as the main bot's LaunchAgent). Russell 1000 and
-launchd remain genuinely blocked on external actions only the user can take — see Next.
+"Fix everything" follow-up complete, including the launchd investigation to its actual end.
+Full suite green, 909 passed, zero known failures. Dead-man's-switch is ACTIVE (confirmed
+running via launchd). Main bot's launchd auto-restart is a closed decision, not active — see
+Done. Russell 1000 remains genuinely blocked on the user obtaining an API key — see Next.
 
 ## Next
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's russell1000_constituent
   endpoint (existence unconfirmed — see Open items), wire up if it works. Re-checked
   2026-07-14: `.env` still has no `FMP_API_KEY`. Tried 3 more free/no-signup sources this
   session (FTSE Russell, stockanalysis.com, SlickCharts) — none viable, see Open items.
-- User: approve BOTH LaunchAgents in System Settings -> General -> Login Items & Extensions ->
-  Allow in the Background (`tradingbot` and the new `tradingbot-deadmansswitch`). Confirmed
-  2026-07-14 via `log show` that macOS Background Task Management is what's blocking them
-  (registers the identifier, `launchd` logs "service inactive" every ~30s after) — not a
-  plist bug. Both already loaded/waiting (`launchctl bootstrap` now succeeds); no retry
-  needed once approved.
 - requirements.txt pinning/lockfile: still not started.
 
 ## Constraints
@@ -72,10 +65,19 @@ project's permanent changelog — pointers only here per SESSION.md S3).
   drift (relative to `date.today()` now). Built the dead-man's-switch
   (`monitoring/dead_mans_switch.py`, `bot.db.get_last_job_run_date`, separate LaunchAgent
   `tradingbot-deadmansswitch.plist`, `docs/RUNBOOK.md#dead-mans-switch`) — 4 new tests, one
-  proven red via a deliberate `sed` weakening before restoring. Confirmed (not just
-  hypothesized) that macOS Background Task Management is blocking both LaunchAgents, via
-  `log show`. Tried 3 more Russell 1000 sources, none viable. Full suite 909 passed, 0 known
-  failures.
+  proven red via a deliberate `sed` weakening before restoring. **Confirmed active**: ran
+  successfully via launchd on first bootstrap (real log output, exit 0). Then finished the
+  launchd auto-restart investigation for the main bot: user enabled both `python3` entries
+  under System Settings -> Allow in the Background, but the main bot's LaunchAgent still hit
+  exit 78 — isolated via a throwaway no-`KeepAlive` test plist (same binary, ran instantly)
+  that the block is specifically `KeepAlive` (persistent restart-forever daemons), not the
+  binary or the toggle; almost certainly because Homebrew's unsigned `python3` can't register
+  as that class of background daemon at all. Proposed a periodic-supervisor workaround
+  (sidesteps `KeepAlive` via a `StartInterval` check-and-restart script) — user declined,
+  paper-trading stakes don't justify it, dead-man's-switch + manual restart is enough.
+  Unloaded the main bot's failing LaunchAgent registration to stop the retry loop; it still
+  runs via manual `nohup`. Tried 3 more Russell 1000 sources, none viable. Full suite 909
+  passed, 0 known failures.
 
 ## Open items
 - SUE PIT backtest (companyfacts filed dates) before raising its 0.15 weight — recorded in EDGE_BACKLOG.md
@@ -89,16 +91,13 @@ project's permanent changelog — pointers only here per SESSION.md S3).
   has no constituent table, FTSE Russell redirects, stockanalysis.com is a JS shell with no
   exposed API, SlickCharts 403s). Genuinely blocked on the user obtaining `FMP_API_KEY` (or a
   paid data source) — nothing more to try without one.
-- launchd auto-restart unresolved, root cause now confirmed: `launchctl bootstrap` succeeds
-  and the job reaches `state = spawn scheduled`, but the spawned process exits immediately
-  (code 78/EX_CONFIG, zero log output). `log show --predicate 'eventMessage contains
-  "tradingbot"'` confirms `backgroundtaskmanagementd` registered this LaunchAgent's identifier
-  at bootstrap time and `launchd` logs "service inactive" every ~30s after — this is macOS
-  Background Task Management blocking it, not a plist bug (ruled out env-var causes too via
-  `env -i` reproduction). Needs user GUI action: System Settings -> General -> Login Items &
-  Extensions -> Allow in the Background, for BOTH `tradingbot` and the new
-  `tradingbot-deadmansswitch` (same gate applies to both). Bot runs via manual `nohup` in the
-  meantime.
+- launchd auto-restart: CLOSED, not pursuing further (user decision 2026-07-14). Root cause
+  confirmed to be `KeepAlive` specifically (persistent restart-forever daemons blocked by
+  macOS Background Task Management for an unsigned Homebrew binary), not the System Settings
+  toggle (both `python3` entries are enabled) and not a plist bug. A `StartInterval`-based
+  supervisor workaround was proposed and declined — paper-trading stakes don't justify it.
+  Registration unloaded to stop the retry loop. Bot runs via manual `nohup` indefinitely
+  unless this becomes a real pain point later.
 
 ## Failed attempts
 (none — two test failures during work were fixture/expectation updates, resolved same turn)

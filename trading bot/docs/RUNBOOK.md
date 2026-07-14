@@ -44,24 +44,31 @@ python run_bot.py --test-alerts
   mid-day no longer loses that day's remaining candidate-generation windows.
   Logs still go to `bot.log` (same file, same tailing workflow as below).
 
-  **Status (2026-07-14): still not active — confirmed the exact cause.**
-  `launchctl bootstrap` now succeeds (previously returned "Bad request");
-  the job registers and shows `state = spawn scheduled`, but the spawned
-  process still exits immediately with `last exit code = 78` and zero log
-  output. Confirmed directly via
-  `log show --predicate 'eventMessage contains "tradingbot"'`: macOS's
-  `backgroundtaskmanagementd` recorded this exact LaunchAgent's identifier
-  the moment it was bootstrapped, and `launchd` logs "service inactive"
-  for it every ~30s (matching `ThrottleInterval`) — i.e. launchd keeps
-  trying and macOS Background Task Management keeps blocking it. This is
-  the same mechanism behind **System Settings → General → Login Items &
-  Extensions → Allow in the Background** — approve `tradingbot` (and
-  `tradingbot-deadmansswitch`, see below) there, then no further action is
-  needed; both are already loaded and waiting. Manually re-checking
-  `sfltool dumpbtm`'s per-user disposition needs an admin authorization
-  prompt — did not do that without asking first. Until approved, the bot
-  runs via the manual `nohup` path below (no auto-restart on crash —
-  restart it yourself if it dies).
+  **Status (2026-07-14): DECIDED NOT TO PURSUE FURTHER — root cause is
+  `KeepAlive` itself, not a missing approval.** `launchctl bootstrap`
+  succeeds and the job reaches `state = spawn scheduled`, but the spawned
+  process exits immediately with `last exit code = 78` every ~30s
+  (`ThrottleInterval`), regardless of the System Settings → General →
+  Login Items & Extensions → Allow in the Background toggle for `python3`
+  being ON (confirmed both entries there were enabled). Isolated the exact
+  cause with a throwaway test LaunchAgent (no `KeepAlive`, same
+  `/opt/homebrew/bin/python3` binary, `python3 --version`) — it registered
+  and ran instantly (exit 0). The dead-man's-switch LaunchAgent (below),
+  which also has no `KeepAlive`, likewise runs fine. So this is specifically
+  `KeepAlive` (a persistent, restart-forever daemon) being blocked — almost
+  certainly because Homebrew's `python3` isn't code-signed/notarized, and
+  macOS won't let an unsigned binary register as that class of background
+  daemon at all, independent of the visible toggle. Not something a plist
+  change or another Settings click fixes.
+  A periodic-supervisor workaround (a `StartInterval` script, same pattern
+  as the dead-man's switch, that checks if `run_bot.py` is alive and
+  restarts it via `nohup` if not — sidesteps `KeepAlive` entirely) was
+  proposed and explicitly declined by the user 2026-07-14: paper-trading,
+  low stakes, the dead-man's switch already detects a stale bot, manual
+  restart is an acceptable tradeoff. **The registration was unloaded
+  (`launchctl bootout`) to stop the futile retry loop; the bot runs via the
+  manual `nohup` path below (no auto-restart — restart it yourself if it
+  dies).** Revisit only if this becomes a bigger pain point.
 - `tmux` (manual alternative — lets you reattach and watch live output):
   ```bash
   tmux new -s bot
@@ -90,9 +97,15 @@ completed NYSE session.
 python -m monitoring.dead_mans_switch    # one-off manual check, exit 0 = healthy
 ```
 
-**Enable (once — separate approval from the main bot's LaunchAgent):**
+**Status (2026-07-14): active.** Unlike the main bot's LaunchAgent, this one
+has no `KeepAlive` (it's a periodic `StartInterval` check, not a persistent
+daemon), so it wasn't subject to the same macOS Background Task Management
+block — registered and ran successfully on the first bootstrap (confirmed
+via `dead_mans_switch.log`: real output, exit 0). Already loaded; runs every
+4h plus once on load.
+
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot-deadmansswitch.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot-deadmansswitch.plist  # if not already loaded
 launchctl list | grep deadmansswitch   # confirm registered
 ```
 Runs every 4h (`StartInterval`) plus once immediately on load. Same

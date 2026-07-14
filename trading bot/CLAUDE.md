@@ -78,6 +78,13 @@
 > (FTSE Russell redirects, stockanalysis.com is a JS-rendered shell with no exposed API,
 > SlickCharts 403s) — no viable alternative found, confirms the prior conclusion. Test count:
 > **909** (full suite green, zero known failures).
+> Later same day: dead-man's-switch confirmed **active** (ran successfully via launchd on
+> first bootstrap). Main bot's launchd auto-restart investigation closed, not active: user
+> enabled the System Settings toggle, but the block turned out to be `KeepAlive` itself
+> (persistent restart-forever daemons), not the toggle — isolated with a throwaway
+> no-`KeepAlive` test plist (same binary, ran fine). A `StartInterval`-based supervisor
+> workaround was proposed and declined by the user — bot stays on manual `nohup`
+> indefinitely; see `docs/RUNBOOK.md`'s launchd status note and `docs/STATE.md#open-items`.
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 
