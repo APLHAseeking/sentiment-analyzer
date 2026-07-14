@@ -73,3 +73,47 @@ def fetch_companyfacts_eps(cik: int, cache_dir: Path) -> pd.DataFrame:
     df = pd.DataFrame(facts).reindex(columns=["start", "end", "val", "form", "filed", "accn"])
     df.to_parquet(cache_path)
     return df
+
+
+_MIN_QUARTER_DAYS = 80
+_MAX_QUARTER_DAYS = 100
+
+
+def original_quarterly_eps(facts: pd.DataFrame) -> pd.DataFrame:
+    """Reduce raw companyfacts EPS facts to one row per single fiscal quarter:
+    the value+date as ORIGINALLY reported (earliest-filed, non-`/A` form).
+
+    Calendar-quarter label assignment mirrors SEC frames' own "CYyyyyQq"
+    convention closely enough for backtest purposes: single-quarter duration
+    (80-100 days) facts are bucketed by their `end` month. Not used to
+    reproduce the frames VALUE (companyfacts is the sole source of truth
+    here) — only to align with `_completed_quarters`'s calendar-quarter walk.
+
+    Returns columns [cy_year, cy_quarter, val, filed], one row per quarter,
+    sorted by filed date. Periods with no non-amendment filing are dropped —
+    never fall back to an amendment.
+    """
+    if facts.empty:
+        return pd.DataFrame(columns=["cy_year", "cy_quarter", "val", "filed"])
+
+    df = facts.copy()
+    df["start"] = pd.to_datetime(df["start"])
+    df["end"] = pd.to_datetime(df["end"])
+    # Kept separate from the original `filed` column (below) so the output
+    # preserves the raw filed value/format rather than a stringified Timestamp.
+    df["_filed_dt"] = pd.to_datetime(df["filed"])
+    duration_days = (df["end"] - df["start"]).dt.days
+    df = df[(duration_days >= _MIN_QUARTER_DAYS) & (duration_days <= _MAX_QUARTER_DAYS)]
+    df = df[~df["form"].str.contains("/A", na=False)]
+    if df.empty:
+        return pd.DataFrame(columns=["cy_year", "cy_quarter", "val", "filed"])
+
+    df = df.sort_values("_filed_dt")
+    earliest = df.groupby(["start", "end"], as_index=False).first()
+
+    end_month = earliest["end"].dt.month
+    earliest["cy_year"] = earliest["end"].dt.year
+    earliest["cy_quarter"] = ((end_month - 1) // 3) + 1
+
+    result = earliest.sort_values("_filed_dt")[["cy_year", "cy_quarter", "val", "filed"]]
+    return result.reset_index(drop=True)

@@ -98,3 +98,55 @@ def test_fetch_companyfacts_eps_request_exception_does_not_cache(tmp_path):
 
     assert df.empty
     assert not cache_file.exists()
+
+
+from screener.xbrl_pit_sue import original_quarterly_eps
+
+
+def test_original_quarterly_eps_picks_earliest_non_amendment():
+    facts = pd.DataFrame([
+        # Original 10-Q: single quarter, filed first.
+        {"start": "2022-01-01", "end": "2022-03-31", "val": 1.10,
+         "form": "10-Q", "filed": "2022-05-01", "accn": "a1"},
+        # Same period re-reported as comparative data in next year's 10-Q — later filed.
+        {"start": "2022-01-01", "end": "2022-03-31", "val": 1.10,
+         "form": "10-Q", "filed": "2023-05-01", "accn": "a2"},
+        # 9-month cumulative fact for a DIFFERENT period — must be excluded (not ~1 quarter).
+        {"start": "2022-01-01", "end": "2022-09-30", "val": 3.40,
+         "form": "10-Q", "filed": "2022-11-01", "accn": "a3"},
+    ])
+    result = original_quarterly_eps(facts)
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["val"] == 1.10
+    assert str(row["filed"]) == "2022-05-01"
+    assert row["cy_year"] == 2022
+    assert row["cy_quarter"] == 1
+
+
+def test_original_quarterly_eps_excludes_amendments_even_if_earlier():
+    facts = pd.DataFrame([
+        # A 10-K/A filed BEFORE the (hypothetically late-filed) original — still excluded.
+        {"start": "2021-01-01", "end": "2021-03-31", "val": 2.00,
+         "form": "10-Q/A", "filed": "2021-05-01", "accn": "b1"},
+        {"start": "2021-01-01", "end": "2021-03-31", "val": 1.95,
+         "form": "10-Q", "filed": "2021-05-10", "accn": "b2"},
+    ])
+    result = original_quarterly_eps(facts)
+    assert len(result) == 1
+    assert result.iloc[0]["val"] == 1.95
+    assert str(result.iloc[0]["filed"]) == "2021-05-10"
+
+
+def test_original_quarterly_eps_no_original_excludes_period():
+    facts = pd.DataFrame([
+        {"start": "2021-01-01", "end": "2021-03-31", "val": 2.00,
+         "form": "10-Q/A", "filed": "2021-05-01", "accn": "c1"},
+    ])
+    result = original_quarterly_eps(facts)
+    assert result.empty
+
+
+def test_original_quarterly_eps_empty_input():
+    result = original_quarterly_eps(pd.DataFrame(columns=["start", "end", "val", "form", "filed", "accn"]))
+    assert result.empty
