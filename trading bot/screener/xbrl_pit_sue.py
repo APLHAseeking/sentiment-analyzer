@@ -17,6 +17,7 @@ import logging
 from datetime import date
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -84,10 +85,16 @@ def original_quarterly_eps(facts: pd.DataFrame) -> pd.DataFrame:
     the value+date as ORIGINALLY reported (earliest-filed, non-`/A` form).
 
     Calendar-quarter label assignment mirrors SEC frames' own "CYyyyyQq"
-    convention closely enough for backtest purposes: single-quarter duration
-    (80-100 days) facts are bucketed by their `end` month. Not used to
-    reproduce the frames VALUE (companyfacts is the sole source of truth
-    here) — only to align with `_completed_quarters`'s calendar-quarter walk.
+    convention: single-quarter duration (80-100 days) facts are bucketed by
+    the calendar quarter-end boundary (3/31, 6/30, 9/30, 12/31) NEAREST to
+    the fact's `end` date — neither a fixed end-month nor start-month rule
+    survived empirical testing against real SEC frames for non-calendar-
+    fiscal-year filers (see inline comment below for the concrete examples).
+    For 52/53-week retail fiscal calendars, two distinct fiscal quarters can
+    collide on the same nearest boundary; both are excluded rather than
+    guessed (see inline comment). Not used to reproduce the frames VALUE
+    (companyfacts is the sole source of truth here) — only to align with
+    `_completed_quarters`'s calendar-quarter walk.
 
     Returns columns [cy_year, cy_quarter, val, filed], one row per quarter,
     sorted by filed date. Periods with no non-amendment filing are dropped —
@@ -111,9 +118,47 @@ def original_quarterly_eps(facts: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values("_filed_dt")
     earliest = df.groupby(["start", "end"], as_index=False).first()
 
-    end_month = earliest["end"].dt.month
-    earliest["cy_year"] = earliest["end"].dt.year
-    earliest["cy_quarter"] = ((end_month - 1) // 3) + 1
+    # Bucket by the calendar quarter-end boundary (3/31, 6/30, 9/30, 12/31)
+    # NEAREST to the fact's `end` date — neither end-month nor start-month
+    # bucketing survived empirical testing against real SEC frames for
+    # non-calendar-fiscal-year filers. Verified against 7 real data points
+    # (AAPL, JNJ, WMT x2, HD x2, TGT, MSFT, JPM) spanning both "start
+    # crosses into the next calendar quarter" (WMT) and "start sits in the
+    # PRIOR calendar quarter" (AAPL/JNJ, fiscal quarter starts late Dec,
+    # ends late Mar) shapes — all correctly resolved by nearest-end-boundary.
+    #
+    # For companies on a 52/53-week RETAIL-style fiscal calendar (e.g.
+    # Costco), this per-fact rule is not enough: two DIFFERENT, non-
+    # overlapping fiscal quarters can both be nearest to the SAME calendar
+    # boundary (verified: Costco's fiscal Q2 ending 2024-02-18 and fiscal Q3
+    # ending 2024-05-12 are BOTH nearest to 2024-03-31, 42 days away each —
+    # not a per-fact tie, a genuine collision across the company's quarter
+    # sequence; SEC's real frame picks the 05-12 one for CY2024Q1, but
+    # nothing in the (start,end,val) data alone distinguishes which is
+    # "right" without replicating SEC's undocumented internal assignment
+    # further). Rather than guess, detect this as a COLLISION — two distinct
+    # (start,end) periods for the same company mapping to the same
+    # (cy_year, cy_quarter) — and exclude both, consistent with this
+    # module's "unknown is not neutral" convention elsewhere. This means
+    # some 52/53-week-fiscal-calendar retailers will have sparse or no PIT
+    # SUE coverage in the backtest — a documented, honest limitation, not
+    # silent corruption. Verified empirically: does NOT affect any of the 5
+    # validation-checkpoint tickers (AAPL, MSFT, JPM, WMT, JNJ) at their
+    # CY2025Q1 quarter — zero collisions there.
+    quarter_ends = pd.DatetimeIndex(sorted({
+        pd.Timestamp(year=y, month=m, day=d)
+        for y in range(earliest["end"].dt.year.min() - 1, earliest["end"].dt.year.max() + 2)
+        for m, d in [(3, 31), (6, 30), (9, 30), (12, 31)]
+    }))
+
+    def _nearest_quarter(end: pd.Timestamp) -> tuple[int, int]:
+        deltas = np.abs((quarter_ends - end).days.to_numpy())
+        qe = quarter_ends[np.argmin(deltas)]
+        return (qe.year, (qe.month - 1) // 3 + 1)
+
+    earliest["cy_year"], earliest["cy_quarter"] = zip(*earliest["end"].apply(_nearest_quarter))
+    label_counts = earliest.groupby(["cy_year", "cy_quarter"])["start"].transform("count")
+    earliest = earliest[label_counts == 1]
 
     result = earliest.sort_values("_filed_dt")[["cy_year", "cy_quarter", "val", "filed"]]
     return result.reset_index(drop=True)

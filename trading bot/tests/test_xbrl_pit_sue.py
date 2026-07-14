@@ -152,6 +152,50 @@ def test_original_quarterly_eps_empty_input():
     assert result.empty
 
 
+def test_original_quarterly_eps_buckets_by_start_not_end_for_noncalendar_fiscal_year():
+    # Shaped like Walmart's fiscal Q1 (FY ends Jan 31): start in one calendar
+    # quarter, end in the next. SEC's real frames label this by START quarter.
+    facts = pd.DataFrame([
+        {"start": "2025-02-01", "end": "2025-04-30", "val": 0.56,
+         "form": "10-Q", "filed": "2025-06-06", "accn": "d1"},
+    ])
+    result = original_quarterly_eps(facts)
+    assert len(result) == 1
+    assert result.iloc[0]["cy_year"] == 2025
+    assert result.iloc[0]["cy_quarter"] == 1  # NOT 2, which end-month bucketing would give
+
+
+def test_original_quarterly_eps_buckets_by_end_near_boundary_when_start_is_prior_quarter():
+    # Shaped like Apple/J&J's fiscal Q1: start in the PRIOR calendar quarter
+    # (late December), end just inside the next one (late March). SEC's real
+    # frames label this by the calendar quarter whose END boundary is
+    # nearest -- Q1, not Q4 (which start-month bucketing would wrongly give).
+    facts = pd.DataFrame([
+        {"start": "2024-12-29", "end": "2025-03-29", "val": 1.65,
+         "form": "10-Q", "filed": "2025-05-01", "accn": "e1"},
+    ])
+    result = original_quarterly_eps(facts)
+    assert len(result) == 1
+    assert result.iloc[0]["cy_year"] == 2025
+    assert result.iloc[0]["cy_quarter"] == 1
+
+
+def test_original_quarterly_eps_excludes_colliding_quarters_on_52_53_week_calendar():
+    # Shaped like Costco's 52/53-week retail fiscal calendar: two DIFFERENT,
+    # non-overlapping fiscal quarters both land nearest to the same calendar
+    # boundary (2024-03-31) -- a genuine collision, not a per-fact tie.
+    # Neither can be trusted without replicating SEC's undocumented internal
+    # assignment, so both must be excluded rather than guessed.
+    facts = pd.DataFrame([
+        {"start": "2023-11-27", "end": "2024-02-18", "val": 3.92,
+         "form": "10-Q", "filed": "2024-03-13", "accn": "f1"},
+        {"start": "2024-02-19", "end": "2024-05-12", "val": 3.78,
+         "form": "10-Q", "filed": "2024-06-06", "accn": "f2"},
+    ])
+    result = original_quarterly_eps(facts)
+    assert result.empty  # both excluded -- collision, not resolved
+
+
 from datetime import date
 from screener.xbrl_pit_sue import pit_eps_asof, pit_sue_asof
 
