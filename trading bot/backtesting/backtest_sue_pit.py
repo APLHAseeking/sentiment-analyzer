@@ -312,3 +312,85 @@ def run_gate(events: pd.DataFrame, prices: pd.DataFrame) -> dict:
             "n_days": len(daily),
         }
     return results
+
+
+def stability_split(events: pd.DataFrame, prices: pd.DataFrame) -> dict:
+    """First-half vs second-half of the sample, split by event count (not
+    calendar-date equality — tradable_date is a python `date` object column,
+    not datetime64, so a count-based median split avoids a dtype detour and
+    gives two evenly-sized halves either way)."""
+    sorted_events = events.sort_values("tradable_date").reset_index(drop=True)
+    mid = len(sorted_events) // 2
+    return {
+        "first_half": run_gate(sorted_events.iloc[:mid], prices),
+        "second_half": run_gate(sorted_events.iloc[mid:], prices),
+    }
+
+
+_MIN_REGIME_EVENTS = 30  # confirmed with the user: events, not firm-days
+
+
+def regime_breakdown(events: pd.DataFrame) -> pd.DataFrame:
+    """Diagnostic-only stratification of TOP-QUINTILE-SUE events by the
+    market regime active on each event's tradable_date — NOT used to gate
+    the drift t-stats themselves (those are already PIT-correct regardless
+    of how dates get grouped here). Uses the already-fit production regime
+    model (regime_model.joblib) in forward-only/filtered-posterior classify
+    mode; the model's own parameters were fit on the full historical sample
+    (not walk-forward re-fit at each historical point), so this is a
+    descriptive grouping for the "does the edge survive in the current
+    regime" question, not a second independent PIT reconstruction — flagged
+    explicitly as a known simplification, confirmed acceptable since regime
+    labels here only bucket an already-PIT-correct return series for
+    diagnostic reporting, not re-derive it.
+
+    Sign-consistency check per the confirmed gate: only regime buckets with
+    >= _MIN_REGIME_EVENTS (30) top-quintile events carry veto weight if their
+    mean drift sign disagrees with the pooled result.
+    """
+    from features.feature_pipeline import FeatureConfig
+    from market_data.market_feed import get_regime_data
+    from regime.hmm_engine import HMMRegimeEngine
+    from system.config import settings
+
+    market_data = get_regime_data(years=15)
+    engine = HMMRegimeEngine(settings.regime)
+    engine.load(settings.regime.model_path)
+    states = engine.classify(market_data, FeatureConfig(), update_recent_labels=True)
+    regime_by_date = {s.date: s.regime_label for s in states}
+
+    # Same top-quintile SUE definition as the gate — sue is horizon-
+    # independent (computed once per event), so one threshold applies here.
+    drift_cols = [f"drift_{h}d" for h in HORIZONS]
+    sue_threshold = events["sue"].quantile(_SUE_TOP_QUANTILE)
+    top = events[events["sue"] >= sue_threshold].copy()
+    top["regime"] = top["tradable_date"].apply(lambda d: regime_by_date.get(str(d)))
+
+    counts = top.groupby("regime").size().rename("n_events")
+    present_drift_cols = [c for c in drift_cols if c in top.columns]
+    mean_drift = top.groupby("regime")[present_drift_cols].mean()
+    result = pd.concat([counts, mean_drift], axis=1).sort_values("n_events", ascending=False)
+    result["carries_veto_weight"] = result["n_events"] >= _MIN_REGIME_EVENTS
+    return result
+
+
+def naive_frames_comparison(events_before_drift: pd.DataFrame, prices: pd.DataFrame) -> dict:
+    """Re-anchor tradable_date = filed_date (T+0, the naive non-PIT anchor)
+    instead of filed_date + 1 trading day, on the SAME final (universe-
+    restricted) event set, then recompute drift and the gate. Quantifies
+    how much of any measured drift depends on the PIT lag — a diagnostic
+    re-anchoring, not a second data source. `events_before_drift` must
+    already have gone through add_tradable_date + restrict_to_pit_universe
+    (so the universe-membership decision is held fixed, isolating the
+    lag's effect on drift specifically, not re-confounding it with a
+    different universe-membership check at the naive date).
+
+    Confirmed with the user as the correct direction: PIT (d+1) should read
+    WEAKER than this naive (d+0) version. If PIT reads STRONGER, that is a
+    red flag for residual look-ahead — stop and investigate rather than
+    trust the report.
+    """
+    naive = events_before_drift.copy()
+    naive["tradable_date"] = naive["filed_date"]
+    naive_with_drift = compute_drift(naive, prices)
+    return run_gate(naive_with_drift, prices)

@@ -4,7 +4,12 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from backtesting.backtest_sue_pit import daily_calendar_excess_returns, run_gate
+from backtesting.backtest_sue_pit import (
+    compute_drift,
+    daily_calendar_excess_returns,
+    naive_frames_comparison,
+    run_gate,
+)
 
 
 def _synthetic_prices(n_days: int = 30) -> pd.DataFrame:
@@ -67,3 +72,40 @@ def test_run_gate_reports_stronger_tstat_for_a_real_edge_than_no_edge():
     results = run_gate(events, prices)
     assert results[20]["tstat"] > 5  # deterministic edge, no noise -> very large t
     assert results[20]["ir"] > 0.5
+
+
+def test_naive_frames_comparison_captures_announcement_day_jump_pit_misses():
+    """Behavioral test for the PIT-vs-naive honesty check itself: an
+    after-hours earnings jump realized the trading session AFTER the filed
+    date (a common real-world pattern, and exactly why the +1-trading-day
+    PIT lag exists). Naive (d+0) enters at filed_date's close — BEFORE the
+    jump — and its drift captures it. PIT (d+1) enters the next session's
+    close — AFTER the jump has already happened — and its drift must NOT
+    capture it. This is the "PIT reads weaker" property the user confirmed
+    as the expected, correct direction; if PIT captured the jump too, that
+    would indicate a bug in the entry-anchoring logic.
+    """
+    dates = pd.bdate_range("2021-01-01", periods=40)
+    price = np.full(len(dates), 100.0)
+    price[11:] = 105.0  # jump realized AFTER dates[10]'s close, i.e. AT dates[11]
+    prices = pd.DataFrame({"HIGH": price}, index=dates)
+
+    events_before_drift = pd.DataFrame([
+        {"ticker": "HIGH", "filed_date": dates[10].date(), "sue": 10.0,
+         "tradable_date": dates[11].date()},  # PIT: filed + 1 trading day
+    ])
+
+    naive_results = naive_frames_comparison(events_before_drift, prices)
+    pit_events = events_before_drift.copy()
+    pit_drift = compute_drift(pit_events, prices)
+
+    # Naive enters at dates[10] (pre-jump, price=100) — its per-event drift
+    # over any horizon past the jump includes the full 5% move.
+    naive_event_drift = compute_drift(
+        events_before_drift.assign(tradable_date=events_before_drift["filed_date"]), prices
+    )
+    assert naive_event_drift.iloc[0]["drift_20d"] > 0.04  # captures the jump
+
+    # PIT enters at dates[11] (post-jump, price=105 already) — flat afterward,
+    # so its drift over the same horizon is ~0, not ~5%.
+    assert abs(pit_drift.iloc[0]["drift_20d"]) < 0.001  # jump already priced in at entry
