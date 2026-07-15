@@ -8,17 +8,30 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-2026-07-15 (later same day): implemented the user-approved "widen screener review" design
-(top-N 12→30 via new `UniverseConfig.screener_top_n`, daily cap 3→5) — commit `7a185ce`.
-Live-verified the running bot (PID 71495) 3 separate times that day and found it wedged
-each time; root-caused to real macOS sleep events (not a code bug — see Done). Also found
-and fixed a real, severe latent bug (`sqlite3.Row` has no `.get()`, 5 call sites, only
-reachable once real positions exist) that crashed today's catch-up pipeline and would have
-crashed the deleverage circuit-breaker's force-close path — commit `e7b15fa`. Bot now runs
-`nohup caffeinate -i -s python3 run_bot.py` (PID 11292 as of last restart) instead of bare
-`nohup python3`.
+Session closing (2026-07-15, ~19:00 CEST). Final live check before close: bot process PID
+11292 healthy (`caffeinate -i -s` wrapped, up ~41 min), 11 open positions (VICI/PFE from
+07-14 + HIG/FSLR/VZ/AFL/LVS + hedges SH/PSQ/RWM/EFZ all opened 07-15), no `RISK_LOCKOUT`,
+git status clean (only the pre-existing unrelated `MIGRATION-LOG.md` drift, not touched).
+An OS-detached watcher script (survives this session closing — confirmed reparented to
+launchd, PPID=1) is running: sleeps until 2026-07-16 15:45 CEST, then writes a status check
+(process alive? `job_runs` row for that date? did catch-up have to fire, meaning the 15:40
+cron itself still failed?) to `trading bot/tomorrow_1540_check.log`. Read that file directly,
+or just ask a future session to check — either works.
+
+Earlier the same day: implemented the user-approved "widen screener review" design (top-N
+12→30 via new `UniverseConfig.screener_top_n`, daily cap 3→5) — commit `7a185ce`. Found the
+bot wedged 3 separate times that day; root-caused to real macOS sleep events (not a code
+bug — see Done). Also found and fixed a real, severe latent bug (`sqlite3.Row` has no
+`.get()`, 5 call sites, only reachable once real positions exist) that crashed the
+catch-up pipeline and would have crashed the deleverage circuit-breaker's force-close
+path — commit `e7b15fa`. Bot now runs `nohup caffeinate -i -s python3 run_bot.py` instead
+of bare `nohup python3`.
 
 ## Next
+- Check `trading bot/tomorrow_1540_check.log` after 2026-07-16 15:45 CEST (written by an
+  OS-detached watcher, PPID=1, started 2026-07-15) — confirms whether the caffeinate fix
+  held overnight without needing a manual restart. If the file's missing, the watcher died;
+  just check live (`ps aux | grep run_bot.py` + `job_runs` for that date) instead.
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's `russell1000_constituent`
   endpoint (existence unconfirmed), wire up if it works. 4 free/no-signup alternates tried
   across sessions (iShares, FTSE Russell, stockanalysis.com, SlickCharts) — none viable.
