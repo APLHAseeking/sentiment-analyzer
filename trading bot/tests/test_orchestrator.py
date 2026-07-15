@@ -513,7 +513,12 @@ def test_process_fundamental_candidate_applies_correlation_multiplier(mocker, or
 
 def test_process_fundamental_candidate_returns_false_when_open_position_fails(mocker, orch):
     """Same failed-fill contract as _process_signal: a False from open_position
-    must propagate, not be swallowed into an unconditional True."""
+    must propagate, not be swallowed into an unconditional True.
+
+    Also: a failed fill must NOT persist a fundamental_signals row — that table
+    feeds run_bot.py --backtest's signal set, and a candidate whose order never
+    filled (e.g. scored outside NYSE hours) is not a realizable signal (see
+    trading bot/docs/CLAUDE-REFERENCE.md#history, 2026-07-14 dig-in)."""
     from bot.ai_analyst import EntryScore
     from risk.risk_manager import RiskVeto
     from screener.factor_scorer import FactorCandidate
@@ -530,6 +535,7 @@ def test_process_fundamental_candidate_returns_false_when_open_position_fails(mo
     orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
     mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
     orch._portfolio.open_position.return_value = False  # simulates a fill-poll timeout
+    insert_spy = mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)
 
     candidate = FactorCandidate(
         ticker="MSFT", composite_score=80, value_score=25,
@@ -538,6 +544,7 @@ def test_process_fundamental_candidate_returns_false_when_open_position_fails(mo
     result = orch._process_fundamental_candidate(candidate, {}, set())
 
     assert result is False
+    insert_spy.assert_not_called()
 
 
 # ------------------------------------------------------------------

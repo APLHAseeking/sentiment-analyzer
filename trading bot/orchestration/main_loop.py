@@ -1183,6 +1183,8 @@ class RegimeAwareOrchestrator:
             signal_source=signal_type,
             initial_stop_pct=initial_stop_pct,
         )
+        if not opened:
+            return False
         try:
             insert_fundamental_signal(
                 ticker=ticker,
@@ -1195,8 +1197,6 @@ class RegimeAwareOrchestrator:
             )
         except Exception as exc:
             log.debug("Could not persist fundamental signal for %s: %s", ticker, exc)
-        if not opened:
-            return False
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(
             log, EventType.ORDER_PLACED,
