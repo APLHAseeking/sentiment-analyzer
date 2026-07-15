@@ -114,9 +114,7 @@ class Portfolio:
         # overnight / between-poll gaps are covered. The polled enforce_stop_losses()
         # acts as backstop and updates (trails) the stop upward as the peak rises.
         stop_price = actual_entry_price * (1 - stop_pct_used / 100)
-        initial_stop_id = self.broker.place_stop_order(
-            ticker=ticker, qty=actual_shares, stop_price=stop_price
-        )
+        initial_stop_id = self._place_stop_with_retry(ticker, actual_shares, stop_price)
         if initial_stop_id is None:
             # Placement failed — the position is open with zero resting stop.
             # enforce_stop_losses() polling is the backstop, but it's not
@@ -198,6 +196,28 @@ class Portfolio:
         db.delete_position(ticker)
         if hasattr(self.broker, "cancel_stop_order"):
             self.broker.cancel_stop_order(ticker)
+
+    def _place_stop_with_retry(self, ticker: str, qty: float, stop_price: float,
+                               max_retries: int = 3) -> str | None:
+        """Alpaca's wash-trade check can reject a stop placed immediately after
+        its opposite-side buy fills (it lags our own fill confirmation) —
+        code 40310000, "opposite side market/stop order exists". Retry with
+        backoff before surfacing the no-resting-stop alert; a real rejection
+        (e.g. bad price) fails the same way each attempt and still alerts."""
+        import time
+        stop_id = None
+        for attempt in range(max_retries):
+            stop_id = self.broker.place_stop_order(
+                ticker=ticker, qty=qty, stop_price=stop_price
+            )
+            if stop_id is not None:
+                return stop_id
+            if attempt < max_retries - 1:
+                delay = 1.0 * (attempt + 1)
+                log.warning("Stop placement failed for %s (attempt %d/%d) — retrying in %.0fs",
+                            ticker, attempt + 1, max_retries, delay)
+                time.sleep(delay)
+        return stop_id
 
     def _place_sell_with_retry(self, ticker: str, qty: float, max_retries: int = 3):
         import time

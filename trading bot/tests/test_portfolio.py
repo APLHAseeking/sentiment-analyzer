@@ -514,9 +514,12 @@ def test_open_position_registers_stop_order(mock_broker, db):
 
 
 def test_open_position_alerts_when_initial_stop_placement_fails(mock_broker, db, mocker):
-    """place_stop_order returns None on failure. The position is still opened
-    (DB insert already committed before the stop call), but a naked position
-    with zero resting stop must fire an alert — not fail silently."""
+    """place_stop_order returning None on every attempt (e.g. a real rejection,
+    not the transient wash-trade race) must exhaust retries — the position is
+    still opened (DB insert already committed before the stop call), but a
+    naked position with zero resting stop must fire an alert, not fail
+    silently."""
+    mocker.patch("time.sleep")  # skip real backoff delay in test
     mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
     mock_broker.get_positions.return_value = []
     mock_broker.place_stop_order.return_value = None
@@ -525,8 +528,25 @@ def test_open_position_alerts_when_initial_stop_placement_fails(mock_broker, db,
     result = portfolio.open_position("AAPL", 5.0, None, "test", 100.0)
 
     assert result is True
-    mock_broker.place_stop_order.assert_called_once()
+    assert mock_broker.place_stop_order.call_count == 3
     mock_fire_alert.assert_called_once()
+
+
+def test_open_position_retries_initial_stop_after_wash_trade_rejection(mock_broker, db, mocker):
+    """Alpaca's wash-trade check can reject a stop placed immediately after its
+    opposite-side buy fills (transient — its fill-state propagation lags ours).
+    A later attempt succeeding must NOT alert or leave the position unprotected."""
+    mocker.patch("time.sleep")  # skip real backoff delay in test
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+    mock_broker.get_positions.return_value = []
+    mock_broker.place_stop_order.side_effect = [None, "stop-id-123"]
+    portfolio = Portfolio(broker=mock_broker)
+
+    result = portfolio.open_position("AAPL", 5.0, None, "test", 100.0)
+
+    assert result is True
+    assert mock_broker.place_stop_order.call_count == 2
+    mock_fire_alert.assert_not_called()
 
 
 def test_open_position_stop_uses_custom_trailing_pct(mock_broker, db):
