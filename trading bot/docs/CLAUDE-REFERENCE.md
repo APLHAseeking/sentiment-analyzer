@@ -532,3 +532,47 @@ closed market.
 > than a naive T+0 anchor at both horizons, as expected). Per the pre-committed decision
 > rule, the SUE sub-weight stays at 0.15 — `screener/factor_scorer.py` untouched. Test
 > count: **942** (full suite green, zero known failures).
+>
+> **2026-07-14 (live dig-in session)**: user reported the bot "not trading" again. Root
+> caused two bugs, live-verified a restart, then a third bug surfaced live. (1)
+> `_process_fundamental_candidate` (`orchestration/main_loop.py`) called
+> `insert_fundamental_signal()` unconditionally, before checking `open_position`'s return
+> value — every candidate scored outside NYSE hours (the closed-market pipeline-timing bug
+> fixed earlier the same day, commit `b4938bb`) still landed a `fundamental_signals` row
+> with a real conviction/expected-return score despite the order never filling. That's
+> why several days of "candidates" (CF/VZ 07-10, NEM/HIG/BIIB 07-13) showed zero matching
+> `positions` rows — traced each one's timestamp to outside the 15:30-22:00 CEST session.
+> Also matters beyond diagnostics: `run_bot.py --backtest` feeds `get_fundamental_signals()`
+> straight into its signal set, so unfillable candidates were silently inflating the
+> backtest's opportunity set. Fixed: move the insert after the `opened` check (commit
+> `a0cd1c4`). (2) The live process (PID 51755, already running the correct 15:40-cron code)
+> had gone completely idle since 13:57 — 2+ hours with zero cron jobs dispatched, no error
+> logged, no `job_runs` row for the day. A process `sample` (macOS) showed both the
+> scheduler's main thread and its single worker thread genuinely parked (empty queue, timed
+> wait) — not stuck inside a job. Checked and ruled out: system sleep (`pmset -g log`, none
+> in the window), `CronTrigger` computation (tested standalone, correct), APScheduler's own
+> `_process_jobs`/`MemoryJobStore` source (read directly, no obvious bug for this shape).
+> No definitive code-level cause found — flagged as a live wedge distinct from the
+> previously-fixed missing-timeout hang (that pattern shows the worker thread stuck inside
+> a job's stack; this was idle). Restarted with user approval (new PID 62191) — cleared it
+> immediately; the catch-up-on-restart path fired and completed the pipeline, producing the
+> bot's **first-ever real fundamental fills**: VICI (1.3% NAV) and PFE (1.1% NAV). (3) That
+> surfaced a third bug: both fills' initial stop-loss placement was rejected by Alpaca —
+> `code 40310000, "potential wash trade detected... opposite side market/stop order
+> exists"` — identical on both tickers, leaving two real (paper) positions naked. Root
+> cause: Alpaca's wash-trade check still sees the just-filled buy as an opposite-side order
+> for that symbol at the moment the stop is submitted — its fill-state propagation lags our
+> own `_poll_order_fill` confirmation. The existing `enforce_stop_losses()` poll (next
+> `run_intraday_check`, 20:00 CEST) caught and fixed both ~2h later, exactly as its own
+> backstop comment describes — confirmed via `bot.log` (`Stop order placed PFE ...`,
+> `Stop order placed VICI ...` at 20:00:00-01). Fixed the root cause for future entries
+> too: `Portfolio.open_position`'s initial stop placement now retries 3x with 1s/2s backoff
+> before alerting, mirroring the existing `_place_sell_with_retry` convention (commit
+> `91607a5`); `enforce_stop_losses`' own trail-up placement is a separate, untouched call
+> site. Both (1) and (3) proven via git-stash red/green (test failed against pre-fix code,
+> passed after restore). A manual one-shot `enforce_stop_losses()` trigger to close the
+> live gap immediately was proposed and user-approved, but by execution time the scheduled
+> 20:00 run had already resolved it — skipped as no longer necessary rather than taking a
+> live-trading action with no remaining justification. Full suite: **942 passed** (fresh
+> re-run after both fixes, matches the SUE-PIT-backtest count above — that work landed on
+> disk from a concurrent session mid-way through this one).

@@ -100,6 +100,26 @@
 > needed a collision-exclusion rule for 52/53-week retail fiscal calendars), and a history-
 > truncation bug that starved the SUE seasonal-random-walk denominator and produced absurd
 > outlier values. Honesty check (PIT vs. naive T+0 anchor) confirmed no residual look-ahead.
+> 2026-07-14 (live dig-in session): user reported the bot "not trading" again; found two
+> distinct bugs. (1) `_process_fundamental_candidate` persisted `fundamental_signals` rows
+> unconditionally, before checking `open_position`'s return value — every candidate scored
+> outside NYSE hours (the closed-market timing bug from earlier the same day) still landed
+> a row with a real conviction score despite never filling, which is why days of "candidates"
+> showed zero positions; also silently inflated `run_bot.py --backtest`'s signal set. Fixed:
+> insert now gated on `opened`. (2) The live process (PID 51755, running the correct 15:40
+> code) had its `BlockingScheduler` wedge — both worker and main threads idle, zero jobs
+> dispatched for 2h+, no error logged (root cause not fully identified; `pmset`/`sample`
+> ruled out system sleep and job hangs). Restarted (new PID 62191) — cleared it, and the
+> catch-up path fired immediately, producing the bot's **first-ever real fundamental
+> fills**: VICI and PFE. That surfaced a third, live bug: both stops were rejected by
+> Alpaca's wash-trade check (40310000, "opposite side market/stop order exists" — its
+> fill-state propagation lags our own poll confirmation), leaving both positions naked for
+> ~2h until the next `enforce_stop_losses()` poll (20:00 CEST) placed them as designed.
+> Fixed: `open_position`'s initial stop placement now retries 3x with backoff, mirroring
+> the existing `_place_sell_with_retry` pattern (`enforce_stop_losses`' own trail-up call
+> is a separate, untouched path). Both fixes proven via stash-and-rerun red/green. Test
+> count: **942** (full suite green, zero known failures; count moved from 932 mid-session
+> as a concurrent SUE-PIT-backtest session landed its own test files on disk).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

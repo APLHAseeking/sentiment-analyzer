@@ -6,11 +6,16 @@ several sessions (dead-for-3-days hang, phantom fills, wrong pipeline timing, NA
 bug — see Done); bot is currently live, restarted, healthy.
 
 ## Now
+Live dig-in session (2026-07-14/15) complete: found and fixed the reason candidates weren't
+converting to trades (unconditional fundamental_signals insert) plus a live scheduler wedge
+(restarted, PID 62191) plus a live stop-loss gap on the bot's first two real fills (see
+Done). Full suite re-verified 942 passed after both fixes. Bot currently running, healthy,
+both open positions (VICI, PFE) confirmed protected by resting stops.
 Independent verification session (2026-07-14) complete: re-ran full suite (909 passed,
 matches claim), live-verified bot health, found and fixed a real deploy gap (see Done).
 Dead-man's-switch confirmed ACTIVE via launchd. Main bot's launchd auto-restart is a closed
 decision, not active. Russell 1000 remains genuinely blocked on the user obtaining an API
-key — see Next. Bot now running current code (PID 51755, restarted 11:06 CEST).
+key — see Next.
 Same-day follow-up: built and ran the SUE PIT backtest end to end (see Done) — gate failed,
 SUE sub-weight stays at 0.15, full suite now 942 passed.
 
@@ -47,6 +52,20 @@ SUE sub-weight stays at 0.15, full suite now 942 passed.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3).
+- 2026-07-14/15 (live dig-in session, commits a0cd1c4 + 91607a5): root-caused why fundamental
+  candidates weren't converting to trades — `_process_fundamental_candidate` persisted
+  `fundamental_signals` rows even when `open_position` failed, so every candidate scored
+  outside NYSE hours (07-10, 07-13) looked like a real signal despite never filling; also
+  fed unfillable candidates into `run_bot.py --backtest`'s signal set. Fixed: insert now
+  gated on `opened`. Separately found the live process (PID 51755) had gone idle for 2h+
+  with zero cron dispatch and no error logged — ruled out system sleep and job-hang via a
+  process `sample`; no definitive code cause found. Restarted with approval (new PID
+  62191) — cleared it, producing the bot's first-ever real fills (VICI, PFE). That
+  surfaced a third bug: both stops rejected by Alpaca's wash-trade check (transient —
+  fill-state propagation lag), leaving both positions naked until the existing
+  `enforce_stop_losses()` backstop caught it ~2h later as designed. Fixed the root cause
+  for future entries: initial stop placement now retries 3x with backoff. Both fixes
+  proven via git-stash red/green. Full suite 942 passed, 0 known failures.
 - 2026-07-14 (SUE PIT backtest, same session as the verification above): built a full
   point-in-time-correct backtest of the SUE signal per a pre-committed plan
   (`docs/superpowers/plans/2026-07-14-sue-pit-backtest.md`), using subagent-driven
