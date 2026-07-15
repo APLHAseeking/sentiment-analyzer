@@ -8,21 +8,27 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-Session closing (2026-07-15). Live-verified fresh before closing: bot process PID 71495
-(restarted 11:22 CEST today, postdates all fixes below), dead-man's-switch active,
-`RISK_LOCKOUT` absent, nothing mid-run, full suite 942 passed. SUE PIT backtest is complete
-and closed (null result — weight stays 0.15, nothing enabled). No open blockers except
-Russell 1000 (genuinely stuck on `FMP_API_KEY`) and requirements.txt pinning (not started).
+2026-07-15 (later same day): implemented the user-approved "widen screener review" design
+(top-N 12→30 via new `UniverseConfig.screener_top_n`, daily cap 3→5) — commit `7a185ce`.
+Live-verified the running bot (PID 71495) 3 separate times that day and found it wedged
+each time; root-caused to real macOS sleep events (not a code bug — see Done). Also found
+and fixed a real, severe latent bug (`sqlite3.Row` has no `.get()`, 5 call sites, only
+reachable once real positions exist) that crashed today's catch-up pipeline and would have
+crashed the deleverage circuit-breaker's force-close path — commit `e7b15fa`. Bot now runs
+`nohup caffeinate -i -s python3 run_bot.py` (PID 11292 as of last restart) instead of bare
+`nohup python3`.
 
 ## Next
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's `russell1000_constituent`
   endpoint (existence unconfirmed), wire up if it works. 4 free/no-signup alternates tried
   across sessions (iShares, FTSE Russell, stockanalysis.com, SlickCharts) — none viable.
 - requirements.txt pinning/lockfile: still not started.
-- Root cause of the 2026-07-14 2h+ scheduler wedge (PID 51755 went idle, zero cron dispatch,
-  no error logged) was never found — worked around via restart, not fixed at the source.
-  Watch for recurrence; if it happens again, a process `sample` while it's still wedged
-  (not after restart) is the next diagnostic step.
+- Sleep-induced wedges: `caffeinate -i -s` (in place 2026-07-15) covers idle/AC sleep but NOT
+  lid-closed (clamshell) sleep — verified via research, not fixable by caffeinate at all. If
+  it recurs specifically from a lid-close, next step is user's call between `sudo pmset -a
+  disablesleep 1` (same laptop, real battery/heat tradeoff) or migrating off the laptop
+  entirely (Oracle Cloud Always Free / a small VPS / a home always-on device) — see
+  `docs/RUNBOOK.md#sleep-wedges` for the full writeup. Not actioned without the user choosing.
 
 ## Constraints
 - User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix. [CLOSED 2026-07-14 — root cause is KeepAlive itself being blocked by macOS Background Task Management for an unsigned binary, not fixable; user accepted manual nohup + dead-man's-switch instead.]
@@ -42,10 +48,10 @@ Russell 1000 (genuinely stuck on `FMP_API_KEY`) and requirements.txt pinning (no
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
-- Test command: cd "trading bot" && pytest — 942 tests green as of 2026-07-15, 0 known failures
-- Branch: feature/profitable-strategies-lowvol-residmom-insider; 40+ commits ahead of origin, not pushed
+- Test command: cd "trading bot" && pytest — 947 tests green as of 2026-07-15 (later same day), 0 known failures
+- Branch: feature/profitable-strategies-lowvol-residmom-insider; 45+ commits ahead of origin, not pushed
 - SUE PIT backtest modules: screener/xbrl_pit_sue.py (companyfacts fetch/cache, PIT quarterly EPS, PIT SUE), backtesting/pit_constituents.py (PIT S&P 500 membership), backtesting/backtest_sue_pit.py (drift/HAC/gate). Report: trading bot/docs/SUE_PIT_BACKTEST_2026-07-14.md. Cache dir trading bot/pit_cache/ (gitignored).
-- Bot process: check via `ps aux | grep run_bot.py`; started via `nohup python3 run_bot.py > bot.log 2>&1 &` from inside "trading bot/" (note: `python`, not `python3`, does not exist in this shell — use python3). Dead-man's-switch: `launchctl list | grep tradingbot`.
+- Bot process: check via `ps aux | grep run_bot.py`; started via `nohup caffeinate -i -s python3 run_bot.py > bot.log 2>&1 &` from inside "trading bot/" (caffeinate wrapper added 2026-07-15, see RUNBOOK.md#sleep-wedges; note `python`, not `python3`, does not exist in this shell — use python3). Dead-man's-switch: `launchctl list | grep tradingbot`.
 - Live health check command sequence: bot process alive + its start time vs latest commit timestamps (stale-process-running-old-code is a recurring real failure mode, caught 3x this session) + `sqlite3 trading.db "SELECT * FROM job_runs ORDER BY rowid DESC LIMIT 3;"` + `ls RISK_LOCKOUT` (should not exist) + `launchctl list | grep tradingbot`.
 - docs/guardrails/MIGRATION-LOG.md has PRE-EXISTING uncommitted changes (not this task's, predates this session) — do not commit blindly.
 
@@ -95,13 +101,42 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
 - 2026-07-06/10: Phase 1 review (A1-A8, B1-B3 XBRL/short-interest/insider signals,
   commits 6c77981..868aa2d); test-DB-pollution fix; cross-model debate feature;
   scheduler catch-up-on-restart; iShares hardening.
+- 2026-07-15 (widen screener review, commit `7a185ce`): user wanted more trades — found the
+  real bottleneck was `_SCREENER_TOP_N=12` (only top 12 of 503 factor-scored tickers reached
+  AI scoring) and `max_positions_per_day=3`. Brainstormed with user (spec at
+  `docs/superpowers/specs/2026-07-15-expand-screener-review-design.md`), raised both to 30
+  and 5, promoted the top-N cutoff to a proper `UniverseConfig.screener_top_n` field matching
+  the codebase's existing config pattern. 3 new/updated tests, full suite 945 passed.
+- 2026-07-15 (sqlite3.Row.get() bug, commit `e7b15fa`): live-verifying the widen-review deploy
+  found the catch-up pipeline had crashed (`AttributeError: 'sqlite3.Row' object has no
+  attribute 'get'`) — 5 call sites in `orchestration/main_loop.py`, all only reachable once
+  real open positions exist (first happened 2026-07-14). Two sit inside the deleverage
+  circuit-breaker's force-close path — a real DELEVERAGE event would have closed zero
+  positions. Root cause of the bug surviving this long: existing tests mocked
+  `get_open_positions()` with dict literals (which support `.get()` fine), never exercising
+  the real `sqlite3.Row` return type. Fixed all 5 sites, converted 2 tests + added 2 new ones
+  to use real rows via the `db` fixture (proven red/green). Full suite 947 passed.
+- 2026-07-15 (sleep-induced scheduler wedges, commit `0c229e1`): the bot wedged 3 times in 3
+  days (silent, zero cron dispatch, no error) — previously assumed an unexplained APScheduler
+  bug (2026-07-14 STATE.md said "ruled out sleep," which was wrong — a re-check with a
+  corrected `pmset -g log` grep found real Sleep events in that exact window too). All 3
+  wedges directly correlate with a genuine `Entering Sleep state` log line within minutes of
+  onset; a process `sample` taken while wedged each time showed genuinely idle threads, not a
+  hang. Fixed: `caffeinate -i -s` now wraps every launch. Researched and documented (verified
+  via web search, not assumed) that this doesn't cover lid-closed/clamshell sleep — no
+  `caffeinate` assertion can override the hardware lid sensor without an external display.
+  Wrote up the full escalation path (`sudo pmset -a disablesleep 1` vs. migrating off the
+  laptop entirely) in `docs/RUNBOOK.md#sleep-wedges` — a decision left to the user, not
+  actioned.
 
 ## Open items
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
 - Insider routine-buyer filter — recorded in EDGE_BACKLOG.md, viable after ~1yr of insider history (feed started 2026-07-07)
 - docs/guardrails/MIGRATION-LOG.md still shows as modified in `git status` — pre-existing uncommitted drift, predates this session, not touched
 - Russell 1000 universe unresolved — genuinely blocked on the user obtaining `FMP_API_KEY` (or a paid data source); no free/no-signup alternative found after 4 sources tried across sessions
-- 2026-07-14 scheduler wedge (PID 51755 idle 2h+, no error) — root cause never found, only worked around via restart
+- Scheduler wedges (2026-07-14 x2, 2026-07-15 x1) — RESOLVED, root cause found: real macOS
+  sleep events (`pmset -g log`), not a code bug. `caffeinate -i -s` now wraps every launch;
+  clamshell/lid-closed sleep is a known remaining gap, see `## Next`.
 
 ## Failed attempts
 (none this session — every fix attempt that failed a first pass was corrected same-turn, e.g. two wrong SUE quarter-bucketing hypotheses before the verified-correct one, documented in the SUE PIT backtest commit history rather than repeated here)
