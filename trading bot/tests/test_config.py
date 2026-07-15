@@ -145,3 +145,12 @@ def test_validate_accepts_cross_model_debate_with_both_keys():
     sizing = replace(Settings().sizing, enable_cross_model_debate=True)
     s = Settings(credentials=creds, sizing=sizing)
     s.validate()  # should not raise
+
+
+def test_max_positions_per_day_default_is_five():
+    assert RiskConfig().max_positions_per_day == 5
+
+
+def test_universe_config_screener_top_n_default_is_thirty():
+    from system.config import UniverseConfig
+    assert UniverseConfig().screener_top_n == 30

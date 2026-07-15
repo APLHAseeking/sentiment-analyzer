@@ -56,6 +56,19 @@ def test_pipeline_skips_entries_when_at_capacity(mocker, orch):
     assert orch._portfolio.enforce_stop_losses.call_count >= 1
 
 
+def test_run_morning_pipeline_passes_configured_screener_top_n(mocker, orch):
+    """run_factor_screen's top_n must come from UniverseConfig.screener_top_n,
+    not a hardcoded constant — proves the config value is actually wired
+    through the call site, not just declared and unused."""
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    screen_spy = mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[])
+
+    orch.run_morning_pipeline()
+
+    call_kwargs = screen_spy.call_args[1]
+    assert call_kwargs["top_n"] == orch._cfg.universe.screener_top_n
+
+
 def test_congressional_phase_receives_fundamental_ticker_set(mocker, orch):
     """A ticker present in both the fundamental screener's candidates and the
     qualified congressional disclosures must reach _process_signal with that

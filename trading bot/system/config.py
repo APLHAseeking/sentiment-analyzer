@@ -56,6 +56,10 @@ class UniverseConfig:
     # this % of float from the factor screener (documented underperformance of
     # heavily shorted names + squeeze tail risk in a long-only book). 0 disables.
     max_short_pct_float: float = 20.0
+    # Top N factor-scored candidates (by composite_score) passed to the paid AI
+    # entry-scoring step per pipeline run. Raising this widens the review pool
+    # without changing the entry conviction/cost hurdle.
+    screener_top_n: int = 30
 
 
 @dataclass(frozen=True)
@@ -208,7 +212,7 @@ class SizingConfig:
 class RiskConfig:
     # Position limits
     max_positions: int = 20
-    max_positions_per_day: int = 3
+    max_positions_per_day: int = 5
     max_position_pct: float = 8.0         # % of NAV per position
     max_sector_pct: float = 30.0          # sector concentration cap
     max_adv_pct: float = 5.0              # max % of avg daily dollar volume

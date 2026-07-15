@@ -21,7 +21,7 @@ def test_cannot_open_at_max_positions(portfolio, mock_broker):
     assert portfolio.can_open_new_position() is False
 
 def test_cannot_open_after_daily_limit(portfolio, mock_broker):
-    portfolio._opened_today = 3
+    portfolio._opened_today = portfolio._risk.max_positions_per_day
     assert portfolio.can_open_new_position() is False
 
 def test_open_position_places_order(portfolio, mock_broker):

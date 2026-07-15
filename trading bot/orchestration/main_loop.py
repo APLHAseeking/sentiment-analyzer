@@ -77,7 +77,6 @@ from technical.sector_map import SECTOR_ETF_MAP
 log = logging.getLogger(__name__)
 _AMS = ZoneInfo("Europe/Amsterdam")
 _NYSE = xcals.get_calendar("XNYS")
-_SCREENER_TOP_N = 12
 
 
 def _nyse_is_open_now() -> bool:
@@ -567,7 +566,7 @@ class RegimeAwareOrchestrator:
                     log.info("No pre-fetched screener data — fetching live (pipeline will be slower)")
                 candidates = run_factor_screen(
                     universe,
-                    top_n=_SCREENER_TOP_N,
+                    top_n=self._cfg.universe.screener_top_n,
                     research_workers=self._cfg.universe.research_concurrency,
                     regime_label=self._regime_state.regime_label if self._regime_state else None,
                     prefetched=prefetch,
