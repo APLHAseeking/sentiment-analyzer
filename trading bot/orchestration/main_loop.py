@@ -529,7 +529,7 @@ class RegimeAwareOrchestrator:
             # --- Correlation filter: pre-load holdings returns ----------
             _long_tickers = [
                 pos["ticker"] for pos in get_open_positions()
-                if pos.get("signal_source") != "hedge"
+                if pos["signal_source"] != "hedge"
             ]
             self._corr_filter.load_holdings_returns(_long_tickers)
             # ------------------------------------------------------------
@@ -1227,7 +1227,10 @@ class RegimeAwareOrchestrator:
             nav = cash + sum(p["qty"] * p["current_price"] for p in positions) if positions else cash
 
             # Sector allocation from long positions only (exclude hedges)
-            open_positions_meta = get_open_positions()
+            # dict(row) up front: get_open_positions() returns sqlite3.Row, which has
+            # no .get() — the next(...) fallback below is a plain {} either way, so
+            # meta must be a real dict in both branches for .get() to be safe.
+            open_positions_meta = [dict(p) for p in get_open_positions()]
             sector_allocation: dict[str, float] = {}
             if positions and nav > 0:
                 for pos in positions:
@@ -1371,7 +1374,7 @@ class RegimeAwareOrchestrator:
         log.info("Exit review started")
         positions = [
             pos for pos in get_open_positions()
-            if pos.get("signal_source") != "hedge"
+            if pos["signal_source"] != "hedge"
         ]
         if not positions:
             return
@@ -1419,7 +1422,7 @@ class RegimeAwareOrchestrator:
                         mark_take_profit_taken(pos["ticker"])
                         log.info("Reduced %s: %s", pos["ticker"], decision.rationale)
             except Exception:
-                log.exception("Exit review failed for %s", pos.get("ticker", "?"))
+                log.exception("Exit review failed for %s", pos["ticker"])
 
     # ------------------------------------------------------------------
     # Intraday stop-loss check (US market hours)
@@ -1465,7 +1468,7 @@ class RegimeAwareOrchestrator:
         """
         open_pos = get_open_positions()
         for pos in open_pos:
-            if source_exclude is not None and pos.get("signal_source") == source_exclude:
+            if source_exclude is not None and pos["signal_source"] == source_exclude:
                 continue
             try:
                 try:
@@ -1479,14 +1482,14 @@ class RegimeAwareOrchestrator:
                 # must not be logged as if risk exposure was actually reduced.
                 closed = self._portfolio.close_position(
                     pos["ticker"], pos["shares"], exit_price=price,
-                    exit_reason=reason, signal_id=pos.get("signal_id"),
+                    exit_reason=reason, signal_id=pos["signal_id"],
                     entry_price=pos["entry_price"], entry_date=pos["entry_date"],
-                    signal_source=pos.get("signal_source", "congressional"),
+                    signal_source=pos["signal_source"],
                 )
                 if closed:
                     log.info("Force-closed %s: %s", pos["ticker"], reason)
             except Exception:
-                log.exception("Failed to force-close %s", pos.get("ticker", "?"))
+                log.exception("Failed to force-close %s", pos["ticker"])
 
     # ------------------------------------------------------------------
     # EOD

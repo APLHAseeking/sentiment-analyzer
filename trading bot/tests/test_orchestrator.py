@@ -280,6 +280,32 @@ def test_run_exit_review_pre_fetches_research_in_batch(mocker, orch):
     assert tickers_fetched == {"AAPL", "MSFT"}
 
 
+def test_run_exit_review_excludes_hedge_positions_against_real_rows(mocker, orch, db):
+    """run_exit_review must filter out hedge positions before reviewing exits —
+    must work against real sqlite3.Row objects (see 2026-07-15 dig-in:
+    pos.get() crashed here in production the first time a real open
+    position existed, killing the entire exit-review run)."""
+    from bot.ai_analyst import ExitDecision
+
+    db.insert_position("AAPL", 100.0, 10, 5.0, "2026-01-01", 1, "r",
+                        signal_source="fundamental")
+    db.insert_position("SH", 20.0, 5, 3.0, "2026-01-01", None, "r",
+                        signal_source="hedge")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=100.0))
+    review_spy = mocker.patch(
+        "orchestration.main_loop.review_exit",
+        return_value=ExitDecision(action="hold", rationale="ok"),
+    )
+
+    orch.run_exit_review()  # must not raise
+
+    reviewed_tickers = [call.args[0] for call in review_spy.call_args_list]
+    assert reviewed_tickers == ["AAPL"]
+
+
 def _make_yf_ticker_mock(price: float = 100.0, history_rows: int = 20):
     """Build a yf.Ticker mock with fast_info.last_price and history() support.
 
@@ -696,6 +722,39 @@ def test_hedge_pass_calls_validate_order(mocker, orch):
     orch._portfolio.open_position.assert_called_once()
 
 
+def test_hedge_pass_computes_sector_allocation_against_real_position_rows(mocker, orch, db):
+    """_run_hedge_pass's sector-allocation loop reads signal_source off each
+    open position to exclude existing hedges from the sector-concentration
+    calc — must work against real sqlite3.Row objects (see 2026-07-15
+    dig-in: meta.get() crashed here in production, caught only by a
+    try/except, the first time a real open position existed)."""
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+
+    db.insert_position("AAPL", 100.0, 10, 5.0, "2026-01-01", 1, "r",
+                        signal_source="fundamental")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+
+    broker = mocker.MagicMock()
+    broker.get_cash.return_value = 90_000.0
+    broker.get_positions.return_value = [{"ticker": "AAPL", "qty": 10, "current_price": 100.0}]
+    orch._broker = broker
+
+    plan_spy = mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+
+    orch._run_hedge_pass()  # must not raise
+
+    sector_allocation = plan_spy.call_args[0][2]
+    assert sector_allocation["Technology"] == pytest.approx(1000.0 / 91_000.0 * 100)
+
+
 def test_hedge_pass_applies_size_multiplier(mocker, orch):
     """veto.size_multiplier must scale the hedge position pct."""
     from risk.risk_manager import RiskVeto
@@ -797,14 +856,18 @@ def test_hedge_pass_skips_order_vetoed_by_risk_manager(mocker, orch):
     orch._portfolio.open_position.assert_not_called()
 
 
-def test_close_all_positions_excludes_hedge_by_default_param(mocker, orch):
-    """_close_all_positions(source_exclude='hedge') must skip hedge positions."""
-    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[
-        {"ticker": "AAPL", "shares": 10, "entry_price": 100.0, "entry_date": "2026-01-01",
-         "signal_id": 1, "signal_source": "fundamental"},
-        {"ticker": "SH", "shares": 5, "entry_price": 20.0, "entry_date": "2026-01-01",
-         "signal_id": None, "signal_source": "hedge"},
-    ])
+def test_close_all_positions_excludes_hedge_by_default_param(mocker, orch, db):
+    """_close_all_positions(source_exclude='hedge') must skip hedge positions.
+
+    Uses real sqlite3.Row objects (via the db fixture), not dict literals —
+    sqlite3.Row has no .get(), which a dict-literal mock would never catch
+    (see 2026-07-15 dig-in: this exact gap let a real AttributeError crash
+    the deleverage force-close path in production)."""
+    db.insert_position("AAPL", 100.0, 10, 5.0, "2026-01-01", 1, "r",
+                        signal_source="fundamental")
+    db.insert_position("SH", 20.0, 5, 3.0, "2026-01-01", None, "r",
+                        signal_source="hedge")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
     mocker.patch("orchestration.main_loop.yf.Ticker",
                   return_value=_make_yf_ticker_mock(price=50.0))
 
@@ -815,14 +878,13 @@ def test_close_all_positions_excludes_hedge_by_default_param(mocker, orch):
     assert call_kwargs[0][0] == "AAPL"
 
 
-def test_close_all_positions_does_not_log_force_closed_when_sell_fails(mocker, orch, caplog):
+def test_close_all_positions_does_not_log_force_closed_when_sell_fails(mocker, orch, caplog, db):
     """A deleverage force-close whose sell doesn't fill (close_position()
     returns False) must not log "Force-closed" — that would tell an operator
     risk exposure was cut when the position is still fully open."""
-    mocker.patch("orchestration.main_loop.get_open_positions", return_value=[
-        {"ticker": "AAPL", "shares": 10, "entry_price": 100.0, "entry_date": "2026-01-01",
-         "signal_id": 1, "signal_source": "fundamental"},
-    ])
+    db.insert_position("AAPL", 100.0, 10, 5.0, "2026-01-01", 1, "r",
+                        signal_source="fundamental")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
     mocker.patch("orchestration.main_loop.yf.Ticker",
                   return_value=_make_yf_ticker_mock(price=50.0))
     orch._portfolio.close_position.return_value = False  # simulates a no-fill sell
