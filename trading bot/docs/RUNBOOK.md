@@ -76,11 +76,84 @@ python run_bot.py --test-alerts
   # detach: Ctrl-b d
   # reattach later: tmux attach -t bot
   ```
-- Or `nohup` + `disown` (manual, no auto-restart on crash):
+- Or `nohup` + `disown` (manual, no auto-restart on crash) — **wrap with
+  `caffeinate` (see below), this bare form has no sleep protection:**
   ```bash
-  nohup python run_bot.py > bot.log 2>&1 &
+  nohup caffeinate -i -s python3 run_bot.py > bot.log 2>&1 &
   disown
   ```
+
+<a id="sleep-wedges"></a>
+## System sleep silently stops the bot (found 2026-07-15)
+
+**Symptom:** the bot process stays alive (`ps` shows it running) but the
+scheduler dispatches zero jobs for hours — no `job_runs` row, no log output
+past startup, no error. Looks identical to a hung scheduler; happened 3
+times in 3 days (2026-07-14 twice, 2026-07-15 once) before the actual cause
+was found.
+
+**Root cause, not a code bug:** this MacBook Air going to sleep
+(`pmset -g log`, grep for `Sleep`/`Wake`) suspends the whole `nohup`'d
+process along with it. All 3 wedges directly correlate with a real
+`Entering Sleep state` log line within minutes of the wedge starting —
+`Idle Sleep` (inactivity, both on battery and AC) in every case, plus one
+`Clamshell Sleep` (lid closed). A process `sample` taken while wedged shows
+both the scheduler's main thread and its executor thread genuinely parked
+(empty queue, timed wait) — not stuck inside a job, not crashed, just never
+woken back up correctly after the machine slept. `BlockingScheduler`'s own
+misfire-detection (logs `Scheduler job missed: ...`) never fired either,
+consistent with the whole process — not just one job — losing wall-clock
+continuity.
+
+**Fix in place now:** `caffeinate -i -s` wraps every `run_bot.py` launch
+(command above), tied to the bot's own lifetime — if the bot exits, the
+sleep-prevention assertion releases automatically. Verify it's holding:
+```bash
+pmset -g assertions | grep -A1 "caffeinate.*python3"
+```
+`-i` prevents idle sleep, `-s` prevents system sleep while on AC power —
+covers every `Idle Sleep`/`Maintenance Sleep` event seen so far.
+
+**Known gap — does NOT cover lid-closed (clamshell) sleep.** Verified via
+research, not assumption: closing the lid without an external display
+attached triggers sleep at the hardware lid-sensor level, and no
+`caffeinate` assertion overrides it — Apple's own clamshell-mode support
+requires an external display, keyboard/mouse, and power connected
+simultaneously. If the laptop's lid gets closed while the bot is running,
+it can still wedge.
+
+**If lid-closed sleep recurs, next steps in order of increasing commitment:**
+1. **`sudo pmset -a disablesleep 1`** — fully disables all sleep, including
+   clamshell, until reversed with `sudo pmset -a disablesleep 0`. Verified
+   via research to be the standard trick for running a Mac lid-closed with
+   no external display. Needs a one-time interactive `sudo` (not something
+   an agent can run unattended — do it yourself, or via `! sudo pmset -a
+   disablesleep 1` in a Claude Code session). **Real tradeoff:** the CPU
+   never suspends, so on battery with the lid closed it drains meaningfully
+   faster than normal sleep and the machine runs hot in a closed bag. Only
+   sensible if the laptop stays on AC power while running unattended.
+2. **The actual fix: stop relying on a personal laptop for a 24/7
+   unattended process.** Even with `disablesleep`, a laptop that gets
+   carried around, closed, taken off Wi-Fi, put through OS updates, or
+   simply shut for the night is fundamentally the wrong host for this. Real
+   options, cheapest first (verified 2026-07-15, terms can drift — recheck
+   before committing):
+   - **Oracle Cloud "Always Free" tier** — genuinely free forever (not a
+     12-month trial), currently 2 OCPU / 12GB RAM ARM instance (recently
+     reduced from 4/24, still far more than this single Python process
+     needs) plus 200GB storage and 10TB egress. Some reported inconsistency
+     in how the reduced limit is enforced — verify current terms at
+     signup.
+   - **Small VPS** (Hetzner, DigitalOcean, Linode/Akamai, Vultr) — roughly
+     $4-6/month, no free-tier fine print, and gets `systemd` instead of
+     `launchd` — a real auto-restart-on-crash daemon manager that doesn't
+     hit the unsigned-binary wall that blocked `launchd` here (see
+     `launchd` status above).
+   - **A dedicated always-on device at home** (Raspberry Pi, old mini PC) —
+     one-time cost, no lid to close, but still depends on home power/network
+     staying up.
+   This is a bigger decision (new host, credentials, access) than a config
+   change — worth a deliberate choice, not a silent migration.
 
 <a id="dead-mans-switch"></a>
 ## Dead-man's switch (added 2026-07-14)
