@@ -141,15 +141,32 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
   Wrote up the full escalation path (`sudo pmset -a disablesleep 1` vs. migrating off the
   laptop entirely) in `docs/RUNBOOK.md#sleep-wedges` — a decision left to the user, not
   actioned.
+- 2026-07-16 (scheduler wedge recurred despite caffeinate fix): user asked to check the bot;
+  found it wedged again — process (PID 11292) alive since 07-15 18:20 with the `caffeinate`
+  assertion active 24h+, but zero `job_runs` since the 07-15 22:30 EOD snapshot, the 15:40
+  entry window and 20:00 intraday check both silently missed, and catch-up-on-restart never
+  fired on its own (confirmed via the OS-detached watcher's `tomorrow_1540_check.log`).
+  `pmset -g log` showed the laptop repeatedly cycling `Sleep`/`DarkWake` ("Sleep Service Back
+  to Sleep") on battery all afternoon — the documented clamshell/Power-Nap gap in
+  `caffeinate -i -s` coverage, not a new bug. User approved a restart (killed PID 11292 by
+  PID, relaunched via the same `nohup caffeinate -i -s python3 run_bot.py` command per
+  `docs/RUNBOOK.md#safe-restart`). Live-verified, not just log-watched: catch-up fired
+  immediately, ran the full screener+AI pipeline, and opened a real position (ACGL, 0.9%,
+  conv=7) — confirmed via `job_runs` and `positions` rows for 2026-07-16, not just log text.
+  Scheduler now live on a fresh 22:30 EOD job.
 
 ## Open items
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
 - Insider routine-buyer filter — recorded in EDGE_BACKLOG.md, viable after ~1yr of insider history (feed started 2026-07-07)
 - docs/guardrails/MIGRATION-LOG.md still shows as modified in `git status` — pre-existing uncommitted drift, predates this session, not touched
 - Russell 1000 universe unresolved — genuinely blocked on the user obtaining `FMP_API_KEY` (or a paid data source); no free/no-signup alternative found after 4 sources tried across sessions
-- Scheduler wedges (2026-07-14 x2, 2026-07-15 x1) — RESOLVED, root cause found: real macOS
-  sleep events (`pmset -g log`), not a code bug. `caffeinate -i -s` now wraps every launch;
-  clamshell/lid-closed sleep is a known remaining gap, see `## Next`.
+- Scheduler wedges (2026-07-14 x2, 2026-07-15 x1, 2026-07-16 x1) — root cause confirmed real
+  macOS sleep events (`pmset -g log`), not a code bug, but `caffeinate -i -s` does NOT fully
+  prevent recurrence: 07-16's wedge happened with the caffeinate assertion active the whole
+  time, correlating with repeated "Sleep Service Back to Sleep"/DarkWake cycling on battery —
+  the documented clamshell/Power-Nap gap, not yet mitigated. Manual restart is still required
+  when it happens; the user has not yet chosen between `sudo pmset -a disablesleep 1` or
+  migrating off the laptop (see `docs/RUNBOOK.md#sleep-wedges`).
 
 ## Failed attempts
 (none this session — every fix attempt that failed a first pass was corrected same-turn, e.g. two wrong SUE quarter-bucketing hypotheses before the verified-correct one, documented in the SUE PIT backtest commit history rather than repeated here)
