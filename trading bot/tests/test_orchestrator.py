@@ -907,6 +907,20 @@ def test_intraday_check_deleverage_excludes_hedges(mocker, orch):
     close_all_spy.assert_called_once_with(reason="intraday_deleverage", source_exclude="hedge")
 
 
+def test_run_intraday_check_records_job_run(mocker, orch):
+    from datetime import date
+    from risk.risk_manager import RiskState
+    orch._risk = mocker.MagicMock()
+    orch._risk.state = RiskState.NORMAL
+    orch._broker = _mock_broker(cash=50_000, position_value=50_000)
+    orch._portfolio.enforce_stop_losses = mocker.MagicMock()
+    record_spy = mocker.patch("orchestration.main_loop.record_job_run")
+
+    orch.run_intraday_check()
+
+    record_spy.assert_called_once_with("run_intraday_check", date.today().isoformat())
+
+
 # ------------------------------------------------------------------
 # Economic floor re-checks after multiplier stack (Task A6)
 # ------------------------------------------------------------------
@@ -1101,6 +1115,22 @@ def test_run_eod_does_not_close_positions_when_normal(mocker, orch):
     orch.run_eod()
 
     close_all_spy.assert_not_called()
+
+
+def test_run_eod_records_job_run(mocker, orch):
+    from datetime import date
+    from risk.risk_manager import RiskState
+
+    orch._broker = _mock_broker(cash=50_000, position_value=50_000)
+    orch._risk = mocker.MagicMock()
+    orch._risk.state = RiskState.NORMAL
+    orch._portfolio.log_snapshot = mocker.MagicMock()
+    mocker.patch.object(orch, "_update_dashboard")
+    record_spy = mocker.patch("orchestration.main_loop.record_job_run")
+
+    orch.run_eod()
+
+    record_spy.assert_called_once_with("run_eod", date.today().isoformat())
 
 
 import pandas as pd

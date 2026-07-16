@@ -1455,6 +1455,7 @@ class RegimeAwareOrchestrator:
             log.info("Intraday check complete. Risk state: %s", self._risk.state.value)
         except Exception as exc:
             log.warning("Intraday check failed: %s", exc)
+        record_job_run("run_intraday_check", date.today().isoformat())
 
     def _close_all_positions(self, reason: str = "forced", source_exclude: str | None = None) -> None:
         """Close all open positions immediately. Used by deleverage circuit breaker.
@@ -1508,6 +1509,7 @@ class RegimeAwareOrchestrator:
             log.warning("EOD risk check failed: %s", exc)
         self._update_dashboard()
         log.info("EOD snapshot logged. Risk state: %s", self._risk.state.value)
+        record_job_run("run_eod", date.today().isoformat())
 
     # ------------------------------------------------------------------
     # Dashboard
