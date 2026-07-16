@@ -31,6 +31,7 @@ def orch(mocker):
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
     mocker.patch("orchestration.main_loop.record_job_run")  # prevent real DB writes
     mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)  # prevent real DB writes
+    mocker.patch("orchestration.main_loop.write_status_file")  # prevent clobbering the live bot's status file
 
     from system.config import settings
     o = RegimeAwareOrchestrator(settings)
@@ -170,6 +171,7 @@ def orch_fitted(mocker):
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[])
     mocker.patch("orchestration.main_loop.record_job_run")  # prevent real DB writes
     mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)  # prevent real DB writes
+    mocker.patch("orchestration.main_loop.write_status_file")  # prevent clobbering the live bot's status file
 
     from system.config import settings
     o = RegimeAwareOrchestrator(settings)
@@ -1167,6 +1169,37 @@ def test_initialize_does_not_double_step_regime_engine(mocker, orch):
     orch._engine.update_single.assert_not_called()
     orch._engine.current_regime.assert_not_called()
     assert orch._regime_state is state
+
+
+def test_initialize_writes_status_file(mocker, orch):
+    """initialize() must write the status file so an external watchdog
+    (monitoring/watchdog.py) can learn this process's PID/commit -- nothing
+    inside the process can detect its own death or staleness."""
+    state = _RegimeState(
+        date="2026-06-12", regime_index=2, regime_label="neutral",
+        confidence=0.7, is_stable=True, n_regimes=3,
+        raw_posteriors=[0.1, 0.2, 0.7],
+    )
+    import pandas as pd
+    orch._engine = mocker.MagicMock()
+    orch._engine.is_fitted = True
+    orch._engine.initialize_incremental.return_value = state
+
+    market_data = pd.DataFrame(
+        {"close": [100.0, 101.0, 102.0]},
+        index=pd.date_range("2026-06-10", periods=3, freq="B"),
+    )
+    mocker.patch("orchestration.main_loop.get_regime_data", return_value=market_data)
+    mocker.patch("orchestration.main_loop.os.path.exists", return_value=True)
+    mock_portfolio_cls = mocker.patch("orchestration.main_loop.Portfolio")
+    mock_portfolio_cls.return_value.reconcile_with_broker.return_value = {"ghost_positions": []}
+    mocker.patch("orchestration.main_loop.log_regime")
+    write_spy = mocker.patch("orchestration.main_loop.write_status_file")
+
+    broker = _mock_broker(cash=100_000, position_value=0)
+    orch.initialize(broker)
+
+    write_spy.assert_called_once_with()
 
 
 def test_initialize_rejects_non_paper_broker(mocker, orch):

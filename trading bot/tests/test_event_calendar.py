@@ -76,6 +76,7 @@ def test_process_signal_skips_on_upcoming_event(mocker):
     mocker.patch("orchestration.main_loop.has_upcoming_event",
                  return_value=(True, "FOMC 2026-05-07"))
     score_spy = mocker.patch("orchestration.main_loop.score_entry_with_debate")
+    mocker.patch("orchestration.main_loop.write_status_file")  # prevent clobbering the live bot's status file
 
     o = RegimeAwareOrchestrator(settings)
     o._broker = MagicMock()
@@ -102,6 +103,7 @@ def test_process_fundamental_candidate_skips_on_upcoming_event(mocker):
     mocker.patch("orchestration.main_loop.has_upcoming_event",
                  return_value=(True, "earnings 2026-05-09"))
     score_spy = mocker.patch("orchestration.main_loop.score_entry_with_debate")
+    mocker.patch("orchestration.main_loop.write_status_file")  # prevent clobbering the live bot's status file
 
     o = RegimeAwareOrchestrator(settings)
     o._regime_state = None

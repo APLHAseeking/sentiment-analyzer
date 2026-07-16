@@ -68,6 +68,7 @@ from risk.risk_manager import HEDGE_SECTOR_LABEL, RiskManager, RiskState
 from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt, atr_pct_from_ohlc, structure_stop_size_pct
 from screener.factor_scorer import run_factor_screen, prefetch_screener_data, FactorCandidate
 from monitoring.logger import EventType, emit_event, setup_logging
+from monitoring.status_file import write_status_file
 from dashboard.data_store import DashboardStore
 from hedge.hedge_engine import HedgeEngine
 from risk.correlation import CorrelationFilter
@@ -243,6 +244,7 @@ class RegimeAwareOrchestrator:
                  self._regime_state.regime_label if self._regime_state else "unknown",
                  self._regime_state.confidence if self._regime_state else 0,
                  self._regime_state.is_stable if self._regime_state else False)
+        write_status_file()
 
     def _fit_model(self) -> None:
         emit_event(log, EventType.MODEL_FIT, "Fitting HMM regime model")
