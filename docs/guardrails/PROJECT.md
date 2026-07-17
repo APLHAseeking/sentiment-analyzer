@@ -15,8 +15,15 @@
   found in strategy code added since the last standalone review, added missing
   test coverage, and added operational readiness docs (`docs/RUNBOOK.md`,
   alert webhook config) — see `trading bot/CLAUDE.md`'s status banner for
-  details. Outstanding: user must set `ALERT_WEBHOOK_URL` before relying on
-  unattended alerting.
+  details. `ALERT_WEBHOOK_URL` is set in `trading bot/.env` (confirmed
+  2026-07-17) — this line previously said it was outstanding; that was stale.
+  A reliability watchdog (`monitoring/watchdog.py`, `docs/RUNBOOK.md#watchdog`)
+  and a dead-man's-switch (`monitoring/dead_mans_switch.py`) now both run as
+  `/Library/LaunchDaemons/` LaunchDaemons (survive reboot/logout, not a
+  cold boot from fully powered off — FileVault's pre-boot password gate is
+  unavoidable) and auto-restart the bot on staleness, crash, or stale
+  deploy — see `docs/RUNBOOK.md#watchdog` for the full mechanism and the
+  post-reboot verification checklist.
 - **`docs/superpowers/`** — `plans/` and `specs/` for past and current work.
 
 Thesis inputs at root: `stoxx600_constituents.csv`, `Thesis STOXX, and time

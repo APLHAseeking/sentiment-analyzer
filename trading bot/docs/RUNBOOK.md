@@ -4,6 +4,43 @@ Quick reference for running the paper-trading bot for a month without expert
 babysitting. See `CLAUDE.md` for full architecture; this doc is just the
 operational how-to.
 
+<a id="after-a-reboot"></a>
+## After a reboot (read this first if you just restarted the Mac)
+
+As of 2026-07-17, both `monitoring/watchdog.py` and
+`monitoring/dead_mans_switch.py` run as **LaunchDaemons**
+(`/Library/LaunchDaemons/`, not per-login `LaunchAgents`) — they start at
+boot automatically, no login required, no manual re-install needed after a
+normal restart. **What does NOT auto-start: the bot itself
+(`run_bot.py`).** It's a plain `nohup`'d process, not a LaunchDaemon/Agent —
+a reboot kills it and nothing brings it back until the watchdog's first
+cycle notices. That's expected, not a bug: `RunAtLoad` means the watchdog
+fires within seconds of boot, finds `bot_status.json`'s PID no longer
+alive, and launches the bot itself via its normal `restart_bot()` path —
+same mechanism as every other auto-recovery, just triggered by "no process"
+instead of "stale/wedged process."
+
+**Verify it worked** (run these once, any time after the reboot):
+```bash
+cd "trading bot"
+launchctl print system/com.thomasvromen.tradingbot-watchdog | head -6       # state, active count
+launchctl print system/com.thomasvromen.tradingbot-deadmansswitch | head -6
+tail -5 watchdog.log            # expect a fresh cycle within ~15 min of boot
+ps aux | grep '[r]un_bot.py'    # expect 2 lines (python + caffeinate) once the watchdog has acted
+cat bot_status.json             # pid should match ps output above; commit should match: git rev-parse HEAD
+pmset -g custom | grep powernap # expect 0 on both Battery and AC -- pmset settings DO persist across reboot, this is just a sanity check
+```
+If `ps aux` shows nothing and it's been >15 min since boot: something's
+wrong with the watchdog itself, not just a normal startup delay — check
+`watchdog.log` for a crash, or run `python -m monitoring.watchdog` manually
+from `trading bot/` to see the error directly.
+
+**What a reboot does NOT fix on its own:** if you rebooted specifically
+because of a cold boot from fully powered off (not a restart/logout),
+FileVault's pre-boot password screen requires you to authenticate before
+macOS boots at all — nothing above starts until after that, unavoidably.
+See [`#watchdog`](#watchdog) for why.
+
 ## Starting
 
 ```bash
@@ -184,29 +221,34 @@ The bot went completely dead for 3 days (2026-07-10 → 07-13, zero `job_runs`
 rows, zero `dashboard.log` activity) with no alert at all — only a human
 happened to check. Nothing running *inside* the bot process can ever detect
 its own death, so `monitoring/dead_mans_switch.py` runs as a **separate**
-process/LaunchAgent and fires the same webhook alert
-(`monitoring/alerts.py`) if no `job_runs` row exists for the most recently
-completed NYSE session.
+process and fires the same webhook alert (`monitoring/alerts.py`) if no
+`job_runs` row exists for the most recently completed NYSE session. As of
+2026-07-17 it also checks the watchdog's own log freshness — see
+[`#watchdog`](#watchdog) below.
 
 ```bash
 python -m monitoring.dead_mans_switch    # one-off manual check, exit 0 = healthy
 ```
 
-**Status (2026-07-14): active.** Unlike the main bot's LaunchAgent, this one
-has no `KeepAlive` (it's a periodic `StartInterval` check, not a persistent
-daemon), so it wasn't subject to the same macOS Background Task Management
-block — registered and ran successfully on the first bootstrap (confirmed
-via `dead_mans_switch.log`: real output, exit 0). Already loaded; runs every
-4h plus once on load.
+**Status (2026-07-17): a LaunchDaemon, not a LaunchAgent** — moved the same
+day and for the same reason as the watchdog below (survive reboot/logout
+without a login session), via the same `osascript ... with administrator
+privileges` install pattern. Loaded via
+`/Library/LaunchDaemons/com.thomasvromen.tradingbot-deadmansswitch.plist`
+(root-owned, `chmod 644`, `UserName: thomasvromen`). The original
+2026-07-14 LaunchAgent version had no `KeepAlive` (a periodic
+`StartInterval` check, not a persistent daemon), so it was never subject to
+the macOS Background Task Management block that closed the main bot's own
+`KeepAlive` auto-restart — that history is why this was the first LaunchAgent
+that ever worked unattended, before the LaunchDaemon move made it survive
+reboot too.
 
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot-deadmansswitch.plist  # if not already loaded
-launchctl list | grep deadmansswitch   # confirm registered
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.thomasvromen.tradingbot-deadmansswitch.plist  # if not already loaded
+launchctl print system/com.thomasvromen.tradingbot-deadmansswitch | head -6   # confirm registered
 ```
-Runs every 4h (`StartInterval`) plus once immediately on load. Same
-Background Task Management approval gate as the main bot applies here too
-(see the launchd status note above) — approve both in the same System
-Settings visit. Logs to `dead_mans_switch.log` (separate from `bot.log`).
+Runs every 4h (`StartInterval`) plus once immediately on load/boot. Logs to
+`dead_mans_switch.log` (separate from `bot.log` and `watchdog.log`).
 
 <a id="watchdog"></a>
 ## Reliability watchdog (added 2026-07-16)
@@ -243,9 +285,20 @@ its own `StartInterval` LaunchAgent, checks every 15 minutes, and
 
 **Restart mechanics:** kills the old PID (verified via `ps -p <pid> -o
 command=` to contain `run_bot.py` first — never kills on PID alone, in
-case of PID reuse), relaunches with the same `nohup caffeinate -i -s
-python3 run_bot.py` command documented above, and fires an alert via the
-existing webhook either way (so a restart is visible, not silent).
+case of PID reuse), relaunches via `caffeinate -i -s <python> run_bot.py`
+with `start_new_session=True` (Python's own session-detach, equivalent to
+what `nohup` does — **the watchdog does NOT shell out to `nohup` itself**,
+unlike the manual command documented above under Starting), and fires an
+alert via the existing webhook either way (so a restart is visible, not
+silent). Why the divergence: `nohup` needs a console to detach FROM: a
+genuine LaunchDaemon invocation has no controlling terminal at all, and
+`nohup` fails outright (`can't detach from console: Inappropriate ioctl
+for device`) before ever exec'ing python — live-observed 2026-07-17 on
+the watchdog's second natural restart, silently leaving the bot down with
+no further log output. The manual `nohup ... & disown` command under
+Starting is still correct for a human running it in an actual terminal
+(which has a console to detach from) — only the watchdog's own
+programmatic restart needed this fix.
 
 ```bash
 python -m monitoring.watchdog    # one-off manual cycle, logs its decision
@@ -317,6 +370,20 @@ Once a day, check:
   down. The congressional or insider signal may be degraded for that day's
   run. No action needed unless it persists across multiple days.
 - **SLIPPAGE_HIGH** — a fill-poll timeout. Informational only.
+- **watchdog_restart** — the watchdog auto-restarted the bot (dead process,
+  overdue job, stale deploy, or the hard-ceiling bypass). Informational —
+  this is the system working as designed. Check `watchdog.log` for which
+  of the four triggers fired if you want to know why.
+- **watchdog_crashed** — the watchdog process itself raised an unhandled
+  exception. This needs a human: something in `monitoring/watchdog.py` is
+  broken. Check `watchdog.log` for the traceback.
+- **watchdog_crash_loop** — 3+ auto-restarts in the last 60 minutes;
+  further auto-restart is suppressed. This means a restart isn't fixing
+  the underlying problem — needs a human to actually diagnose and fix the
+  bot, not another restart.
+- **dead_mans_switch_watchdog** — the dead-man's-switch found
+  `watchdog.log` stale (or missing entirely). The watchdog itself may have
+  stopped running — check `launchctl print system/com.thomasvromen.tradingbot-watchdog`.
 
 ## Safe restart
 
