@@ -60,6 +60,9 @@ class UniverseConfig:
     # entry-scoring step per pipeline run. Raising this widens the review pool
     # without changing the entry conviction/cost hurdle.
     screener_top_n: int = 30
+    # Bottom-N factor-scored candidates (by composite_score) passed to the
+    # short-side AI entry-scoring step, when enable_short_selling is on.
+    screener_short_top_n: int = 12
 
 
 @dataclass(frozen=True)
@@ -206,6 +209,19 @@ class SizingConfig:
 
 
 # ---------------------------------------------------------------------------
+# Strategy selection
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class StrategyConfig:
+    # Real per-stock short-selling (sell borrowed shares via Alpaca), driven by
+    # the fundamental screener's worst-ranked names. Default OFF — see
+    # docs/superpowers/specs/2026-07-17-short-selling-design.md. Flipping this
+    # is meant to be the entire activation step; no other code change needed.
+    enable_short_selling: bool = False
+
+
+# ---------------------------------------------------------------------------
 # Risk management
 # ---------------------------------------------------------------------------
 
@@ -222,6 +238,14 @@ class RiskConfig:
     trailing_stop_pct: float = 15.0       # trailing from peak
     take_profit_pct: float = 25.0         # reduce at +25%
     hard_exit_pct: float = 40.0           # full exit at +40%
+
+    # Short-side limits — deliberately tighter than the long-side caps above,
+    # since a short's downside is theoretically uncapped (a long can only go
+    # to zero). See docs/superpowers/specs/2026-07-17-short-selling-design.md.
+    max_short_position_pct: float = 4.0    # % of NAV per short position
+    max_short_positions: int = 5           # concurrent shorts, independent of max_positions
+    max_short_positions_per_day: int = 2   # new shorts/day, independent of max_positions_per_day
+    short_trailing_stop_pct: float = 8.0   # trailing from trough (tighter than long's 15.0)
 
     # Portfolio-level circuit breakers
     daily_loss_reduce_pct: float = 3.0    # cut position sizes 50% if daily loss exceeds this
@@ -334,6 +358,7 @@ class Settings:
     correlation: CorrelationConfig = field(default_factory=CorrelationConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     sizing: SizingConfig = field(default_factory=SizingConfig)
+    strategy: StrategyConfig = field(default_factory=StrategyConfig)
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)

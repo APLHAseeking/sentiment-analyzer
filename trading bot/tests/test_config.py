@@ -154,3 +154,22 @@ def test_max_positions_per_day_default_is_five():
 def test_universe_config_screener_top_n_default_is_thirty():
     from system.config import UniverseConfig
     assert UniverseConfig().screener_top_n == 30
+
+
+def test_short_selling_disabled_by_default():
+    assert Settings().strategy.enable_short_selling is False
+
+
+def test_short_risk_caps_tighter_than_long():
+    s = Settings()
+    assert s.risk.max_short_position_pct == 4.0
+    assert s.risk.max_short_positions == 5
+    assert s.risk.max_short_positions_per_day == 2
+    assert s.risk.short_trailing_stop_pct == 8.0
+    assert s.risk.max_short_position_pct < s.risk.max_position_pct
+    assert s.risk.max_short_positions < s.risk.max_positions
+    assert s.risk.short_trailing_stop_pct < s.risk.trailing_stop_pct
+
+
+def test_screener_short_top_n_default():
+    assert Settings().universe.screener_short_top_n == 12
