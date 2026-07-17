@@ -95,11 +95,15 @@ class BrokerInterface(ABC):
         """Return per-share commission. Override in implementations."""
         return 0.0
 
-    def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
+    def place_stop_order(self, ticker: str, qty: float, stop_price: float,
+                         side: str = "sell") -> str | None:
         """Place a resting stop order. Returns an order ID or None (no-op default).
 
         Concrete brokers that support native stop orders should override this.
         The polled enforce_stop_losses() in Portfolio acts as the backstop.
+
+        `side="sell"` (default) is a long position's stop-loss; `side="buy"` is
+        a short position's stop (buy-to-cover).
         """
         return None
 

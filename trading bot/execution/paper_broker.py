@@ -191,12 +191,18 @@ class SimulatedBroker(BrokerInterface):
     # Stop order simulation
     # ------------------------------------------------------------------
 
-    def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
+    def place_stop_order(self, ticker: str, qty: float, stop_price: float,
+                         side: str = "sell") -> str | None:
         """Register a resting stop. The polled enforce_stop_losses() does the actual fill.
 
         Returns a unique order id. Multiple stops can rest for the same ticker
         at once (e.g. a new trail-up stop placed before the old one is cancelled);
         each is keyed by its own id and does not overwrite the others.
+
+        `side` is accepted for interface parity with AlpacaBroker (a short's stop
+        is a buy-to-cover) but not stored — this simulated broker's stop registry
+        is a passive record consumed by Portfolio's own direction-aware polling
+        (bot.direction_math), not a side-aware fill simulator.
         """
         self._stop_seq += 1
         order_id = f"sim-stop-{ticker}-{self._stop_seq}"
