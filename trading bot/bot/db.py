@@ -301,6 +301,8 @@ def insert_position(ticker: str, entry_price: float, shares: float,
                     entry_commission: float = 0.0,
                     stop_pct: float = 15.0,
                     direction: str = "long") -> None:
+    if direction not in ("long", "short"):
+        raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO positions
@@ -405,6 +407,8 @@ def log_closed_position(ticker: str, entry_price: float, exit_price: float,
                         costs: float = 0.0,
                         entry_commission: float = 0.0,
                         direction: str = "long") -> None:
+    if direction not in ("long", "short"):
+        raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
     # Long: profit when exit > entry. Short: profit when exit < entry (bought
     # back cheaper than the price it was sold short at). See
     # docs/superpowers/specs/2026-07-17-short-selling-design.md Component 4.

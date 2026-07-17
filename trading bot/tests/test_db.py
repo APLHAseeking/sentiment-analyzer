@@ -415,3 +415,17 @@ def test_update_position_extreme_short_only_moves_down(db):
     db.update_position_extreme("TSLA", 240.0, "short")  # higher — must NOT overwrite
     rows = db.get_open_positions()
     assert rows[0]["peak_price"] == pytest.approx(230.0)
+
+
+def test_insert_position_rejects_invalid_direction(db):
+    with pytest.raises(ValueError):
+        db.insert_position("XYZ", 100.0, 10.0, 5.0, "2026-07-17", None, "test", direction="sideways")
+
+
+def test_log_closed_position_rejects_invalid_direction(db):
+    with pytest.raises(ValueError):
+        db.log_closed_position(
+            ticker="XYZ", entry_price=100.0, exit_price=110.0, shares=10.0,
+            entry_date="2026-07-01", exit_date="2026-07-10", exit_reason="test",
+            signal_id=None, direction="sideways",
+        )
