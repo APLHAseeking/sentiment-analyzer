@@ -1,4 +1,5 @@
 from unittest.mock import MagicMock
+import pytest
 from alpaca.trading.enums import (
     OrderStatus as AlpacaOrderStatus,
     OrderType as AlpacaOrderType,
@@ -391,3 +392,56 @@ def test_cancel_stop_order_ignores_non_stop_and_terminal_orders():
     broker.cancel_stop_order("AAPL")
 
     mock_api.cancel_order_by_id.assert_not_called()
+
+
+# ------------------------------------------------------------------
+# Short-selling support: account-level shorting_enabled, per-symbol
+# is_shortable, and place_stop_order's new `side` param (buy-to-cover
+# for shorts vs. the existing default sell-stop for longs).
+# ------------------------------------------------------------------
+
+@pytest.fixture
+def mock_api():
+    return MagicMock()
+
+
+@pytest.fixture
+def broker(mock_api):
+    return AlpacaBroker(api_client=mock_api)
+
+
+def test_shorting_enabled_true(broker, mock_api):
+    mock_api.get_account.return_value.shorting_enabled = True
+    assert broker.shorting_enabled() is True
+
+
+def test_shorting_enabled_false(broker, mock_api):
+    mock_api.get_account.return_value.shorting_enabled = False
+    assert broker.shorting_enabled() is False
+
+
+def test_is_shortable_true(broker, mock_api):
+    mock_api.get_asset.return_value.shortable = True
+    mock_api.get_asset.return_value.easy_to_borrow = True
+    assert broker.is_shortable("AAPL") is True
+
+
+def test_is_shortable_false_when_hard_to_borrow(broker, mock_api):
+    mock_api.get_asset.return_value.shortable = True
+    mock_api.get_asset.return_value.easy_to_borrow = False
+    assert broker.is_shortable("GME") is False
+
+
+def test_place_stop_order_short_side_is_buy(broker, mock_api):
+    mock_api.submit_order.return_value.id = "order-123"
+    broker.place_stop_order(ticker="TSLA", qty=5.0, stop_price=260.0, side="buy")
+    req = mock_api.submit_order.call_args[0][0]
+    assert str(req.side).lower().endswith("buy")
+
+
+def test_place_stop_order_default_side_is_still_sell(broker, mock_api):
+    # Backward-compat: existing long-side callers don't pass `side` at all.
+    mock_api.submit_order.return_value.id = "order-124"
+    broker.place_stop_order(ticker="AAPL", qty=5.0, stop_price=140.0)
+    req = mock_api.submit_order.call_args[0][0]
+    assert str(req.side).lower().endswith("sell")
