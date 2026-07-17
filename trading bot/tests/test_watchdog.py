@@ -94,6 +94,14 @@ def test_restart_bot_kills_matching_pid_and_relaunches(mocker):
     launch_cmd = mock_popen.call_args.args[0]
     assert "run_bot.py" in launch_cmd
     assert "caffeinate" in launch_cmd
+    # Regression test for a real 2026-07-17 outage: a bare "python3" string
+    # resolved to the wrong interpreter under a LaunchAgent's minimal PATH
+    # (system 3.9 instead of Homebrew 3.11+), crashing every auto-restart
+    # with ImportError on datetime.UTC. Must use sys.executable, never the
+    # literal string "python3".
+    import sys
+    assert sys.executable in launch_cmd
+    assert "python3" not in launch_cmd
     mock_alert.assert_called_once()
     assert mock_alert.call_args.args[0] == "watchdog_restart"
 

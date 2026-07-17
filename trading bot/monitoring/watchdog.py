@@ -126,8 +126,16 @@ def restart_bot(reason: str, status: dict | None) -> None:
             )
 
     with open(_LOG_FILE, "a") as log_fh:
+        # sys.executable, not the bare "python3" string: a LaunchAgent's
+        # subprocess PATH is minimal (no /opt/homebrew/bin) and resolved
+        # "python3" to the system CommandLineTools 3.9 interpreter instead
+        # of the Homebrew 3.11+ one this project requires (datetime.UTC) --
+        # live-observed 2026-07-17 crashing every auto-restart with
+        # ImportError. sys.executable is the watchdog's own interpreter,
+        # which is already known-correct (hardcoded absolute path in this
+        # LaunchAgent's own plist).
         subprocess.Popen(
-            ["nohup", "caffeinate", "-i", "-s", "python3", "run_bot.py"],
+            ["nohup", "caffeinate", "-i", "-s", sys.executable, "run_bot.py"],
             cwd=str(_REPO_DIR), stdout=log_fh, stderr=subprocess.STDOUT,
             start_new_session=True,
         )
