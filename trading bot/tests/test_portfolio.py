@@ -22,6 +22,28 @@ def test_cannot_open_at_max_positions(portfolio, mock_broker):
     ]
     assert portfolio.can_open_new_position() is False
 
+def test_short_positions_do_not_count_against_long_limit(portfolio, mock_broker):
+    from system.config import settings
+    # max_positions long slots all open as LONG, plus some short positions —
+    # the shorts must not push this over the long limit.
+    mock_broker.get_positions.return_value = (
+        [{"ticker": f"L{i}", "qty": 1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+         for i in range(settings.risk.max_positions - 1)]
+        + [{"ticker": f"S{i}", "qty": -1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+           for i in range(3)]
+    )
+    assert portfolio.can_open_new_position() is True  # one long slot still free
+
+def test_long_positions_do_not_count_against_short_limit(portfolio, mock_broker):
+    from system.config import settings
+    mock_broker.get_positions.return_value = (
+        [{"ticker": f"S{i}", "qty": -1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+         for i in range(settings.risk.max_short_positions - 1)]
+        + [{"ticker": f"L{i}", "qty": 1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+           for i in range(10)]
+    )
+    assert portfolio.can_open_new_short_position() is True  # one short slot still free
+
 def test_cannot_open_after_daily_limit(portfolio, mock_broker):
     portfolio._opened_today = portfolio._risk.max_positions_per_day
     assert portfolio.can_open_new_position() is False

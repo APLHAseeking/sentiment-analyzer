@@ -25,7 +25,8 @@ class Portfolio:
         return self.broker.get_cash()
 
     def can_open_new_position(self) -> bool:
-        if len(self.broker.get_positions()) >= self._risk.max_positions:
+        long_count = sum(1 for p in self.broker.get_positions() if p.get("qty", 0) >= 0)
+        if long_count >= self._risk.max_positions:
             return False
         if self._opened_today >= self._risk.max_positions_per_day:
             return False
