@@ -302,6 +302,29 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
   `docs/RUNBOOK.md#after-a-reboot` checklist and documented all 4 new watchdog/dead-man's-
   switch alert types in the existing alert-meanings reference. Full suite: 985 passed
   (unchanged count — this pass was fixes and docs, not new features).
+- 2026-07-17 (final clarity re-read before reboot, commit `0e760c6`): user asked to
+  double-check everything and make sure future sessions can run this cleanly. Read
+  `trading bot/CLAUDE.md` and `docs/RUNBOOK.md` fully as a zero-context session would,
+  rather than skim-trusting prior work — found real problems, not polish: (1) `CLAUDE.md`
+  had NO pointer to `RUNBOOK.md` anywhere — a fresh session reading only the primary file
+  would never discover the watchdog/LaunchDaemon setup exists; added pointers at both
+  `## Running` and the Reference table. (2) `CLAUDE.md` hardcoded a test count (875) that
+  goes stale every session; replaced with a pointer to the banner. (3) RUNBOOK's "Keeping it
+  running unattended" section still said the user declined auto-restart and to "restart it
+  yourself if it dies" — directly contradicts everything built today and would have actively
+  misled a future session; rewritten to describe current reality. (4) "Stopping for the
+  month" never mentioned pausing the watchdog first — following it as written would have had
+  the bot silently come back within ~15 min; fixed, and corrected a wrong claim written
+  moments earlier in the same edit (resuming the watchdog alone DOES auto-relaunch the bot,
+  since `bot_status.json` survives a `kill` — verified against the actual `check_and_recover`
+  code before asserting either way). (5) The daily-health-check schedule reference still said
+  "14:00 morning pipeline" — stale since the 2026-07-13 NYSE-hours fix moved it to
+  15:40/18:00; corrected against `orchestration/main_loop.py`'s actual `add_job()` calls, not
+  memory. (6) The documented manual start command used a bare `"python3"` — the exact
+  ambiguity that caused today's first live outage, just not yet fixed in the human-facing
+  version; changed to the absolute path. Full suite re-confirmed 985 passed after the docs
+  pass (no code touched). Bot confirmed alive and both LaunchDaemons confirmed registered
+  fresh, immediately before this entry was written.
 
 ## Open items
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
