@@ -120,14 +120,14 @@ active the whole time. `pmset -g log` showed the laptop repeatedly cycling
 `Sleep`/`DarkWake` ("Sleep Service Back to Sleep") on battery — classic
 Power Nap behavior (`pmset -g custom` showed `powernap 1` on both Battery
 and AC Power), which is a separate sleep mechanism from the idle/system
-sleep `caffeinate -i -s` actually covers. **Mitigation identified but NOT
-yet applied** (verified 2026-07-17 via `pmset -g custom | grep powernap` —
-still reads `1` on both sources): `sudo pmset -a powernap 0` (targeted, no
-meaningful battery/heat cost — see escalation options below for the
-heavier alternatives) needs a one-time interactive `sudo` from the user
-(an agent can't run it unattended) — do it via `! sudo pmset -a powernap
-0` in a Claude Code session, or directly in Terminal, then confirm with
-`pmset -g custom | grep powernap` (both lines should read `0`). Verified via
+sleep `caffeinate -i -s` actually covers. **Mitigation applied 2026-07-17**
+(`sudo pmset -a powernap 0`, targeted, no meaningful battery/heat cost —
+see escalation options below for the heavier alternatives): run via
+`osascript -e 'do shell script "pmset -a powernap 0" with administrator
+privileges'`, which pops the native macOS auth dialog (password/Touch ID)
+instead of needing a Terminal + interactive `sudo` — faster than the
+`! sudo ...` / Terminal route documented previously. Verified via
+`pmset -g custom | grep powernap` — both lines now read `0`. Verified via
 research, not assumption: closing the lid without an external display
 attached triggers sleep at the hardware lid-sensor level separately, and
 no `caffeinate` assertion overrides that either — Apple's own

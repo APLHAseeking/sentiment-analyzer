@@ -8,7 +8,15 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-Session closing (2026-07-17, ~11:05 CEST). Independently re-verified everything below rather
+**Concurrent thread (this session, 2026-07-17): full code/strategy/process review of the
+trading bot for profitability optimization** — explicitly NOT the reliability/scheduler work
+below (owned by a separate session). Plan approved: `~/.claude/plans/make-a-plan-to-floofy-sunrise.md`.
+Track A (wiring verification — is `AllocationEngine`'s regime-scaled sizing actually consumed
+by `main_loop.py`, or is deterministic ATR/structure-stop sizing the only thing that runs?)
+starting now. Report-first, no fixes this pass — findings land in
+`trading bot/TRADING_BOT_STRATEGY_REVIEW_2026-07-17.md` for user sign-off before any remediation.
+
+Reliability thread (concurrent, separate session) — session closing (2026-07-17, ~11:05 CEST). Independently re-verified everything below rather
 than trusting the docs as found (this work landed from a concurrent session, not this one):
 bot process PID 31860 alive and healthy, `bot_status.json` commit matches HEAD (`c43bd66`),
 watchdog LaunchAgent loaded (`launchctl list`) with real log evidence of a correct
@@ -21,6 +29,14 @@ and needs the user to run it interactively (agent can't `sudo`). Read
 `monitoring/watchdog.py` in full — restart logic is sound (PID-reuse-safe kill, 10-min quiet
 gate, fires an alert either way); one minor non-blocking gap noted: no SIGKILL fallback if
 SIGTERM doesn't land within 10s.
+
+**Update, same day, later (this session):** `sudo pmset -a powernap 0` is now actually
+applied — user asked for a faster option than opening Terminal; ran
+`osascript -e 'do shell script "pmset -a powernap 0" with administrator privileges'`, which
+pops the native macOS auth dialog (password/Touch ID) instead of requiring an interactive
+`sudo` in a real TTY (the `!`-prefix path tried first failed: no TTY available in that
+session either). Verified via `pmset -g custom | grep powernap` — both lines now read `0`.
+`docs/RUNBOOK.md` updated accordingly.
 
 Earlier the same day (concurrent session, not this one): built and deployed the reliability
 watchdog after the bot wedged twice more in 24h (07-16 ~22:30→18:51, and again overnight
@@ -48,6 +64,12 @@ of bare `nohup python3`.
   `docs/RUNBOOK.md#sleep-wedges` for the full writeup. Not actioned without the user choosing.
 
 ## Constraints
+- User 2026-07-17 (this review thread): report findings for sign-off first, no fixes applied
+  during the review itself; bounded new empirical work OK (re-run existing backtest scripts
+  against already-cached PIT data) but no new scraping/data collection (Phase 0 gate still
+  blocked); do not touch reliability/scheduler/watchdog code — that's the other session's
+  active thread; any eventual remediation edit to `orchestration/main_loop.py` must check
+  `git status`/`git log` on that file first to avoid colliding with in-flight reliability fixes.
 - User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix. [CLOSED 2026-07-14 — root cause is KeepAlive itself being blocked by macOS Background Task Management for an unsigned binary, not fixable; user accepted manual nohup + dead-man's-switch instead. SUPERSEDED 2026-07-16 — user asked for a permanent fix after a ~20h undetected wedge, reversing the "manual restart is acceptable" premise; see the 2026-07-16 DECISION under `## Decisions`. The auto-restart watchdog built then uses StartInterval, not KeepAlive, so the original technical blocker doesn't apply to it.]
 - User 2026-07-10: include an entry-hurdle loosening proposal now (3x cost / 1.0% absolute), evaluated via observability not a pre-hoc backtest (not feasible — no stored expected_return field).
 - User 2026-07-14: SUE PIT backtest — reuse the exact SUE formula unmodified, only new SEC call is companyfacts, zero new LLM calls, cache to parquet, do not touch the live 0.15 weight or enable anything (recommendation only). [Honored throughout — screener/factor_scorer.py never touched.]
