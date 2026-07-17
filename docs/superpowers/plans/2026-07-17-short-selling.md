@@ -428,6 +428,16 @@ sign for short positions (profit when exit < entry)."
 
 ## Task 4: Broker — account shorting support, shortable check, stop-order side
 
+> **Code review gap found 2026-07-17, fixed in commit `0fe1dd8`.** Task 4's
+> execution correctly added `side="sell"` parameter to `AlpacaBroker.place_stop_order`
+> in `bot/broker.py`, but the plan never mentioned the abstract base class
+> (`execution/broker_interface.py`) or the offline `SimulatedBroker`
+> (`execution/paper_broker.py`). This gap would have caused `TypeError:
+> place_stop_order() got an unexpected keyword argument 'side'` when turning
+> on `--simulated` mode with short-selling enabled. Follow-up commit added
+> the `side` parameter to both the abstract base and SimulatedBroker implementation
+> plus 2 regression tests confirming backward compatibility.
+
 **Files:**
 - Modify: `trading bot/bot/broker.py`
 - Test: `trading bot/tests/test_broker.py`
