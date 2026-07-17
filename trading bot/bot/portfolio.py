@@ -4,6 +4,7 @@ import logging
 from datetime import date
 
 import bot.db as db
+from bot.direction_math import stop_trigger_price
 from execution.broker_interface import OrderSide, OrderStatus
 from monitoring.logger import EventType, emit_event
 
@@ -18,6 +19,7 @@ class Portfolio:
             risk_cfg = settings.risk
         self._risk = risk_cfg
         self._opened_today = 0
+        self._opened_short_today = 0
 
     def get_cash(self) -> float:
         return self.broker.get_cash()
@@ -29,20 +31,46 @@ class Portfolio:
             return False
         return True
 
+    def can_open_new_short_position(self) -> bool:
+        short_count = sum(1 for p in self.broker.get_positions() if p.get("qty", 0) < 0)
+        if short_count >= self._risk.max_short_positions:
+            return False
+        if self._opened_short_today >= self._risk.max_short_positions_per_day:
+            return False
+        return True
+
     def reset_daily_counter(self) -> None:
         self._opened_today = 0
+        self._opened_short_today = 0
 
     def open_position(self, ticker: str, position_pct: float, signal_id: int | None,
                       rationale: str, entry_price: float,
                       signal_source: str = "congressional",
-                      initial_stop_pct: float | None = None) -> bool:
+                      initial_stop_pct: float | None = None,
+                      direction: str = "long") -> bool:
         """Returns True if position was successfully opened."""
-        position_pct = min(position_pct, self._risk.max_position_pct)
-        stop_pct_used = (
-            initial_stop_pct if initial_stop_pct is not None else self._risk.trailing_stop_pct
-        )
+        is_short = direction == "short"
 
-        # Pre-flight duplicate check before committing real capital
+        if is_short:
+            position_pct = min(position_pct, self._risk.max_short_position_pct)
+            stop_pct_used = (
+                initial_stop_pct if initial_stop_pct is not None
+                else self._risk.short_trailing_stop_pct
+            )
+            if not self.broker.shorting_enabled():
+                log.warning("open_position: account does not support shorting — skipping %s", ticker)
+                return False
+            if not self.broker.is_shortable(ticker):
+                log.warning("open_position: %s is not shortable (HTB or restricted) — skipping", ticker)
+                return False
+        else:
+            position_pct = min(position_pct, self._risk.max_position_pct)
+            stop_pct_used = (
+                initial_stop_pct if initial_stop_pct is not None else self._risk.trailing_stop_pct
+            )
+
+        # Pre-flight duplicate check before committing real capital — ticker-unique
+        # regardless of direction: a name can never be simultaneously long and short.
         if db.position_exists(ticker):
             log.warning("open_position: %s already in DB — skipping duplicate open", ticker)
             return False
@@ -52,7 +80,8 @@ class Portfolio:
         nav = self.get_cash() + sum(p["qty"] * p["current_price"] for p in positions_now)
         shares = (nav * position_pct / 100) / entry_price
 
-        order = self.broker.place_order(ticker=ticker, side="buy", qty=shares)
+        order_side = "sell" if is_short else "buy"
+        order = self.broker.place_order(ticker=ticker, side=order_side, qty=shares)
         if order.status == OrderStatus.REJECTED:
             log.warning("Order rejected for %s: %s", ticker, order.reject_reason)
             return False
@@ -68,7 +97,7 @@ class Portfolio:
             if cancelled:
                 emit_event(
                     log, EventType.ORDER_REJECTED,
-                    f"{ticker} buy order {order.order_id} did not confirm FILLED "
+                    f"{ticker} {order_side} order {order.order_id} did not confirm FILLED "
                     f"(status={order.status.value}) — cancelled, position not opened",
                     data={"ticker": ticker, "order_id": order.order_id, "status": order.status.value},
                     level=logging.ERROR,
@@ -84,7 +113,7 @@ class Portfolio:
                 # only looks at broker *positions*, not outstanding *orders*).
                 emit_event(
                     log, EventType.ORDER_REJECTED,
-                    f"{ticker} buy order {order.order_id} did not confirm FILLED "
+                    f"{ticker} {order_side} order {order.order_id} did not confirm FILLED "
                     f"(status={order.status.value}) — cancel FAILED, order may still "
                     f"be resting at the broker — check manually",
                     data={
@@ -120,6 +149,7 @@ class Portfolio:
                 signal_source=signal_source,
                 entry_commission=entry_commission,
                 stop_pct=stop_pct_used,
+                direction=direction,
             )
         except Exception:
             log.critical(
@@ -129,13 +159,17 @@ class Portfolio:
             )
             raise
 
-        self._opened_today += 1
+        if is_short:
+            self._opened_short_today += 1
+        else:
+            self._opened_today += 1
 
         # Register a resting stop order at the initial trailing-stop level so that
         # overnight / between-poll gaps are covered. The polled enforce_stop_losses()
         # acts as backstop and updates (trails) the stop upward as the peak rises.
-        stop_price = actual_entry_price * (1 - stop_pct_used / 100)
-        initial_stop_id = self._place_stop_with_retry(ticker, actual_shares, stop_price)
+        stop_price = stop_trigger_price(direction, actual_entry_price, stop_pct_used)
+        stop_side = "buy" if is_short else "sell"
+        initial_stop_id = self._place_stop_with_retry(ticker, actual_shares, stop_price, side=stop_side)
         if initial_stop_id is None:
             # Placement failed — the position is open with zero resting stop.
             # enforce_stop_losses() polling is the backstop, but it's not
@@ -219,7 +253,7 @@ class Portfolio:
             self.broker.cancel_stop_order(ticker)
 
     def _place_stop_with_retry(self, ticker: str, qty: float, stop_price: float,
-                               max_retries: int = 3) -> str | None:
+                               max_retries: int = 3, side: str = "sell") -> str | None:
         """Alpaca's wash-trade check can reject a stop placed immediately after
         its opposite-side buy fills (it lags our own fill confirmation) —
         code 40310000, "opposite side market/stop order exists". Retry with
@@ -229,7 +263,7 @@ class Portfolio:
         stop_id = None
         for attempt in range(max_retries):
             stop_id = self.broker.place_stop_order(
-                ticker=ticker, qty=qty, stop_price=stop_price
+                ticker=ticker, qty=qty, stop_price=stop_price, side=side
             )
             if stop_id is not None:
                 return stop_id

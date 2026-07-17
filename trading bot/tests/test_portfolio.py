@@ -1359,3 +1359,78 @@ def test_open_position_recomputes_position_pct_from_actual_fill(mock_broker, db)
     # Expected position_pct = 4590 / 100_000 * 100 = 4.59
     pos = db.get_open_positions()[0]
     assert pos["position_pct"] == pytest.approx(4.59)
+
+
+# ------------------------------------------------------------------
+# Task 5: open_position direction support + short position-limit tracking
+# ------------------------------------------------------------------
+
+def test_can_open_new_short_when_under_limit(portfolio, mock_broker):
+    mock_broker.get_positions.return_value = []
+    assert portfolio.can_open_new_short_position() is True
+
+def test_cannot_open_short_at_max_short_positions(portfolio, mock_broker):
+    from system.config import settings
+    mock_broker.get_positions.return_value = [
+        {"ticker": f"S{i}", "qty": -1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+        for i in range(settings.risk.max_short_positions)
+    ]
+    assert portfolio.can_open_new_short_position() is False
+
+def test_cannot_open_short_after_daily_short_limit(portfolio, mock_broker):
+    portfolio._opened_short_today = portfolio._risk.max_short_positions_per_day
+    assert portfolio.can_open_new_short_position() is False
+
+def test_open_short_position_places_sell_order(portfolio, mock_broker):
+    mock_broker.is_shortable.return_value = True
+    mock_broker.shorting_enabled.return_value = True
+    portfolio.open_position(
+        "TSLA", position_pct=4.0, signal_id=1, rationale="Test",
+        entry_price=250.0, direction="short",
+    )
+    kwargs = mock_broker.place_order.call_args[1]
+    assert kwargs["side"] == "sell"
+
+def test_open_short_position_skipped_when_account_cannot_short(portfolio, mock_broker):
+    mock_broker.shorting_enabled.return_value = False
+    opened = portfolio.open_position(
+        "TSLA", position_pct=4.0, signal_id=1, rationale="Test",
+        entry_price=250.0, direction="short",
+    )
+    assert opened is False
+    mock_broker.place_order.assert_not_called()
+
+def test_open_short_position_skipped_when_not_shortable(portfolio, mock_broker):
+    mock_broker.shorting_enabled.return_value = True
+    mock_broker.is_shortable.return_value = False
+    opened = portfolio.open_position(
+        "GME", position_pct=4.0, signal_id=1, rationale="Test",
+        entry_price=25.0, direction="short",
+    )
+    assert opened is False
+    mock_broker.place_order.assert_not_called()
+
+def test_open_short_position_stop_is_above_entry(portfolio, mock_broker):
+    """Mirrors test_open_position_uses_broker_fill_data_when_available's mocking
+    pattern: a real Order with status set to the OrderStatus.FILLED enum member
+    (not `.status.value = "filled"`, which both fails to satisfy the code's
+    `order.status == OrderStatus.FILLED` enum comparison and would error outright —
+    OrderStatus.FILLED is an enum member and does not allow attribute assignment)."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    mock_broker.is_shortable.return_value = True
+    mock_broker.shorting_enabled.return_value = True
+    filled_order = Order(
+        ticker="TSLA", side=OrderSide.SELL, qty=4.0, order_type=OrderType.MARKET,
+    )
+    filled_order.status = OrderStatus.FILLED
+    filled_order.filled_qty = 4.0
+    filled_order.filled_avg_price = 250.0
+    mock_broker.place_order.return_value = filled_order
+
+    portfolio.open_position(
+        "TSLA", position_pct=4.0, signal_id=1, rationale="Test",
+        entry_price=250.0, direction="short",
+    )
+    stop_kwargs = mock_broker.place_stop_order.call_args[1]
+    assert stop_kwargs["stop_price"] > 250.0
+    assert stop_kwargs["side"] == "buy"
