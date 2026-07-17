@@ -114,13 +114,30 @@ pmset -g assertions | grep -A1 "caffeinate.*python3"
 `-i` prevents idle sleep, `-s` prevents system sleep while on AC power —
 covers every `Idle Sleep`/`Maintenance Sleep` event seen so far.
 
-**Known gap — does NOT cover lid-closed (clamshell) sleep.** Verified via
+**Known gap — does NOT fully cover Power Nap / clamshell sleep.**
+2026-07-16: the bot wedged again despite the caffeinate assertion being
+active the whole time. `pmset -g log` showed the laptop repeatedly cycling
+`Sleep`/`DarkWake` ("Sleep Service Back to Sleep") on battery — classic
+Power Nap behavior (`pmset -g custom` showed `powernap 1` on both Battery
+and AC Power), which is a separate sleep mechanism from the idle/system
+sleep `caffeinate -i -s` actually covers. Mitigation applied 2026-07-17:
+`sudo pmset -a powernap 0` (targeted, no meaningful battery/heat cost —
+see escalation options below for the heavier alternatives). Verified via
 research, not assumption: closing the lid without an external display
-attached triggers sleep at the hardware lid-sensor level, and no
-`caffeinate` assertion overrides it — Apple's own clamshell-mode support
-requires an external display, keyboard/mouse, and power connected
-simultaneously. If the laptop's lid gets closed while the bot is running,
-it can still wedge.
+attached triggers sleep at the hardware lid-sensor level separately, and
+no `caffeinate` assertion overrides that either — Apple's own
+clamshell-mode support requires an external display, keyboard/mouse, and
+power connected simultaneously. If the laptop's lid gets closed while the
+bot is running, it can still wedge.
+
+**Belt-and-suspenders as of 2026-07-16: even if a sleep-driven wedge
+recurs, it no longer requires a human to notice.** See
+[`#watchdog`](#watchdog) below — an active auto-restart watchdog now
+bounds any wedge (whatever its cause) to roughly 15-30 minutes instead of
+however long it takes someone to check. The escalation options below
+remain worth doing to *minimize* how often restarts happen (a restart
+loses whatever window was in flight), but they're no longer the only
+thing standing between a sleep event and multi-hour downtime.
 
 **If lid-closed sleep recurs, next steps in order of increasing commitment:**
 1. **`sudo pmset -a disablesleep 1`** — fully disables all sleep, including
@@ -185,6 +202,64 @@ Runs every 4h (`StartInterval`) plus once immediately on load. Same
 Background Task Management approval gate as the main bot applies here too
 (see the launchd status note above) — approve both in the same System
 Settings visit. Logs to `dead_mans_switch.log` (separate from `bot.log`).
+
+<a id="watchdog"></a>
+## Reliability watchdog (added 2026-07-16)
+
+The dead-man's switch above is **alert-only** and checks every 4 hours —
+it only ever catches a fully-dead process, and only by the next trading
+day at the earliest. On 2026-07-16 the bot wedged (scheduler silently
+stopped dispatching jobs — see [`#sleep-wedges`](#sleep-wedges)) and sat
+undetected for ~20 hours because that was, by design, an "alert a human
+and hope they check soon" model. This **reverses** the 2026-07-14
+decision to stay alert-only (see `docs/STATE.md`'s Decisions log for the
+original reasoning and the reversal) — `monitoring/watchdog.py` runs as
+its own `StartInterval` LaunchAgent, checks every 15 minutes, and
+**takes action** instead of just alerting.
+
+**What it checks, in order:**
+1. Is the PID from `bot_status.json` (written at bot startup by
+   `monitoring/status_file.py`) still alive? If not, restart — no
+   further checks needed, a dead process can't be "mid-job".
+2. Has `bot.log` been touched in the last 10 minutes? If yes, do nothing
+   this cycle — this is the safety gate that stops the watchdog from
+   ever mistaking a legitimately long-running pipeline (the 07-16
+   catch-up run took ~10 minutes end-to-end) for a wedge.
+3. Is any of the three core cron jobs (`run_morning_pipeline` 15:40,
+   `run_intraday_check` 20:00, `run_eod` 22:30, all Amsterdam time) more
+   than 30 minutes overdue for today without a `job_runs` row? If so,
+   restart.
+4. Is the running process's commit (from `bot_status.json`) different
+   from the repo's current `HEAD`? If so, restart — this closes the
+   "stale deploy" gap that caused two prior incidents
+   (`docs/CLAUDE-REFERENCE.md#history`, 2026-07-14 and 2026-07-15
+   sessions each found the running process was older than the latest
+   fix and needed a human-triggered restart to pick it up).
+
+**Restart mechanics:** kills the old PID (verified via `ps -p <pid> -o
+command=` to contain `run_bot.py` first — never kills on PID alone, in
+case of PID reuse), relaunches with the same `nohup caffeinate -i -s
+python3 run_bot.py` command documented above, and fires an alert via the
+existing webhook either way (so a restart is visible, not silent).
+
+```bash
+python -m monitoring.watchdog    # one-off manual cycle, logs its decision
+launchctl kickstart -k gui/$(id -u)/com.thomasvromen.tradingbot-watchdog  # force a cycle now
+tail -f watchdog.log
+```
+
+Loaded via `~/Library/LaunchAgents/com.thomasvromen.tradingbot-watchdog.plist`
+(same `StartInterval` pattern as the dead-man's-switch plist above, not
+subject to the `KeepAlive`/Background-Task-Management block — see the
+launchd status note). `StartInterval` 900s (15 min) + `RunAtLoad`.
+
+**To pause it** (e.g. during manual debugging of the bot itself, so the
+watchdog doesn't restart it mid-investigation):
+```bash
+launchctl bootout gui/$(id -u)/com.thomasvromen.tradingbot-watchdog
+# ...when done:
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot-watchdog.plist
+```
 
 ## Daily health check
 

@@ -53,3 +53,4 @@ trading bot/pit_cache/
 # Regenerated model cache / live runtime state (can contain live position/PnL data)
 trading bot/regime_model.joblib
 trading bot/dashboard_state.json
+trading bot/bot_status.json

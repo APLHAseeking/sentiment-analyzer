@@ -576,3 +576,62 @@ closed market.
 > live-trading action with no remaining justification. Full suite: **942 passed** (fresh
 > re-run after both fixes, matches the SUE-PIT-backtest count above — that work landed on
 > disk from a concurrent session mid-way through this one).
+>
+> **2026-07-16/17 (reliability watchdog, commits `654eb49`/`41691ae`/`c43bd66`):** after two
+> more scheduler wedges in 24h — 07-16 sat undetected from ~22:30 to 18:51 the next day
+> (found and restarted manually), then wedged *again* overnight 07-16 20:00 -> 07-17 10:44
+> (caught live during this exact session) — the user asked for a permanent fix, citing ~10
+> cumulative "not trading"/downtime incidents and explicitly rejecting another one-off
+> patch. `pmset -g log` on the second wedge again showed the caffeinate assertion active the
+> whole time, with repeated "Sleep Service Back to Sleep" cycling on battery — Power Nap
+> (`powernap=1` in `pmset -g custom`), a distinct mechanism from the idle/system sleep
+> `caffeinate -i -s` actually prevents.
+>
+> Research (delegated to an Explore subagent to keep the incident table out of main
+> context) built a full chronological inventory from `docs/STATE.md` and this file's own
+> history and found the incidents are genuinely **not** one recurring bug — at least 15
+> structurally distinct classes (LLM param compat, stop-order TIF mismatch, two separate
+> rate-limit bugs, unconditional-insert-on-unknown-status, insufficient poll window,
+> scheduler-state-not-persisted, missing-timeout hangs, wrong pipeline timing window, three
+> separate bool-return-ignored manifestations, NAV baseline collision, wash-trade race,
+> sqlite3.Row/dict type mismatch, stale-deploy-running-old-code (recurred twice), and two
+> distinct OS-level sleep gaps). Fixing the latest one every time was never going to reach
+> "never again" — the plan instead targeted **bounded auto-recovery regardless of cause**.
+>
+> Built: (1) `job_runs` coverage extended from just `run_morning_pipeline` to all three core
+> cron jobs (`run_intraday_check`, `run_eod` now call `db.record_job_run` too) — previously
+> a wedge occurring after the morning pipeline already succeeded that day was invisible to
+> any `job_runs`-based freshness check; (2) `monitoring/status_file.py` — writes
+> `bot_status.json` (pid, git commit, started_at) at every `initialize()` call, closing the
+> stale-deploy gap that caused the 07-14 and 07-15 sessions to each need a human to notice
+> the running process was older than the latest fix; (3) `monitoring/watchdog.py` — a new
+> `StartInterval` LaunchAgent (900s / 15 min, `~/Library/LaunchAgents/
+> com.thomasvromen.tradingbot-watchdog.plist`) that checks process liveness, per-job
+> staleness (30 min grace past each cron time), and deploy freshness, auto-restarting on any
+> of them. This **reverses** the 2026-07-14 decision to stay alert-only
+> (`docs/STATE.md` Decisions/Constraints — that decision assumed a human noticing within
+> hours was an acceptable tradeoff; a ~20h undetected wedge showed it wasn't). Every restart
+> is gated on 10 minutes of `bot.log` quiet, so a legitimately long-running catch-up
+> pipeline (observed to take ~10 min end-to-end) is never mistaken for a wedge — the only
+> unconditional check is process liveness, since a dead PID cannot be "mid-job". The kill
+> itself is verified via `ps -p <pid> -o command=` containing `run_bot.py` before acting,
+> never by PID alone, guarding against PID reuse.
+>
+> Caught a real bug before it shipped: the `orch`/`orch_fitted` fixtures in
+> `test_orchestrator.py` and two direct `RegimeAwareOrchestrator(settings)` constructions in
+> `test_event_calendar.py` build real orchestrator instances — without mocking the new
+> `write_status_file`, every test run would have overwritten the live bot's actual
+> `bot_status.json` with a fake test PID. Fixed by mocking it at all 4 construction sites
+> before any test ran against the new code.
+>
+> Live-verified end-to-end, not just unit-tested: the 07-16/17 overnight wedge was
+> discovered live during this session (bot quiet since 20:00 the prior evening, no `job_runs`
+> row for 07-17), restarted (safe per `docs/RUNBOOK.md#safe-restart` — 14+ hours quiet, not
+> mid-job) to deploy the new code, and a forced watchdog cycle
+> (`launchctl kickstart -k ...`) correctly read the fresh `bot_status.json` and reported
+> `healthy:recent_activity`. Separately, per the user's explicit choice between the
+> documented sleep-mitigation options, `sudo pmset -a powernap 0` was handed to the user to
+> run themselves (agent cannot run `sudo` interactively) as a targeted fix for the specific
+> Power-Nap symptom observed, rather than full `disablesleep` or a laptop migration — see
+> `docs/RUNBOOK.md#sleep-wedges`. Full suite: **975 passed** (was 947 at session start), zero
+> known failures.

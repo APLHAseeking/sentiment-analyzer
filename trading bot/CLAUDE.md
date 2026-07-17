@@ -120,6 +120,28 @@
 > is a separate, untouched path). Both fixes proven via stash-and-rerun red/green. Test
 > count: **942** (full suite green, zero known failures; count moved from 932 mid-session
 > as a concurrent SUE-PIT-backtest session landed its own test files on disk).
+> 2026-07-16/17: two more scheduler wedges (07-16 ~22:30→18:51 the next day, then again
+> 07-16 20:00→07-17 10:44) despite the 07-15 `caffeinate -i -s` fix — `pmset -g log` showed
+> Power Nap ("Sleep Service Back to Sleep") cycling active on battery the whole time,
+> bypassing that assertion. User asked for a permanent fix after ~10 cumulative
+> "not trading"/downtime incidents rather than another one-off patch. Research found the
+> incidents are ~15 structurally distinct bug classes, not one recurring bug, so the fix
+> targets bounded auto-recovery regardless of cause instead of chasing another single bug:
+> `monitoring/watchdog.py`, a new 15-min `StartInterval` LaunchAgent that checks process
+> liveness, per-job staleness (`job_runs` coverage extended from just
+> `run_morning_pipeline` to all three core cron jobs), and deploy freshness (a new
+> `bot_status.json` written at `initialize()`, closing the stale-running-process gap from
+> 07-14/07-15), and auto-restarts on any of them — gated on 10 min of `bot.log` quiet so a
+> legitimate long catch-up pipeline is never mistaken for a wedge. This reverses the
+> 2026-07-14 decision to stay alert-only (`docs/STATE.md` Decisions/Constraints). Caught one
+> real bug pre-ship: the orchestrator test fixtures would have had the real
+> `write_status_file()` clobber the live bot's actual status file on every test run — mocked
+> at all 4 construction sites. Live-verified end-to-end (not just unit-tested): the second
+> 07-16/17 wedge was caught live during this work, the restart deployed the new code, and a
+> forced watchdog cycle correctly read the fresh status file and reported
+> `healthy:recent_activity`. See `docs/RUNBOOK.md#watchdog` and
+> `docs/CLAUDE-REFERENCE.md#history` for detail. Test count: **975** (full suite green, zero
+> known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

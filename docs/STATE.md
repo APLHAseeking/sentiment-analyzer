@@ -8,15 +8,14 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-Session closing (2026-07-15, ~19:00 CEST). Final live check before close: bot process PID
-11292 healthy (`caffeinate -i -s` wrapped, up ~41 min), 11 open positions (VICI/PFE from
-07-14 + HIG/FSLR/VZ/AFL/LVS + hedges SH/PSQ/RWM/EFZ all opened 07-15), no `RISK_LOCKOUT`,
-git status clean (only the pre-existing unrelated `MIGRATION-LOG.md` drift, not touched).
-An OS-detached watcher script (survives this session closing — confirmed reparented to
-launchd, PPID=1) is running: sleeps until 2026-07-16 15:45 CEST, then writes a status check
-(process alive? `job_runs` row for that date? did catch-up have to fire, meaning the 15:40
-cron itself still failed?) to `trading bot/tomorrow_1540_check.log`. Read that file directly,
-or just ask a future session to check — either works.
+2026-07-17, ~10:45 CEST. Built and deployed the reliability watchdog (see Decisions/Done
+below) after the bot wedged twice more in 24h (07-16 ~22:30-18:51, and again overnight
+07-16 20:00 -> 07-17 10:44, both caught live during this work, not via the old alert-only
+path). Bot process PID 31860 (`caffeinate -i -s` wrapped, restarted 07-17 10:44 to deploy
+Tasks 1-3's code), watchdog LaunchAgent loaded and confirmed working end-to-end
+(`healthy:recent_activity` after the restart). Full suite: 975 passed. Outstanding: user
+still needs to run `sudo pmset -a powernap 0` themselves (agent can't run sudo) — confirm
+with `pmset -g custom | grep powernap` afterward.
 
 Earlier the same day: implemented the user-approved "widen screener review" design (top-N
 12→30 via new `UniverseConfig.screener_top_n`, daily cap 3→5) — commit `7a185ce`. Found the
@@ -44,7 +43,7 @@ of bare `nohup python3`.
   `docs/RUNBOOK.md#sleep-wedges` for the full writeup. Not actioned without the user choosing.
 
 ## Constraints
-- User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix. [CLOSED 2026-07-14 — root cause is KeepAlive itself being blocked by macOS Background Task Management for an unsigned binary, not fixable; user accepted manual nohup + dead-man's-switch instead.]
+- User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix. [CLOSED 2026-07-14 — root cause is KeepAlive itself being blocked by macOS Background Task Management for an unsigned binary, not fixable; user accepted manual nohup + dead-man's-switch instead. SUPERSEDED 2026-07-16 — user asked for a permanent fix after a ~20h undetected wedge, reversing the "manual restart is acceptable" premise; see the 2026-07-16 DECISION under `## Decisions`. The auto-restart watchdog built then uses StartInterval, not KeepAlive, so the original technical blocker doesn't apply to it.]
 - User 2026-07-10: include an entry-hurdle loosening proposal now (3x cost / 1.0% absolute), evaluated via observability not a pre-hoc backtest (not feasible — no stored expected_return field).
 - User 2026-07-14: SUE PIT backtest — reuse the exact SUE formula unmodified, only new SEC call is companyfacts, zero new LLM calls, cache to parquet, do not touch the live 0.15 weight or enable anything (recommendation only). [Honored throughout — screener/factor_scorer.py never touched.]
 - Original task: keep test suite green; follow repo CLAUDE.md/CODE.md conventions; log changes in docs/CLAUDE-REFERENCE.md#history
@@ -57,7 +56,9 @@ of bare `nohup python3`.
 - DECISION: insider feed = EDGAR daily form.idx primary (2 newest published, newest first), getcurrent fallback, max_filings_per_run 300 budget.
 - DECISION: event-calendar gate NOT carved out for PEAD — explicit future decision (EDGE_BACKLOG).
 - DECISION: XBRL via frames API (~20 req/screen, 20h shelve cache xbrl_frames_cache, gitignored); SUE anchor shifts to filer's newest available quarter (max 2 stale) — slot 0 empty ~40 days post-quarter, Q4 frames sparse.
-- DECISION: main bot's launchd auto-restart closed permanently — root cause is KeepAlive blocked by macOS Background Task Management for an unsigned Homebrew binary; a StartInterval-supervisor workaround was proposed and declined. Bot runs via manual nohup indefinitely.
+- DECISION: main bot's launchd auto-restart (KeepAlive) closed permanently — root cause is KeepAlive blocked by macOS Background Task Management for an unsigned Homebrew binary, not fixable via plist/Settings. Bot still runs via manual nohup. (Does NOT apply to the StartInterval watchdog below — StartInterval isn't KeepAlive and isn't blocked by this gate, confirmed by the dead-man's-switch already running fine as a StartInterval LaunchAgent.)
+- DECISION (2026-07-16, reverses the 2026-07-14 StartInterval-supervisor decline recorded under `## Constraints`): built an active auto-restart watchdog (`monitoring/watchdog.py`) after a wedge sat undetected ~20h under the alert-only model — the 2026-07-14 reasoning ("manual restart is an acceptable tradeoff... dead-man's switch already detects a stale bot") assumed a human would notice within hours; it didn't bound downtime the way that assumed. Every restart gated on 10 min of `bot.log` quiet so it never kills a legitimately running pipeline. See `trading bot/docs/RUNBOOK.md#watchdog`.
+- DECISION (2026-07-17): sleep mitigation — disable Power Nap only (`sudo pmset -a powernap 0`), not full `disablesleep` or a laptop migration. Targeted at the specific `pmset -g log` symptom observed (`Sleep Service Back to Sleep` cycling, `powernap=1` on both Battery/AC); the heavier options remain documented in `docs/RUNBOOK.md#sleep-wedges` if this proves insufficient. Not urgent now that the watchdog bounds downtime regardless.
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
@@ -154,19 +155,46 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
   immediately, ran the full screener+AI pipeline, and opened a real position (ACGL, 0.9%,
   conv=7) — confirmed via `job_runs` and `positions` rows for 2026-07-16, not just log text.
   Scheduler now live on a fresh 22:30 EOD job.
+- 2026-07-17 (reliability watchdog, commits `654eb49`/`41691ae`/`c43bd66`): user asked for a
+  permanent fix after ~10 cumulative "not trading"/downtime incidents, wanting a "never happen
+  again" guarantee rather than another one-off patch. Research (delegated to an Explore
+  subagent) found the incidents collapse into ~15 structurally distinct bug classes, not one
+  recurring bug — so the plan targeted bounded auto-recovery regardless of root cause, not
+  another single-bug fix. Built: (1) `job_runs` coverage extended from just
+  `run_morning_pipeline` to all three core cron jobs (`run_intraday_check`, `run_eod`) — only
+  the first was ever recorded, so a wedge occurring after the morning pipeline already
+  succeeded was previously invisible to any freshness check; (2) `monitoring/status_file.py`
+  — writes `bot_status.json` (pid, git commit, started_at) at every `initialize()` call, the
+  only way an external process can know the bot's PID/commit without any in-process
+  self-monitoring; (3) `monitoring/watchdog.py` — a new `StartInterval` LaunchAgent (15 min),
+  checks process liveness, per-job staleness, and deploy freshness, and auto-restarts on any
+  of them, gated on 10 minutes of `bot.log` quiet so a legitimate long-running catch-up
+  pipeline (observed to take ~10 min) is never mistaken for a wedge; kill is verified via
+  `ps -p <pid> -o command=` containing `run_bot.py` first, never by PID alone (PID-reuse
+  safety). Caught a real bug before it shipped: the `orch`/`orch_fitted` test fixtures and 2
+  direct-construction tests in `test_event_calendar.py` would have called the real
+  `write_status_file()` on every test run, clobbering the live bot's actual `bot_status.json`
+  with a fake test PID — fixed by mocking it at all 4 construction sites before any test ran
+  against the new code. Live-verified end-to-end, not just unit-tested: caught the bot wedged
+  *again* (overnight 07-16 20:00 CEST -> 07-17 10:44, a live real-time recurrence found during
+  this exact work), restarted it to deploy the new code, and confirmed the watchdog correctly
+  read the fresh status file and reported `healthy:recent_activity` on a forced cycle. Full
+  suite: 975 passed (was 947 at session start).
 
 ## Open items
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
 - Insider routine-buyer filter — recorded in EDGE_BACKLOG.md, viable after ~1yr of insider history (feed started 2026-07-07)
 - docs/guardrails/MIGRATION-LOG.md still shows as modified in `git status` — pre-existing uncommitted drift, predates this session, not touched
 - Russell 1000 universe unresolved — genuinely blocked on the user obtaining `FMP_API_KEY` (or a paid data source); no free/no-signup alternative found after 4 sources tried across sessions
-- Scheduler wedges (2026-07-14 x2, 2026-07-15 x1, 2026-07-16 x1) — root cause confirmed real
-  macOS sleep events (`pmset -g log`), not a code bug, but `caffeinate -i -s` does NOT fully
-  prevent recurrence: 07-16's wedge happened with the caffeinate assertion active the whole
-  time, correlating with repeated "Sleep Service Back to Sleep"/DarkWake cycling on battery —
-  the documented clamshell/Power-Nap gap, not yet mitigated. Manual restart is still required
-  when it happens; the user has not yet chosen between `sudo pmset -a disablesleep 1` or
-  migrating off the laptop (see `docs/RUNBOOK.md#sleep-wedges`).
+- Scheduler wedges (2026-07-14 x2, 2026-07-15 x1, 2026-07-16 x2 incl. one caught live
+  2026-07-17 morning) — root cause confirmed real macOS sleep events (`pmset -g log`), not a
+  code bug; `caffeinate -i -s` does not fully prevent recurrence (Power Nap/"Sleep Service"
+  cycling bypasses it). Two changes as of 2026-07-16/17: (1) `sudo pmset -a powernap 0`
+  targets the specific symptom (user to run/confirm — agent cannot run sudo); (2) an active
+  watchdog (`monitoring/watchdog.py`) now auto-restarts within ~15-30 min regardless of
+  whether the sleep mitigation fully holds, so this no longer requires a human to notice or
+  manually restart. Full `disablesleep`/laptop migration remain optional further hardening,
+  documented but not urgent (see `docs/RUNBOOK.md#sleep-wedges`).
 
 ## Failed attempts
 (none this session — every fix attempt that failed a first pass was corrected same-turn, e.g. two wrong SUE quarter-bucketing hypotheses before the verified-correct one, documented in the SUE PIT backtest commit history rather than repeated here)
