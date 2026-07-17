@@ -445,3 +445,9 @@ def test_place_stop_order_default_side_is_still_sell(broker, mock_api):
     broker.place_stop_order(ticker="AAPL", qty=5.0, stop_price=140.0)
     req = mock_api.submit_order.call_args[0][0]
     assert str(req.side).lower().endswith("sell")
+
+
+def test_place_stop_order_rejects_invalid_side(broker, mock_api):
+    result = broker.place_stop_order(ticker="AAPL", qty=5.0, stop_price=140.0, side="short")
+    assert result is None
+    mock_api.submit_order.assert_not_called()

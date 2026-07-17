@@ -273,6 +273,10 @@ class AlpacaBroker(BrokerInterface):
         poll re-places it each intraday check regardless (existing_stop reads
         back as 0.0 once expired), so overnight re-arming is already handled.
         """
+        if side not in ("buy", "sell"):
+            log.warning("Invalid side for place_stop_order: %r — expected 'buy' or 'sell'", side)
+            return None
+
         from alpaca.trading.requests import StopOrderRequest
         tif = TimeInForce.DAY if qty != int(qty) else TimeInForce.GTC
         req = StopOrderRequest(
