@@ -178,9 +178,18 @@ def check_and_recover(now: datetime | None = None) -> str:
 
 def main() -> int:
     setup_logging()
-    result = check_and_recover()
-    log.info("Watchdog cycle: %s", result)
-    return 0
+    try:
+        result = check_and_recover()
+        log.info("Watchdog cycle: %s", result)
+        return 0
+    except Exception as exc:
+        log.exception("Watchdog cycle crashed unexpectedly")
+        fire_alert(
+            "watchdog_crashed",
+            f"Watchdog cycle raised an unhandled exception: {exc}",
+            {"error": str(exc)},
+        )
+        return 1
 
 
 if __name__ == "__main__":

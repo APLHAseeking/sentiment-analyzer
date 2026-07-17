@@ -4,9 +4,9 @@ This check must run as its own separate process from run_bot.py -- see the
 module docstring for why. These tests exercise only its logic (job_runs
 staleness vs. the NYSE calendar), not the process-supervision side.
 """
-from datetime import datetime, UTC
+from datetime import datetime, timedelta, UTC
 
-from monitoring.dead_mans_switch import check_pipeline_freshness
+from monitoring.dead_mans_switch import check_pipeline_freshness, check_watchdog_freshness
 
 # Wednesday, with Tuesday 2026-07-14 as the prior trading session (both
 # ordinary weekdays, no US market holiday between them).
@@ -51,3 +51,34 @@ def test_healthy_when_last_run_is_after_expected_session(db, mocker):
 
     assert check_pipeline_freshness(now=_NOW) is True
     alert_spy.assert_not_called()
+
+
+def test_watchdog_check_healthy_when_log_recent(mocker, tmp_path):
+    log_file = tmp_path / "watchdog.log"
+    log_file.write_text("2026-07-17 11:15:11 INFO ... Watchdog cycle: healthy\n")
+    mocker.patch("monitoring.dead_mans_switch._WATCHDOG_LOG", log_file)
+    alert_spy = mocker.patch("monitoring.dead_mans_switch.fire_alert")
+    now = datetime.fromtimestamp(log_file.stat().st_mtime, tz=UTC)
+
+    assert check_watchdog_freshness(now=now) is True
+    alert_spy.assert_not_called()
+
+
+def test_watchdog_check_stale_when_log_old_fires_distinct_alert(mocker, tmp_path):
+    log_file = tmp_path / "watchdog.log"
+    log_file.write_text("old\n")
+    mocker.patch("monitoring.dead_mans_switch._WATCHDOG_LOG", log_file)
+    alert_spy = mocker.patch("monitoring.dead_mans_switch.fire_alert")
+    stale_now = datetime.fromtimestamp(log_file.stat().st_mtime, tz=UTC) + timedelta(minutes=41)
+
+    assert check_watchdog_freshness(now=stale_now) is False
+    alert_spy.assert_called_once()
+    assert alert_spy.call_args.args[0] == "dead_mans_switch_watchdog"
+
+
+def test_watchdog_check_stale_when_log_missing_entirely(mocker, tmp_path):
+    mocker.patch("monitoring.dead_mans_switch._WATCHDOG_LOG", tmp_path / "does_not_exist.log")
+    alert_spy = mocker.patch("monitoring.dead_mans_switch.fire_alert")
+
+    assert check_watchdog_freshness() is False
+    alert_spy.assert_called_once()

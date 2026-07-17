@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import sys
 from datetime import datetime, timedelta, UTC
+from pathlib import Path
 
 import exchange_calendars as xcals
 
@@ -22,6 +23,8 @@ from monitoring.logger import setup_logging
 
 log = logging.getLogger(__name__)
 _NYSE = xcals.get_calendar("XNYS")
+_WATCHDOG_LOG = Path(__file__).resolve().parent.parent / "watchdog.log"
+_WATCHDOG_STALE_MINUTES = 40  # ~2.5x the watchdog's own 15-min StartInterval
 
 
 def _last_completed_session_before(when: datetime) -> str | None:
@@ -76,10 +79,40 @@ def check_pipeline_freshness(now: datetime | None = None) -> bool:
     return False
 
 
+def check_watchdog_freshness(now: datetime | None = None) -> bool:
+    """Return True if the reliability watchdog (monitoring/watchdog.py)
+    itself looks alive, False if it appears to have stopped running
+    entirely. This is the layer that catches a bug IN the watchdog --
+    nothing inside that process can be trusted to detect its own failure,
+    same reasoning as check_pipeline_freshness above but one level up.
+    """
+    now = now or datetime.now(UTC)
+    if not _WATCHDOG_LOG.exists():
+        fire_alert(
+            "dead_mans_switch_watchdog",
+            "watchdog.log does not exist -- the reliability watchdog may never have run",
+            {},
+        )
+        return False
+    age_minutes = (now - datetime.fromtimestamp(
+        _WATCHDOG_LOG.stat().st_mtime, tz=UTC
+    )).total_seconds() / 60
+    if age_minutes > _WATCHDOG_STALE_MINUTES:
+        fire_alert(
+            "dead_mans_switch_watchdog",
+            f"watchdog.log hasn't been touched in {age_minutes:.0f} min "
+            f"(expected every 15) -- the reliability watchdog may have stopped running",
+            {"age_minutes": age_minutes},
+        )
+        return False
+    return True
+
+
 def main() -> int:
     setup_logging()
-    healthy = check_pipeline_freshness()
-    return 0 if healthy else 1
+    pipeline_healthy = check_pipeline_freshness()
+    watchdog_healthy = check_watchdog_freshness()
+    return 0 if (pipeline_healthy and watchdog_healthy) else 1
 
 
 if __name__ == "__main__":

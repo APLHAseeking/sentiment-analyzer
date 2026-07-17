@@ -201,3 +201,24 @@ def test_check_and_recover_skips_when_no_status_file(mocker):
 
     restart_spy.assert_not_called()
     assert result == "no_status_file"
+
+
+def test_main_alerts_and_returns_1_on_unhandled_exception(mocker):
+    mocker.patch("monitoring.watchdog.setup_logging")
+    mocker.patch("monitoring.watchdog.check_and_recover", side_effect=RuntimeError("boom"))
+    alert_spy = mocker.patch("monitoring.watchdog.fire_alert")
+
+    result = watchdog.main()
+
+    assert result == 1
+    alert_spy.assert_called_once()
+    assert alert_spy.call_args.args[0] == "watchdog_crashed"
+
+
+def test_main_returns_0_on_normal_cycle(mocker):
+    mocker.patch("monitoring.watchdog.setup_logging")
+    mocker.patch("monitoring.watchdog.check_and_recover", return_value="healthy:quiet_but_expected")
+    alert_spy = mocker.patch("monitoring.watchdog.fire_alert")
+
+    assert watchdog.main() == 0
+    alert_spy.assert_not_called()
