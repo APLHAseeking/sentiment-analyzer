@@ -374,6 +374,12 @@ class Settings:
             raise ValueError("daily_loss_halt_pct must be < weekly_loss_halt_pct")
         if self.risk.daily_loss_deleverage_pct >= self.risk.max_drawdown_lockout_pct:
             raise ValueError("daily_loss_deleverage_pct must be < max_drawdown_lockout_pct")
+        if self.risk.max_short_position_pct > self.risk.max_position_pct:
+            raise ValueError("max_short_position_pct must be <= max_position_pct")
+        if self.risk.max_short_positions > self.risk.max_positions:
+            raise ValueError("max_short_positions must be <= max_positions")
+        if self.risk.short_trailing_stop_pct > self.risk.trailing_stop_pct:
+            raise ValueError("short_trailing_stop_pct must be <= trailing_stop_pct")
         if self.backtest.train_years <= 0 or self.backtest.test_months <= 0:
             raise ValueError("Backtest train/test windows must be positive")
         if self.allocation.min_confidence_to_trade < 0 or self.allocation.min_confidence_to_trade > 1:

@@ -171,5 +171,38 @@ def test_short_risk_caps_tighter_than_long():
     assert s.risk.short_trailing_stop_pct < s.risk.trailing_stop_pct
 
 
+def test_validate_short_position_pct_must_be_tighter_than_long():
+    """Verify that defaults pass validate()."""
+    s = Settings()
+    s.validate()  # should not raise
+
+
+def test_validate_rejects_short_position_pct_exceeds_long():
+    """max_short_position_pct must be <= max_position_pct."""
+    from dataclasses import replace
+    risk = RiskConfig(max_short_position_pct=10.0, max_position_pct=8.0)
+    s = Settings(risk=risk)
+    with pytest.raises(ValueError, match="max_short_position_pct must be <= max_position_pct"):
+        s.validate()
+
+
+def test_validate_rejects_short_positions_count_exceeds_long():
+    """max_short_positions must be <= max_positions."""
+    from dataclasses import replace
+    risk = RiskConfig(max_short_positions=30, max_positions=20)
+    s = Settings(risk=risk)
+    with pytest.raises(ValueError, match="max_short_positions must be <= max_positions"):
+        s.validate()
+
+
+def test_validate_rejects_short_trailing_stop_exceeds_long():
+    """short_trailing_stop_pct must be <= trailing_stop_pct."""
+    from dataclasses import replace
+    risk = RiskConfig(short_trailing_stop_pct=20.0, trailing_stop_pct=15.0)
+    s = Settings(risk=risk)
+    with pytest.raises(ValueError, match="short_trailing_stop_pct must be <= trailing_stop_pct"):
+        s.validate()
+
+
 def test_screener_short_top_n_default():
     assert Settings().universe.screener_short_top_n == 12
