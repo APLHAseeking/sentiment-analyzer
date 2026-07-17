@@ -33,6 +33,17 @@ pops the native macOS auth dialog (password/Touch ID) instead of requiring an in
 session either). Verified via `pmset -g custom | grep powernap` — both lines now read `0`.
 `docs/RUNBOOK.md` updated accordingly.
 
+**Update, same day, later still (this session):** user asked "will it now ever happen again
+without intervention?" — answered honestly with 4 residual gaps (reboot-without-login, a bug
+in the watchdog itself, a persistent-code-bug crash-loop, a stuck-but-still-logging scenario
+that never trips the quiet-gate), then built a fix for all 4 on request. See Decisions/Done
+below for detail; full suite 985 passed. One live scare mid-build: the watchdog's own
+auto-restart at 11:00:09 crashed (bare `"python3"` resolved to the wrong interpreter under
+the LaunchAgent's minimal PATH — system 3.9, not Homebrew 3.11+ — `ImportError` on
+`datetime.UTC`), leaving the bot down ~13 min until caught by this exact "is it done" check.
+Fixed (`sys.executable`), proven via a real (not mocked) `restart_bot()` call against the
+live process, not just a unit test.
+
 Earlier the same day (concurrent session, not this one): built and deployed the reliability
 watchdog after the bot wedged twice more in 24h (07-16 ~22:30→18:51, and again overnight
 07-16 20:00→07-17 10:44) — see Decisions/Done below.
@@ -81,6 +92,8 @@ of bare `nohup python3`.
 - DECISION: main bot's launchd auto-restart (KeepAlive) closed permanently — root cause is KeepAlive blocked by macOS Background Task Management for an unsigned Homebrew binary, not fixable via plist/Settings. Bot still runs via manual nohup. (Does NOT apply to the StartInterval watchdog below — StartInterval isn't KeepAlive and isn't blocked by this gate, confirmed by the dead-man's-switch already running fine as a StartInterval LaunchAgent.)
 - DECISION (2026-07-16, reverses the 2026-07-14 StartInterval-supervisor decline recorded under `## Constraints`): built an active auto-restart watchdog (`monitoring/watchdog.py`) after a wedge sat undetected ~20h under the alert-only model — the 2026-07-14 reasoning ("manual restart is an acceptable tradeoff... dead-man's switch already detects a stale bot") assumed a human would notice within hours; it didn't bound downtime the way that assumed. Every restart gated on 10 min of `bot.log` quiet so it never kills a legitimately running pipeline. See `trading bot/docs/RUNBOOK.md#watchdog`.
 - DECISION (2026-07-17): sleep mitigation — disable Power Nap only (`sudo pmset -a powernap 0`), not full `disablesleep` or a laptop migration. Targeted at the specific `pmset -g log` symptom observed (`Sleep Service Back to Sleep` cycling, `powernap=1` on both Battery/AC); the heavier options remain documented in `docs/RUNBOOK.md#sleep-wedges` if this proves insufficient. Not urgent now that the watchdog bounds downtime regardless.
+- DECISION (2026-07-17): watchdog moved from a LaunchAgent to a LaunchDaemon (`UserName` key) to close "reboot/logout with nobody logged in" — chosen over auto-login, which FileVault (confirmed on via `fdesetup status`) disables outright. Residual, deliberately left open: a truly cold boot from fully powered off still needs a human to enter the FileVault pre-boot password — no launchd domain runs before that, software cannot skip it.
+- DECISION (2026-07-17): answer to "will it ever happen again without intervention?" is honest, not absolute — closed 4 specific gaps (reboot-without-login via the LaunchDaemon above, a bug in the watchdog itself via cross-checked alerting, an unbounded restart-crash-loop via a circuit breaker, a stuck-but-logging blind spot via a hard ceiling) but explicitly did NOT claim zero remaining gaps. Cold-boot-from-off (FileVault) and "a new, not-yet-found bug in the watchdog's own code" both remain genuinely possible; the honest framing was itself something the user asked for and got, not a hedge to walk back later.
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
@@ -216,6 +229,47 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
   corrected one real inaccuracy: `docs/RUNBOOK.md` claimed `sudo pmset -a powernap 0` was
   "applied" — verified still `1` on both power sources, action remains outstanding for the
   user. RESULT: all claims now backed by fresh evidence, one doc correction committed.
+- 2026-07-17 (powernap applied via osascript, commit `4dedda9`): user asked for a faster
+  option than opening Terminal for the outstanding `sudo pmset -a powernap 0`. Ran it via
+  `osascript -e 'do shell script "..." with administrator privileges'` — pops the native
+  macOS auth dialog (password/Touch ID), no Terminal/TTY needed. Verified: `powernap` reads
+  `0` on both Battery and AC. This became the standard pattern for every later sudo-needing
+  step in this session's work (the LaunchDaemon install below).
+- 2026-07-17 (watchdog interpreter bug, live outage + fix, commit `95ec69f`): a user "is it
+  done?" check caught the watchdog's own first real auto-restart attempt failing live — bare
+  `"python3"` in the launch command resolved to the system CommandLineTools 3.9 interpreter
+  under the LaunchAgent's minimal PATH (no `/opt/homebrew/bin`) instead of the Homebrew
+  3.11+ this project requires, crashing on `ImportError: cannot import name 'UTC'`. Bot was
+  down ~11:00-11:13. Fixed: `sys.executable` instead of the ambiguous string (the watchdog's
+  own already-correct interpreter). Verified via a REAL (unmocked) `restart_bot()` call
+  against the live process, not just the new regression test. Also verified `nohup`/
+  `caffeinate` (unlike `python3`) DO resolve correctly under the same minimal PATH — checked,
+  not assumed, given the adjacent miss.
+- 2026-07-17 (four residual-gap fixes, commits `d5d2526`/`d7db50b`/`ac70595`/`859b134`): user
+  asked "will it now ever happen again without intervention?" — answered with 4 honest gaps,
+  user asked for a plan to close them (spec at
+  `docs/superpowers/plans/2026-07-17-watchdog-residual-gaps.md`). Built: (1) watchdog moved
+  from a per-login LaunchAgent to a `/Library/LaunchDaemons/` LaunchDaemon with a `UserName`
+  key (survives reboot/logout while the disk stays unlocked; FileVault's pre-boot password
+  on a truly cold boot is unavoidable and stays open, documented not solved) — installed via
+  the same osascript admin-privileges pattern, live-verified: its `RunAtLoad` cycle
+  immediately caught a real stale deploy from a concurrent session and successfully
+  auto-restarted the bot end-to-end running as `thomasvromen`, not root; old LaunchAgent
+  unloaded and removed to prevent double-firing; (2) `main()` now alerts on any unhandled
+  exception instead of dying silently until the next cycle, and the independent
+  `dead_mans_switch.py` now also checks `watchdog.log` freshness (40 min threshold, ~2.5x
+  the watchdog's own interval) so a bug that stops the watchdog from ever succeeding still
+  pages a human; (3) a `watchdog_restart_history.json`-backed circuit breaker — 3+ restarts
+  in 60 min suppresses further auto-restart and fires a distinct `watchdog_crash_loop` alert,
+  since a persistent code bug can't be fixed by retrying forever; (4) a 120-min hard ceiling
+  that bypasses the 10-min quiet-gate entirely, closing the "still logging but never
+  finishing a real job" blind spot. Caught and fixed the same test-isolation bug class again
+  mid-build: 3 existing `restart_bot` tests didn't mock the new `_record_restart`, which
+  would have written real entries to the repo's actual `watchdog_restart_history.json`; and
+  2 existing `check_and_recover` tests used a bare `find_overdue_job` `return_value` that
+  would have silently collided with the new dual-grace (`_GRACE_MINUTES` vs.
+  `_HARD_GRACE_MINUTES`) call pattern — both classes of bug flagged explicitly in the plan's
+  self-review before implementation, not discovered by surprise. Full suite: 985 passed.
 
 ## Open items
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built

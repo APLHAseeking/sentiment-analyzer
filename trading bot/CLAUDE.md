@@ -180,6 +180,33 @@
 > be explicitly resumed — a pattern worth watching for in future fan-out dispatches. Commit
 > `e9e0ee7`. Test count: **972** (full suite green, zero known failures; net −3 from the three
 > deleted dead-code test files).
+> 2026-07-17 (watchdog residual gaps, commits `d5d2526`/`d7db50b`/`ac70595`/`859b134`): a
+> "run sudo pmset -a powernap 0" follow-up caught a live outage — the watchdog's first real
+> auto-restart attempt (11:00:09) crashed on a bare `"python3"` string resolving to the wrong
+> interpreter under the LaunchAgent's minimal PATH, leaving the bot down ~13 min until an
+> "is it done?" check caught it. Fixed with `sys.executable`, proven via a real (unmocked)
+> `restart_bot()` call against the live process (commit `95ec69f`). That prompted the user to
+> ask "will it ever happen again without intervention?" — answered with 4 honest residual
+> gaps rather than false certainty, then asked for and got a plan to close them: (1) watchdog
+> moved from a per-login LaunchAgent to a `/Library/LaunchDaemons/` LaunchDaemon (`UserName`
+> key) so it survives reboot/logout without a login session — chosen over auto-login, which
+> `fdesetup status` confirmed FileVault disables outright; a truly cold boot from fully
+> powered off still needs a human for FileVault's pre-boot password, unavoidably, left
+> documented not solved; installed via the same `osascript ... with administrator privileges`
+> pattern used for the powernap fix, live-verified when its `RunAtLoad` cycle immediately
+> caught and correctly auto-restarted a real stale deploy end-to-end; (2) `main()` now alerts
+> on any unhandled exception instead of dying silently, and the independent
+> `dead_mans_switch.py` now also checks `watchdog.log` freshness so a bug IN the watchdog
+> still pages a human; (3) a restart-history-backed circuit breaker suppresses auto-restart
+> and alerts distinctly after 3+ restarts in 60 min, since a persistent code bug can't be
+> fixed by retrying; (4) a 120-min hard ceiling now bypasses the quiet-gate, closing the
+> "still logging but never finishing a real job" blind spot. Caught the same test-isolation
+> bug class twice more mid-build (unmocked writes to the real `watchdog_restart_history.json`
+> in 3 existing tests; 2 existing `check_and_recover` tests whose bare mock would have
+> collided with the new dual-grace call pattern) — both flagged in the plan's self-review
+> before implementation. See `docs/RUNBOOK.md#watchdog` and `docs/STATE.md` Decisions for the
+> full honest framing of what's closed vs. still open. Test count: **985** (full suite green,
+> zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

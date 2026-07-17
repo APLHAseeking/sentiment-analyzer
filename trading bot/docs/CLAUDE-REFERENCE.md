@@ -747,3 +747,90 @@ closed market.
 > Full suite after all fixes: **972 passed, 0 failed** (was 975 at session start; the −3 is
 > the three deleted dead-code test files, individually accounted for above — no other
 > regressions). Commit `e9e0ee7`.
+>
+> **2026-07-17 (watchdog residual gaps, commits `95ec69f`/`d5d2526`/`d7db50b`/`ac70595`/
+> `859b134`):** a follow-up to running `sudo pmset -a powernap 0` (via the osascript
+> admin-privileges dialog, faster than opening Terminal) turned into finding and fixing a
+> live outage in the watchdog itself. At 11:00:09 the watchdog correctly detected a stale
+> deploy and tried to auto-restart — but `restart_bot()`'s launch command used the bare
+> string `"python3"`, which under a LaunchAgent's minimal subprocess PATH
+> (`/usr/bin:/bin:/usr/sbin:/sbin`, confirmed via `launchctl print`) resolved to the system
+> CommandLineTools 3.9 interpreter instead of the Homebrew 3.11+ this project requires,
+> crashing immediately on `ImportError: cannot import name 'UTC' from 'datetime'`. The bot
+> sat down from 11:00 to 11:13, caught only when a user "is it done?" check ran fresh live
+> verification instead of trusting the earlier "done" claim. Fixed: `sys.executable` (the
+> watchdog's own already-correct interpreter) instead of the ambiguous string. Verified two
+> ways: a new regression test asserting the literal `"python3"` never appears in the launch
+> command, and — since the same PATH assumption had just failed once — a REAL (unmocked)
+> `restart_bot()` call against the live process, confirming the new PID launched cleanly with
+> no traceback and `bot_status.json` updated to the correct commit. Also explicitly checked
+> (not assumed) that `nohup`/`caffeinate` DO resolve correctly under the same minimal PATH
+> (`ls /usr/bin/nohup /usr/bin/caffeinate` — both present), since guessing on the adjacent
+> commands after already being wrong once would have been the same mistake twice.
+>
+> That incident prompted the user to ask directly: "will it now ever happen again without
+> intervention?" The honest answer wasn't "yes" — four residual gaps were named explicitly
+> rather than papered over: (1) a full machine reboot with nobody logged in (LaunchAgents
+> need an active login session; `defaults read .../autoLoginUser` confirmed auto-login isn't
+> configured); (2) an undetected bug in the watchdog's own code (the interpreter bug above
+> being proof this isn't hypothetical); (3) a persistent code bug that crashes the bot on
+> every restart, which the watchdog would retry forever without ever actually fixing; (4) a
+> "stuck but still logging" scenario that never trips the 10-min quiet-gate. The user asked
+> for a plan to close all four (`docs/superpowers/plans/2026-07-17-watchdog-residual-gaps.md`).
+>
+> Before building gap 1's fix, checked `fdesetup status` — FileVault is On, which Apple
+> disables the auto-login toggle for outright, ruling out the simplest fix. Presented the
+> real alternative (a LaunchDaemon) with its own honest caveat (doesn't cover a truly cold
+> boot — FileVault's pre-boot password gate runs before any launchd domain starts, system or
+> gui, and nothing in software can skip it) and got explicit user sign-off before building,
+> since it's a real architecture change with a security-adjacent tradeoff, not a pure
+> engineering call.
+>
+> Built all four: (1) `monitoring/watchdog.py`'s LaunchAgent replaced with a LaunchDaemon at
+> `/Library/LaunchDaemons/com.thomasvromen.tradingbot-watchdog.plist` (root-owned, `chmod
+> 644`, `UserName: thomasvromen` so it still runs as the user, not root), installed via the
+> same osascript admin-privileges pattern as the powernap fix (no Terminal/TTY needed); the
+> old per-login LaunchAgent was unloaded and its plist deleted (running both would have
+> double-fired on the same trigger). Live-verified during install, not just loaded-and-hoped:
+> its `RunAtLoad` cycle immediately found a real stale deploy (a concurrent session's
+> commits) and successfully auto-restarted the bot end-to-end, confirmed via `bot_status.json`
+> showing the new PID and matching commit, and file ownership confirmed `thomasvromen:staff`
+> (not root), proving the `UserName` key worked as intended.
+> (2) `main()` wrapped in try/except that fires a `watchdog_crashed` alert on any unhandled
+> exception instead of failing silently until the next 15-min cycle; `monitoring/
+> dead_mans_switch.py` (an independent process, so it can't share a blind spot with the
+> watchdog) gained `check_watchdog_freshness()`, alerting `dead_mans_switch_watchdog` if
+> `watchdog.log` goes stale beyond ~2.5x the watchdog's own interval (40 min) — this is the
+> layer that catches the watchdog itself failing to fail loudly.
+> (3) a `watchdog_restart_history.json`-backed circuit breaker: `_recent_restart_count()`
+> checks how many restarts happened in the trailing 60 minutes before `restart_bot()` acts;
+> 3 or more suppresses further auto-restart entirely and fires a distinct
+> `watchdog_crash_loop` alert, because retrying every 15 minutes forever against a genuine
+> code bug wastes the alerting channel and can't fix anything a restart doesn't fix.
+> (4) `find_overdue_job()` gained a `grace_minutes` parameter (default unchanged); a new
+> 120-minute hard ceiling is checked in `check_and_recover()` BEFORE the quiet-gate, so
+> something that keeps producing log output without ever completing a real job for 2+ hours
+> gets restarted anyway instead of silently exploiting the quiet-gate's safety intent forever.
+>
+> Caught the same test-isolation bug class twice more while implementing, both flagged in the
+> plan's self-review before they were hit rather than discovered by surprise: 3 existing
+> `restart_bot` tests didn't mock the new `_record_restart` and would have written real
+> entries into the repo's actual `watchdog_restart_history.json` on every test run (same
+> class of bug as the earlier `write_status_file` test-isolation fix); and 2 existing
+> `check_and_recover` tests mocked `find_overdue_job` with a bare `return_value` that would
+> have silently returned the same result for both the new hard-ceiling call and the original
+> soft-grace call, breaking their intended semantics — fixed with `grace_minutes`-aware
+> `side_effect` callables instead.
+>
+> Final live state, checked fresh after all four gap-fixes landed: full suite **985 passed**
+> (was 975 before this work began; net includes both the interpreter-bug regression test and
+> all four gap-closing test suites), `powernap` confirmed `0` on both power sources, watchdog
+> LaunchDaemon confirmed registered in the `system` domain via `launchctl print`. One thing
+> deliberately NOT forced: a manual `launchctl kickstart` to prove the final code was live was
+> offered via the osascript dialog and the user cancelled it — respected without retrying;
+> the daemon's own natural 15-minute cycle will pick up the latest commit on its own, which is
+> the entire point of the system being built. What's still honestly open, stated plainly
+> rather than hedged: a cold boot from fully powered off (FileVault, unavoidable) and the
+> possibility of a not-yet-found bug in the watchdog's own code (one was already found and
+> fixed live; the process that caught it — actual verification instead of trusting a "done"
+> claim — is the real mitigation, not a promise of zero remaining bugs).
