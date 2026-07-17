@@ -142,6 +142,44 @@
 > `healthy:recent_activity`. See `docs/RUNBOOK.md#watchdog` and
 > `docs/CLAUDE-REFERENCE.md#history` for detail. Test count: **975** (full suite green, zero
 > known failures).
+> 2026-07-17 (strategy/profitability review + remediation, concurrent with the above,
+> deliberately independent of it): first full review of the bot's trading LOGIC since launch
+> (not reliability/uptime) — see `docs/CLAUDE-REFERENCE.md#history` for full detail (the
+> standalone review doc was retired once fully remediated, per convention). Found the real live
+> entry hurdle was 4.5%, not the documented 1.0% floor (`_ESTIMATED_COST_PCT=1.5` in
+> `main_loop.py` never updated after the 07-10 prompt-text loosening) — fixed to 0.4 (~1.2%
+> floor). Ran the congressional signal against real cached data for the first time (prior
+> analysis scripts only ever ran on synthetic fixtures): shows a significantly *negative*
+> excess return at 1mo/3mo, not positive — left `_CONGRESSIONAL_MAX_PCT`/caps unchanged (repo
+> convention: never silently auto-edit a signal weight; this is a report finding for a future
+> session's explicit call, not applied). Confirmed `AllocationEngine`'s regime-based sizing is
+> genuinely wired into all 3 signal-processing sites and live — ruled out a suspected critical
+> "regime-awareness is dead code" bug. Fixed 3 more real bugs: unguarded `run_scraper()` in
+> `run_morning_pipeline` could zero the entire day's primary (fundamental) signal on any
+> scraper exception, same failure shape as several already-fixed reliability incidents, now
+> wrapped in try/except with a `DEAD_FEED` alert; `regime/hmm_engine.py`'s `update_single`
+> could silently classify off a stale feature row when only one column had a NaN (masked by
+> `dropna()`), now raises instead (its only caller already has a graceful fallback to a fresh
+> classification); `bot/portfolio.py`'s `open_position` didn't check `cancel_order`'s return
+> value on a non-fill, so a failed cancel looked identical to a successful one — now alerts
+> distinctly. Deleted confirmed-dead `bot/scheduler.py` (247 lines, zero non-test references)
+> and its two now-redundant test files — `tests/test_integration.py`'s 3 tests exercised only
+> the deprecated module and were fully superseded by `test_orchestrator.py`'s current coverage
+> of `run_eod`/`run_morning_pipeline` (the original review's dead-code grep had excluded all
+> test files, missing this dependency on first pass — caught and verified before deleting).
+> Also: `screener/factor_scorer.py` truthy-zero fix (`fcf_yield`/`pe_inv`/`pb_inv`/
+> `evebitda_inv` now use explicit `is not None` checks); wired the existing-but-never-invoked
+> `performance/tracker.py`'s `PerformanceTracker` into `log_weekly_report()` so live-vs-backtest
+> comparison actually runs weekly; expanded `test_run_bot.py` coverage for `main()`'s CLI
+> dispatch and `run_paper()`'s call sequencing; two stale-doc fixes (`system/config.py`'s
+> `target_portfolio_vol_pct` comment, `FACTOR_BACKTEST_2026-06-28.md`'s momentum-weight table).
+> Deliberately not done: `main_loop.py`'s 4 near-duplicate signal-processing methods (a real
+> refactor opportunity the review flagged, too large/risky to fold into a blanket fix pass).
+> Work done via 7 parallel subagents plus some fixes applied directly; several subagents
+> stalled waiting on a self-invented "background pytest monitor" that doesn't exist and had to
+> be explicitly resumed — a pattern worth watching for in future fan-out dispatches. Commit
+> `e9e0ee7`. Test count: **972** (full suite green, zero known failures; net −3 from the three
+> deleted dead-code test files).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

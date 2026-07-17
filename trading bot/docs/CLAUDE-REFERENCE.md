@@ -635,3 +635,115 @@ closed market.
 > Power-Nap symptom observed, rather than full `disablesleep` or a laptop migration — see
 > `docs/RUNBOOK.md#sleep-wedges`. Full suite: **975 passed** (was 947 at session start), zero
 > known failures.
+>
+> **2026-07-17 (strategy/profitability review + full remediation):** first full review of the
+> bot's trading LOGIC since live launch — explicitly not reliability/uptime (that's the
+> concurrent thread above). Scoped via three parallel Explore passes (docs survey, code
+> structure map, live parameter sheet), then four tracks: wiring/correctness verification,
+> code quality, strategy/profitability (including bounded new empirical work against
+> already-cached PIT data, respecting the Phase 0 BLOCKED-ON-DATA gate — no new scraping),
+> and process. Findings written to a standalone report, reviewed and signed off by the user,
+> then fully remediated in the same session — report retired per this repo's convention
+> (`docs/guardrails/PROJECT.md`: standalone `TRADING_BOT_REVIEW_*.md` docs are removed once
+> fully remediated so they don't go stale).
+>
+> Findings and fixes, ranked by profitability/risk impact:
+> 1. The real live entry hurdle was **4.5%, not the documented 1.0% floor** — `bot/ai_analyst.py`'s
+>    `_ENTRY_SCHEMA` states "buy only if expected_return ≥ 3× estimated_cost_pct AND ≥ 1.0%
+>    absolute," but `orchestration/main_loop.py`'s `_ESTIMATED_COST_PCT = 1.5` meant the 3×
+>    term (4.5%) always dominated the 1.0% floor — the 2026-07-10 hurdle loosening (5x/1.5%→
+>    3x/1.0%, commit `0d93f8b`) only edited prompt text and never touched this constant, so it
+>    never took effect. Real modeled round-trip cost (`slippage_bps=5.0`, zero Alpaca
+>    commission) ≈ 0.10%, so the constant overstated cost ~15x. Live evidence: all 17 non-zero
+>    `expected_return_pct` rows in `fundamental_signals` (07-07→07-16) clustered at 4.9-7.8%,
+>    consistent with the LLM anchoring against the real 4.5% wall. Fixed: `_ESTIMATED_COST_PCT`
+>    1.5 → 0.4 (gives a ~1.2% floor, just above the real cost and the intended 1.0% floor). 2
+>    new regression tests.
+> 2. **First real (not synthetic) backtest of the congressional signal shows a negative
+>    excess return.** `backtesting/analyze_congressional_edge.py`/`analyze_hedge_drag.py` had
+>    only ever run against synthetic fixtures despite real cached data existing
+>    (`capitol_trades_merged.json`, 5,406 trades, Oct 2025-May 2026). Computed forward excess
+>    returns directly: congressional buys showed significantly negative excess return at both
+>    1mo (-0.636%, t=-2.57) and 3mo (-2.538%, t=-4.93) horizons (caveats: overlapping windows,
+>    single ~7-month/one-regime sample — sign taken seriously, magnitude cautiously). Per this
+>    repo's convention of never silently auto-editing a signal's weight (see the
+>    `weekly-factor-review` skill), left `_CONGRESSIONAL_MAX_PCT`/caps unchanged — this is a
+>    finding for a future explicit decision, not applied.
+> 3. **`run_scraper()` in `run_morning_pipeline` had no try/except**, unlike every phase after
+>    it — a congressional-scraper exception (this scraper has broken this way twice before)
+>    propagated out of the whole function, silently zeroing Phase 1 (fundamental, the primary
+>    signal)/2.5/3 for the entire day, same failure shape as several already-fixed incidents.
+>    Fixed: wrapped in try/except, degrades to `qualified=[]`, fires a `DEAD_FEED` alert. 1 new
+>    regression test.
+> 4. **`regime/hmm_engine.py`'s `update_single` could silently classify off a stale feature
+>    row.** `dropna().iloc[-1:]` drops any row with a NaN in any selected feature column, not
+>    just the newest one — a single-column NaN on today's bar (e.g. a `volume`→`vol_z` gap)
+>    let it silently fall back to an earlier cached day's row while still labeling the result
+>    with today's date (the `date_str` param is a caller-supplied display label, never checked
+>    against which row was actually used). Manually reproduced before fixing (TDD red/green).
+>    Since `RegimeState` drives `AllocationEngine.compute()`'s sizing for every position that
+>    day, a silent stale read would have mis-scaled every trade without any signal. Fixed:
+>    raises on a date mismatch between the selected row and the intended new bar — its only
+>    caller (`_update_regime()` in `main_loop.py`) already wraps it in try/except with a
+>    graceful fallback to `current_regime()`, so raising degrades safely rather than crashing
+>    the pipeline or silently mis-sizing. 1 new regression test.
+> 5. **Confirmed `AllocationEngine`'s regime-based position sizing is genuinely live, not dead
+>    code** — the single biggest suspected bug going into this review. Traced real call paths:
+>    `AllocationEngine.compute()` is called from all 3 signal-processing sites
+>    (`main_loop.py:860,991,1119`) and its `final_position_pct` really flows into
+>    `Portfolio.open_position`. No fix needed — this rules out a critical bug, not creates one.
+> 6. **Deleted confirmed-dead `bot/scheduler.py`** (247 lines, explicitly self-labeled
+>    DEPRECATED, zero non-test references) **and its now-redundant test files.** First-pass
+>    dead-code grep excluded all `test_*.py` files and missed that `tests/test_integration.py`
+>    (3/3 tests, 100% of the file) still imported and exercised `bot.scheduler.
+>    run_morning_pipeline`/`run_eod_snapshot` directly — caught by a remediation subagent
+>    before deleting. Verified `orchestration/main_loop.py`'s `run_eod`/`run_morning_pipeline`
+>    already have their own current, dedicated coverage in `test_orchestrator.py` (3+ tests
+>    each) — `test_integration.py`'s coverage was fully superseded, not unique, so deleted all
+>    three files together (`bot/scheduler.py`, `tests/test_scheduler.py`,
+>    `tests/test_integration.py`).
+> 7. `screener/factor_scorer.py`: `fcf_yield`/`pe_inv`/`pb_inv`/`evebitda_inv` used truthy
+>    checks (`fcf and mcap and mcap > 0`) instead of explicit `is not None` checks, silently
+>    treating a legitimate `0.0` (e.g. a real zero-FCF company) the same as missing data.
+>    Fixed to match the already-correct `de_inv` pattern nearby. 1 new test.
+> 8. `bot/portfolio.py`'s `open_position` discarded `cancel_order`'s return value on a
+>    non-FILLED order — if the cancel itself failed (not just "already filled"), a stray
+>    resting order could become invisible to both the DB and `reconcile_with_broker` (which
+>    only diffs *positions*, never outstanding *orders*). Fixed: a failed cancel now fires a
+>    distinct CRITICAL alert instead of looking identical to the successful-cancel path. 1 new
+>    test.
+> 9. `performance/tracker.py`'s `PerformanceTracker` — built specifically to compare live
+>    `trading.db` performance against backtest expectations via the same `compute_all` metrics
+>    — was defined and exported but never instantiated anywhere outside its own test file.
+>    Wired into `bot/analytics.py`'s existing Friday `log_weekly_report()` job so live-vs-
+>    backtest comparison now actually runs on a cadence. 2 new tests.
+> 10. `tests/test_run_bot.py` expanded (+5 tests) to cover `main()`'s CLI flag dispatch
+>     (`--simulated`/`--backtest`/`--test-alerts`) and `run_paper()`'s call sequencing —
+>     previously only `_make_broker()` (the paper-only guard) was tested; `run_bot.py` itself
+>     untouched (test-only change).
+> 11. Two stale-doc fixes found during the review: `system/config.py`'s
+>     `target_portfolio_vol_pct` comment said "(informational)" but `main_loop.py` actively
+>     multiplies every trade's size by it; `FACTOR_BACKTEST_2026-06-28.md`'s example
+>     `_MOMENTUM_WEIGHTS` table was pre-SUE (4 components) while live code has had 5 since
+>     2026-07-07 — annotated with a correction rather than rewritten, matching this doc's own
+>     style of append-only corrections.
+>
+> Deliberately not done: `main_loop.py`'s four signal-processing methods (`_process_signal`,
+> `_process_insider_signal`, `_process_fundamental_candidate`, hedge entry) are ~70-80%
+> byte-for-byte duplicated — a real refactor opportunity (this exact "same fix needed in 3
+> copies, forgotten in 2" shape produced the `open_position`/`close_position`/`reduce_position`
+> bool-ignored bug class three separate times in this project's history), but too large/risky
+> to fold into a blanket fix pass on the live order-placement core; flagged for a dedicated
+> session.
+>
+> Work done via three parallel Explore/general-purpose scoping agents, then 7 parallel
+> general-purpose subagents for remediation (plus 2 fixes applied directly). Process note:
+> several remediation subagents fell into a self-invented "wait for a background pytest
+> monitor" pattern that doesn't exist and had to be explicitly resumed with a synchronous-only
+> instruction — worth watching for in future fan-out dispatches, since it silently stalls a
+> task rather than erroring. One subagent (dead-code removal) correctly stopped mid-task
+> rather than delete on an ambiguous hit, per this repo's own dead-code-check convention.
+>
+> Full suite after all fixes: **972 passed, 0 failed** (was 975 at session start; the −3 is
+> the three deleted dead-code test files, individually accounted for above — no other
+> regressions). Commit `e9e0ee7`.
