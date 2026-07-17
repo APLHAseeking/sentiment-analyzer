@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+import json
+from datetime import datetime, timedelta, UTC
 from zoneinfo import ZoneInfo
 
 from monitoring import watchdog
@@ -86,6 +87,7 @@ def test_restart_bot_kills_matching_pid_and_relaunches(mocker):
     mock_popen = mocker.patch("monitoring.watchdog.subprocess.Popen")
     mock_alert = mocker.patch("monitoring.watchdog.fire_alert")
     mocker.patch("builtins.open", mocker.mock_open())
+    mocker.patch("monitoring.watchdog._record_restart")  # prevent writing the real history file
 
     watchdog.restart_bot("test reason", {"pid": 4242})
 
@@ -113,6 +115,7 @@ def test_restart_bot_does_not_kill_when_pid_reused_by_other_process(mocker):
     mocker.patch("monitoring.watchdog.subprocess.Popen")
     mocker.patch("monitoring.watchdog.fire_alert")
     mocker.patch("builtins.open", mocker.mock_open())
+    mocker.patch("monitoring.watchdog._record_restart")  # prevent writing the real history file
 
     watchdog.restart_bot("test reason", {"pid": 4242})
 
@@ -123,6 +126,7 @@ def test_restart_bot_launches_even_with_no_prior_status(mocker):
     mock_popen = mocker.patch("monitoring.watchdog.subprocess.Popen")
     mocker.patch("monitoring.watchdog.fire_alert")
     mocker.patch("builtins.open", mocker.mock_open())
+    mocker.patch("monitoring.watchdog._record_restart")  # prevent writing the real history file
 
     watchdog.restart_bot("no status file", None)
 
@@ -222,3 +226,63 @@ def test_main_returns_0_on_normal_cycle(mocker):
 
     assert watchdog.main() == 0
     alert_spy.assert_not_called()
+
+
+def test_restart_bot_suppresses_when_crash_loop_detected(mocker):
+    mocker.patch("monitoring.watchdog._recent_restart_count", return_value=3)
+    mock_popen = mocker.patch("monitoring.watchdog.subprocess.Popen")
+    mock_kill = mocker.patch("monitoring.watchdog.os.kill")
+    alert_spy = mocker.patch("monitoring.watchdog.fire_alert")
+
+    watchdog.restart_bot("test reason", {"pid": 4242})
+
+    mock_popen.assert_not_called()
+    mock_kill.assert_not_called()
+    alert_spy.assert_called_once()
+    assert alert_spy.call_args.args[0] == "watchdog_crash_loop"
+
+
+def test_restart_bot_proceeds_when_under_crash_loop_threshold(mocker):
+    mocker.patch("monitoring.watchdog._recent_restart_count", return_value=1)
+    mocker.patch("monitoring.watchdog.is_process_alive", return_value=False)
+    mocker.patch("monitoring.watchdog._record_restart")
+    mock_popen = mocker.patch("monitoring.watchdog.subprocess.Popen")
+    mocker.patch("monitoring.watchdog.fire_alert")
+    mocker.patch("builtins.open", mocker.mock_open())
+
+    watchdog.restart_bot("test reason", {"pid": 4242})
+
+    mock_popen.assert_called_once()
+
+
+def test_restart_bot_records_history_on_successful_restart(mocker):
+    mocker.patch("monitoring.watchdog._recent_restart_count", return_value=0)
+    mocker.patch("monitoring.watchdog.is_process_alive", return_value=False)
+    record_spy = mocker.patch("monitoring.watchdog._record_restart")
+    mocker.patch("monitoring.watchdog.subprocess.Popen")
+    mocker.patch("monitoring.watchdog.fire_alert")
+    mocker.patch("builtins.open", mocker.mock_open())
+
+    watchdog.restart_bot("test reason", {"pid": 4242})
+
+    record_spy.assert_called_once()
+
+
+def test_recent_restart_count_prunes_entries_outside_window(mocker, tmp_path):
+    history_file = tmp_path / "watchdog_restart_history.json"
+    now = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+    old = (now - timedelta(minutes=90)).isoformat()
+    recent = (now - timedelta(minutes=10)).isoformat()
+    history_file.write_text(json.dumps([
+        {"timestamp": old, "reason": "old one, outside 60min window"},
+        {"timestamp": recent, "reason": "recent one, inside window"},
+    ]))
+    mocker.patch("monitoring.watchdog._RESTART_HISTORY_FILE", history_file)
+
+    assert watchdog._recent_restart_count(now) == 1
+
+
+def test_recent_restart_count_zero_when_no_history_file(mocker, tmp_path):
+    mocker.patch("monitoring.watchdog._RESTART_HISTORY_FILE", tmp_path / "does_not_exist.json")
+
+    assert watchdog._recent_restart_count(datetime(2026, 7, 17, 12, 0, tzinfo=UTC)) == 0

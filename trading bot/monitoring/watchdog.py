@@ -22,6 +22,7 @@ process liveness (a dead PID cannot be "mid-job").
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -48,6 +49,10 @@ _LOG_FILE = _REPO_DIR / "bot.log"
 
 _QUIET_MINUTES = 10   # bot.log must be untouched this long before we act on anything
 _GRACE_MINUTES = 30   # minutes past a scheduled job's cron time before it's "overdue"
+
+_RESTART_HISTORY_FILE = _REPO_DIR / "watchdog_restart_history.json"
+_CRASH_LOOP_WINDOW_MINUTES = 60
+_CRASH_LOOP_THRESHOLD = 3
 
 # (job_name, hour, minute) in Amsterdam time -- must match the cron times
 # in orchestration/main_loop.py::start() for the three jobs that call
@@ -110,7 +115,49 @@ def cmdline_matches_run_bot(pid: int) -> bool:
         return False
 
 
-def restart_bot(reason: str, status: dict | None) -> None:
+def _read_restart_history() -> list[dict]:
+    try:
+        return json.loads(_RESTART_HISTORY_FILE.read_text())
+    except Exception:
+        return []
+
+
+def _record_restart(reason: str, now: datetime) -> None:
+    history = _read_restart_history()
+    history.append({"timestamp": now.isoformat(), "reason": reason})
+    cutoff = now - timedelta(hours=24)
+    history = [h for h in history if datetime.fromisoformat(h["timestamp"]) >= cutoff]
+    try:
+        _RESTART_HISTORY_FILE.write_text(json.dumps(history))
+    except Exception as exc:
+        log.warning("Could not write restart history: %s", exc)
+
+
+def _recent_restart_count(now: datetime, window_minutes: int = _CRASH_LOOP_WINDOW_MINUTES) -> int:
+    cutoff = now - timedelta(minutes=window_minutes)
+    return sum(
+        1 for h in _read_restart_history()
+        if datetime.fromisoformat(h["timestamp"]) >= cutoff
+    )
+
+
+def restart_bot(reason: str, status: dict | None, now: datetime | None = None) -> None:
+    now = now or datetime.now(UTC)
+    recent = _recent_restart_count(now)
+    if recent >= _CRASH_LOOP_THRESHOLD:
+        log.error(
+            "Crash-loop suspected (%d restarts in the last %d min) -- "
+            "suppressing further auto-restart", recent, _CRASH_LOOP_WINDOW_MINUTES,
+        )
+        fire_alert(
+            "watchdog_crash_loop",
+            f"Suppressing auto-restart: {recent} restarts in the last "
+            f"{_CRASH_LOOP_WINDOW_MINUTES} min. This looks like a persistent "
+            f"bug, not a transient wedge -- manual intervention required.",
+            {"reason": reason, "recent_restart_count": recent},
+        )
+        return
+
     old_pid = status.get("pid") if status else None
     if old_pid is not None and is_process_alive(old_pid):
         if cmdline_matches_run_bot(old_pid):
@@ -140,6 +187,7 @@ def restart_bot(reason: str, status: dict | None) -> None:
             start_new_session=True,
         )
 
+    _record_restart(reason, now)
     fire_alert(
         "watchdog_restart",
         f"Auto-restarted trading bot: {reason}",
@@ -158,7 +206,7 @@ def check_and_recover(now: datetime | None = None) -> str:
         return "no_status_file"
 
     if not is_process_alive(status["pid"]):
-        restart_bot("process not alive", status)
+        restart_bot("process not alive", status, now)
         return "restarted:process_dead"
 
     if not _log_quiet_for(_QUIET_MINUTES, now):
@@ -166,11 +214,11 @@ def check_and_recover(now: datetime | None = None) -> str:
 
     overdue = find_overdue_job(now)
     if overdue is not None:
-        restart_bot(f"job '{overdue}' overdue by >{_GRACE_MINUTES}min", status)
+        restart_bot(f"job '{overdue}' overdue by >{_GRACE_MINUTES}min", status, now)
         return f"restarted:overdue:{overdue}"
 
     if is_stale_deploy(status, get_git_commit(_REPO_DIR)):
-        restart_bot("running commit does not match HEAD", status)
+        restart_bot("running commit does not match HEAD", status, now)
         return "restarted:stale_deploy"
 
     return "healthy:quiet_but_expected"
