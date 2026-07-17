@@ -240,6 +240,12 @@
 
 ## Running
 
+**For the live unattended bot specifically** (starting it for real, restarting it, checking
+if it's healthy, anything after a reboot): stop here and read `docs/RUNBOOK.md` instead —
+it's the operational guide, kept current, and covers the watchdog/dead-man's-switch
+LaunchDaemons that manage the bot's uptime. The commands below are for running the code
+directly (dev/debugging/backtests), not how the bot is actually kept running day to day.
+
 ```bash
 pip install -r requirements.txt
 
@@ -261,7 +267,7 @@ Secrets come from environment / `.env` (see `.env.example`): `ANTHROPIC_API_KEY`
 ## Verifying changes
 
 ```bash
-pytest                                 # 875 tests; keep green (run from inside trading bot/)
+pytest                                 # keep green (run from inside trading bot/) -- current count in this file's banner above, don't hardcode it here, it drifts every session
 python backtesting/backtest_price_factors.py  # PIT backtest of low-vol/BAB + residual momentum
 pytest tests/test_simulation.py -q    # example: a single module
 ```
@@ -276,8 +282,9 @@ Before editing stops, sizing, the technical gate, the paper-only guard, or the d
 Before touching scraper, committee, universe, yfinance paths, or interpreting backtest attribution -> Read docs/CLAUDE-REFERENCE.md#data-caveats
 Before changing scheduled jobs or their times -> Read docs/CLAUDE-REFERENCE.md#scheduler
 Looking for the analysis docs (Phase 0 gate, data sources, backtests, hedge, congressional edge) -> Read docs/CLAUDE-REFERENCE.md#key-documents
+Starting, restarting, or checking on the live unattended bot (including after a reboot), or touching `monitoring/watchdog.py` / `monitoring/dead_mans_switch.py` -> Read docs/RUNBOOK.md first — it is the operational source of truth, this file is architecture only. Start at docs/RUNBOOK.md#after-a-reboot if you're picking this up after the Mac restarted.
 After completing a review/remediation/strategy change worth recording -> append it to docs/CLAUDE-REFERENCE.md#history and update this banner's status line
 
 ## Security & data
 
-- API keys live in environment / `.env` only — never commit `.env`, `trading.db`, `regime_model.joblib`, the cached JSON/shelve data, or `dashboard_state.json`. Never log secrets.
+- API keys live in environment / `.env` only — never commit `.env`, `trading.db`, `regime_model.joblib`, the cached JSON/shelve data, `dashboard_state.json`, `bot_status.json`, or `watchdog_restart_history.json` (all gitignored — the last two are runtime state written by `monitoring/status_file.py` and `monitoring/watchdog.py`, added 2026-07-17). Never log secrets.

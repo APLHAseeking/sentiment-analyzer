@@ -65,60 +65,64 @@ python run_bot.py --simulated
 python run_bot.py --test-alerts
 ```
 
-**Keeping it running unattended (macOS):**
+**Keeping it running unattended (macOS) — current state as of 2026-07-17:**
 
-- **launchd (auto-restarts on crash — currently NOT active, see status below):**
-  a plist lives at `~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`
-  (outside the repo, in your home directory — not version-controlled).
-  ```bash
-  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist  # start + enable auto-restart
-  launchctl list | grep tradingbot                                                           # confirm it's running (shows a PID, not "-")
-  launchctl bootout gui/$(id -u)/com.thomasvromen.tradingbot                                  # stop for real — killing the PID alone just gets restarted
-  ```
-  `KeepAlive` restarts the process on any non-zero/crash exit (with a 30s
-  throttle so a crash-loop doesn't spin). Combined with the scheduler's
-  catch-up-on-restart logic (`orchestration/main_loop.py::start()`), a crash
-  mid-day no longer loses that day's remaining candidate-generation windows.
-  Logs still go to `bot.log` (same file, same tailing workflow as below).
+The bot itself auto-restarts via `monitoring/watchdog.py`, a separate
+LaunchDaemon that checks every 15 minutes and relaunches the bot on crash,
+wedge, or stale deploy — see [`#watchdog`](#watchdog) below for the full
+mechanism. **You do not need to babysit this manually day to day.** The
+sections below are for the initial manual start (the watchdog only
+restarts an already-started bot — see "Starting for the first time" just
+below) and for understanding what's actually happening if you want to dig
+in.
 
-  **Status (2026-07-14): DECIDED NOT TO PURSUE FURTHER — root cause is
-  `KeepAlive` itself, not a missing approval.** `launchctl bootstrap`
-  succeeds and the job reaches `state = spawn scheduled`, but the spawned
-  process exits immediately with `last exit code = 78` every ~30s
-  (`ThrottleInterval`), regardless of the System Settings → General →
-  Login Items & Extensions → Allow in the Background toggle for `python3`
-  being ON (confirmed both entries there were enabled). Isolated the exact
-  cause with a throwaway test LaunchAgent (no `KeepAlive`, same
-  `/opt/homebrew/bin/python3` binary, `python3 --version`) — it registered
-  and ran instantly (exit 0). The dead-man's-switch LaunchAgent (below),
-  which also has no `KeepAlive`, likewise runs fine. So this is specifically
-  `KeepAlive` (a persistent, restart-forever daemon) being blocked — almost
-  certainly because Homebrew's `python3` isn't code-signed/notarized, and
-  macOS won't let an unsigned binary register as that class of background
-  daemon at all, independent of the visible toggle. Not something a plist
-  change or another Settings click fixes.
-  A periodic-supervisor workaround (a `StartInterval` script, same pattern
-  as the dead-man's switch, that checks if `run_bot.py` is alive and
-  restarts it via `nohup` if not — sidesteps `KeepAlive` entirely) was
-  proposed and explicitly declined by the user 2026-07-14: paper-trading,
-  low stakes, the dead-man's switch already detects a stale bot, manual
-  restart is an acceptable tradeoff. **The registration was unloaded
-  (`launchctl bootout`) to stop the futile retry loop; the bot runs via the
-  manual `nohup` path below (no auto-restart — restart it yourself if it
-  dies).** Revisit only if this becomes a bigger pain point.
-- `tmux` (manual alternative — lets you reattach and watch live output):
+**Starting for the first time** (or after intentionally stopping it —
+`## Safe restart` below covers routine restarts):
+```bash
+cd "trading bot"
+nohup caffeinate -i -s /opt/homebrew/bin/python3 run_bot.py > bot.log 2>&1 &
+disown
+```
+Use the absolute `/opt/homebrew/bin/python3` path, not the bare `python3`
+— confirm it's still correct first with `which python3` if the Homebrew
+install ever moves. (This isn't paranoia: a bare `"python3"` string inside
+the watchdog's own restart command resolved to the wrong interpreter under
+a LaunchAgent's minimal PATH and caused a real live outage 2026-07-17,
+`docs/CLAUDE-REFERENCE.md#history` — same ambiguity exists for a human
+running this by hand if their shell's PATH ever differs.) Once started,
+`write_status_file()` writes `bot_status.json` on the bot's own startup,
+and the watchdog takes over from there — no `launchd`/`KeepAlive`/`tmux`
+setup needed for the bot process itself.
+
+**Manual alternatives, if you want to run it in the foreground / watch
+live output** instead of relying on the watchdog:
+- `tmux` (lets you reattach later):
   ```bash
   tmux new -s bot
   python run_bot.py
   # detach: Ctrl-b d
   # reattach later: tmux attach -t bot
   ```
-- Or `nohup` + `disown` (manual, no auto-restart on crash) — **wrap with
-  `caffeinate` (see below), this bare form has no sleep protection:**
-  ```bash
-  nohup caffeinate -i -s python3 run_bot.py > bot.log 2>&1 &
-  disown
-  ```
+  If you do this, the watchdog will leave a `tmux`-run process alone as
+  long as it's alive and its PID matches `bot_status.json` — but a `tmux`
+  session dies with the terminal/SSH connection unless you explicitly
+  detach first, unlike the `nohup`+`caffeinate` form above.
+
+**History — why this isn't a `launchd`/`KeepAlive` LaunchAgent for the
+bot process itself:** tried 2026-07-10, closed 2026-07-14. `KeepAlive`
+(a persistent, restart-forever daemon class) is blocked by macOS
+Background Task Management for Homebrew's unsigned `python3` binary,
+confirmed via a throwaway no-`KeepAlive` test plist (same binary) running
+fine while the `KeepAlive` version exited immediately every ~30s
+(`last exit code = 78`). This is specifically a `KeepAlive` limitation —
+it does **not** apply to `StartInterval`-based LaunchAgents/Daemons (short
+periodic jobs, not persistent daemons), which is exactly what
+`monitoring/watchdog.py` and `monitoring/dead_mans_switch.py` are, and why
+they work fine unattended despite this history. A `StartInterval`
+supervisor workaround was proposed at the time and declined ("manual
+restart is an acceptable tradeoff") — that decision was **reversed
+2026-07-16** after a wedge sat undetected ~20 hours; the watchdog above is
+that workaround, finally built.
 
 <a id="sleep-wedges"></a>
 ## System sleep silently stops the bot (found 2026-07-15)
@@ -349,10 +353,17 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.thomasvromen.tradingb
 Once a day, check:
 
 1. **Dashboard:** `streamlit run dashboard/app.py` (reads `dashboard_state.json`).
-   Confirm its timestamp is recent — it's updated by the scheduler jobs (see
-   `CLAUDE.md`'s Scheduler section: 07:00 universe refresh, 13:00 prefetch,
-   14:00 morning pipeline, 15:45/17:00/20:00 intraday checks, 16:00 exit
-   review, 22:30 EOD). A stale timestamp means a job stopped running.
+   Confirm its timestamp is recent — it's updated by the scheduler jobs, all
+   Amsterdam time (see `docs/CLAUDE-REFERENCE.md#scheduler` for the
+   authoritative list; grep `orchestration/main_loop.py` for `add_job` if
+   that drifts too — this line has already gone stale once, 2026-07-17,
+   after the entry window moved 14:00→15:40 on 2026-07-13 and nobody
+   updated this pointer): Monday 07:00 universe refresh, 13:00 + 17:00
+   screener prefetch, 15:40 + 18:00 morning pipeline, 16:00 exit review,
+   15:45 + 17:00 + 20:00 intraday checks, 22:30 EOD, Friday 22:45 weekly
+   report. A stale timestamp past the next expected job time means
+   something stopped running — check `watchdog.log` first, it likely
+   already caught and is handling it.
 2. **Log file:** tail it and scan for `ERROR`/`WARNING` lines.
 3. **`RISK_LOCKOUT` file:** confirm it has NOT appeared at the repo root
    (`trading bot/RISK_LOCKOUT`). If it has, see below.
@@ -387,24 +398,48 @@ Once a day, check:
 
 ## Safe restart
 
+**Most of the time you don't need this section** — the watchdog
+(`docs/RUNBOOK.md#watchdog`) restarts the bot automatically on crash,
+wedge, or stale deploy, gated on its own 10-min quiet-check so it won't
+kill something legitimately mid-job. This section is for when you want to
+restart it yourself right now (e.g. deploying a code change you don't
+want to wait ~15 min for the watchdog to notice via its stale-deploy
+check).
+
 Never kill or restart the bot mid-session — the scheduler runs on a
 single-thread executor, so killing mid-job can leave a half-completed
 pipeline run. Before restarting:
 
 1. Check the log for the last completed job (see the scheduler job list
    above) and make sure nothing is mid-run.
-2. Restart with the same command you started it with. `initialize()` calls
-   `reconcile_with_broker()` automatically on startup, which cleans up any
-   ghost positions left by an unclean shutdown — so a restart between jobs
-   is safe.
+2. Restart with the same command you started it with (`## Starting`
+   above). `initialize()` calls `reconcile_with_broker()` automatically on
+   startup, which cleans up any ghost positions left by an unclean
+   shutdown — so a restart between jobs is safe.
 
 ## Stopping for the month / moving to real cash
 
-- **launchd (once active — see status note above):**
-  `launchctl bootout gui/$(id -u)/com.thomasvromen.tradingbot` — unloading (not
-  just killing the PID) is required, or `KeepAlive` restarts it.
+**Pause the watchdog FIRST, or it undoes everything below within ~15
+minutes** — it exists specifically to relaunch the bot whenever it finds
+it not running, and it can't tell "intentionally stopped" from "crashed":
+```bash
+sudo launchctl bootout system/com.thomasvromen.tradingbot-watchdog
+```
+Then stop the bot itself:
 - **tmux:** reattach (`tmux attach -t bot`) and Ctrl-C.
 - **nohup:** `kill <PID>` (find it with `ps aux | grep run_bot.py`).
+
+**To resume later, one command is enough — it auto-starts the bot too:**
+```bash
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.thomasvromen.tradingbot-watchdog.plist
+```
+`bot_status.json` isn't deleted when you `kill` the bot — it's still on
+disk pointing at the now-dead PID from before you stopped it. The
+watchdog's very first cycle after resuming will see that PID isn't alive
+and relaunch the bot immediately via its normal `restart_bot()` path — you
+do NOT need to also run `## Starting` manually. If you want to resume the
+watchdog WITHOUT immediately restarting the bot (e.g., just to check
+something), delete or rename `bot_status.json` first.
 
 Before sizing any real capital, review the **live paper P&L track record**
 from this run (`performance/tracker.py` / dashboard) — not the backtest
