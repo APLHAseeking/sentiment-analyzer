@@ -39,6 +39,15 @@ def test_find_overdue_job_returns_none_when_job_recorded(mocker):
     assert watchdog.find_overdue_job(now) is None
 
 
+def test_find_overdue_job_respects_custom_grace_minutes(mocker):
+    mocker.patch.object(watchdog._NYSE, "is_session", return_value=True)
+    mocker.patch.object(watchdog.db, "job_ran_today", return_value=False)
+    now = datetime(2026, 7, 16, 16, 15, tzinfo=_AMS)  # 35 min past 15:40
+
+    assert watchdog.find_overdue_job(now, grace_minutes=30) == "run_morning_pipeline"
+    assert watchdog.find_overdue_job(now, grace_minutes=60) is None
+
+
 def test_is_process_alive_true_when_kill_succeeds(mocker):
     mocker.patch("monitoring.watchdog.os.kill")  # no exception raised
 
@@ -147,6 +156,7 @@ def test_check_and_recover_restarts_when_process_dead(mocker):
 def test_check_and_recover_skips_when_recently_active(mocker):
     mocker.patch("monitoring.watchdog.read_status_file", return_value={"pid": 4242, "commit": "aaa"})
     mocker.patch("monitoring.watchdog.is_process_alive", return_value=True)
+    mocker.patch("monitoring.watchdog.find_overdue_job", return_value=None)  # under the hard ceiling too
     mocker.patch("monitoring.watchdog._log_quiet_for", return_value=False)
     restart_spy = mocker.patch("monitoring.watchdog.restart_bot")
 
@@ -157,10 +167,15 @@ def test_check_and_recover_skips_when_recently_active(mocker):
 
 
 def test_check_and_recover_restarts_on_overdue_job(mocker):
+    """Overdue at the SOFT grace only -- under the hard ceiling, so this
+    must go through the quiet-gated path, not the hard-ceiling bypass."""
     mocker.patch("monitoring.watchdog.read_status_file", return_value={"pid": 4242, "commit": "aaa"})
     mocker.patch("monitoring.watchdog.is_process_alive", return_value=True)
     mocker.patch("monitoring.watchdog._log_quiet_for", return_value=True)
-    mocker.patch("monitoring.watchdog.find_overdue_job", return_value="run_eod")
+
+    def fake_overdue(now, grace_minutes=watchdog._GRACE_MINUTES):
+        return "run_eod" if grace_minutes == watchdog._GRACE_MINUTES else None
+    mocker.patch("monitoring.watchdog.find_overdue_job", side_effect=fake_overdue)
     restart_spy = mocker.patch("monitoring.watchdog.restart_bot")
 
     result = watchdog.check_and_recover()
@@ -286,3 +301,32 @@ def test_recent_restart_count_zero_when_no_history_file(mocker, tmp_path):
     mocker.patch("monitoring.watchdog._RESTART_HISTORY_FILE", tmp_path / "does_not_exist.json")
 
     assert watchdog._recent_restart_count(datetime(2026, 7, 17, 12, 0, tzinfo=UTC)) == 0
+
+
+def test_check_and_recover_bypasses_quiet_gate_on_hard_ceiling(mocker):
+    mocker.patch("monitoring.watchdog.read_status_file", return_value={"pid": 4242, "commit": "aaa"})
+    mocker.patch("monitoring.watchdog.is_process_alive", return_value=True)
+
+    def fake_overdue(now, grace_minutes=watchdog._GRACE_MINUTES):
+        return "run_eod" if grace_minutes == watchdog._HARD_GRACE_MINUTES else None
+    mocker.patch("monitoring.watchdog.find_overdue_job", side_effect=fake_overdue)
+    mocker.patch("monitoring.watchdog._log_quiet_for", return_value=False)  # still "busy"
+    restart_spy = mocker.patch("monitoring.watchdog.restart_bot")
+
+    result = watchdog.check_and_recover()
+
+    restart_spy.assert_called_once()
+    assert result == "restarted:hard_overdue:run_eod"
+
+
+def test_check_and_recover_does_not_bypass_when_under_hard_ceiling(mocker):
+    mocker.patch("monitoring.watchdog.read_status_file", return_value={"pid": 4242, "commit": "aaa"})
+    mocker.patch("monitoring.watchdog.is_process_alive", return_value=True)
+    mocker.patch("monitoring.watchdog.find_overdue_job", return_value=None)  # never overdue, either grace
+    mocker.patch("monitoring.watchdog._log_quiet_for", return_value=False)
+    restart_spy = mocker.patch("monitoring.watchdog.restart_bot")
+
+    result = watchdog.check_and_recover()
+
+    restart_spy.assert_not_called()
+    assert result == "healthy:recent_activity"

@@ -49,6 +49,7 @@ _LOG_FILE = _REPO_DIR / "bot.log"
 
 _QUIET_MINUTES = 10   # bot.log must be untouched this long before we act on anything
 _GRACE_MINUTES = 30   # minutes past a scheduled job's cron time before it's "overdue"
+_HARD_GRACE_MINUTES = 120  # absolute ceiling that bypasses the quiet-gate entirely
 
 _RESTART_HISTORY_FILE = _REPO_DIR / "watchdog_restart_history.json"
 _CRASH_LOOP_WINDOW_MINUTES = 60
@@ -71,7 +72,7 @@ def _log_quiet_for(minutes: int, now: datetime, log_file: Path = _LOG_FILE) -> b
     return age >= timedelta(minutes=minutes)
 
 
-def find_overdue_job(now: datetime) -> str | None:
+def find_overdue_job(now: datetime, grace_minutes: int = _GRACE_MINUTES) -> str | None:
     """First expected job that's overdue today (Amsterdam time), or None."""
     now_local = now.astimezone(_AMSTERDAM)
     today = now_local.date().isoformat()
@@ -79,7 +80,7 @@ def find_overdue_job(now: datetime) -> str | None:
         return None
     for job_name, hour, minute in _EXPECTED_JOBS:
         deadline = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0) \
-            + timedelta(minutes=_GRACE_MINUTES)
+            + timedelta(minutes=grace_minutes)
         if now_local < deadline:
             continue
         if not db.job_ran_today(job_name, today):
@@ -208,6 +209,18 @@ def check_and_recover(now: datetime | None = None) -> str:
     if not is_process_alive(status["pid"]):
         restart_bot("process not alive", status, now)
         return "restarted:process_dead"
+
+    hard_overdue = find_overdue_job(now, grace_minutes=_HARD_GRACE_MINUTES)
+    if hard_overdue is not None:
+        # Bypasses the quiet-gate entirely -- something has been stuck for
+        # far longer than any legitimate pipeline run should ever take,
+        # regardless of whether it's still producing log output (e.g. an
+        # infinite retry loop that never completes the actual job).
+        restart_bot(
+            f"job '{hard_overdue}' overdue by >{_HARD_GRACE_MINUTES}min "
+            f"(hard ceiling, bypassed quiet-gate)", status, now,
+        )
+        return f"restarted:hard_overdue:{hard_overdue}"
 
     if not _log_quiet_for(_QUIET_MINUTES, now):
         return "healthy:recent_activity"
