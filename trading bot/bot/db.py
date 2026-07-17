@@ -213,6 +213,16 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         "Add expected_return_pct to fundamental_signals",
         "ALTER TABLE fundamental_signals ADD COLUMN expected_return_pct REAL NOT NULL DEFAULT 0.0",
     ),
+    (
+        8,
+        "Add direction to positions",
+        "ALTER TABLE positions ADD COLUMN direction TEXT NOT NULL DEFAULT 'long'",
+    ),
+    (
+        9,
+        "Add direction to closed_positions",
+        "ALTER TABLE closed_positions ADD COLUMN direction TEXT NOT NULL DEFAULT 'long'",
+    ),
 ]
 
 
@@ -289,15 +299,16 @@ def insert_position(ticker: str, entry_price: float, shares: float,
                     signal_id: int | None, rationale: str,
                     signal_source: str = "congressional",
                     entry_commission: float = 0.0,
-                    stop_pct: float = 15.0) -> None:
+                    stop_pct: float = 15.0,
+                    direction: str = "long") -> None:
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO positions
                (ticker, entry_price, shares, position_pct, entry_date, signal_id,
-                rationale, peak_price, signal_source, entry_commission, stop_pct)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rationale, peak_price, signal_source, entry_commission, stop_pct, direction)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, entry_price, shares, position_pct, entry_date, signal_id,
-             rationale, entry_price, signal_source, entry_commission, stop_pct),
+             rationale, entry_price, signal_source, entry_commission, stop_pct, direction),
         )
         if cur.rowcount == 0:
             raise ValueError(
@@ -367,6 +378,22 @@ def update_position_peak(ticker: str, peak_price: float) -> None:
             (peak_price, ticker, peak_price),
         )
 
+def update_position_extreme(ticker: str, price: float, direction: str) -> None:
+    """Updates the running best-case price: peak (long, only moves up) or
+    trough (short, only moves down). Same peak_price column serves both —
+    its meaning is direction-dependent."""
+    with get_conn() as conn:
+        if direction == "long":
+            conn.execute(
+                "UPDATE positions SET peak_price = ? WHERE ticker = ? AND (peak_price IS NULL OR peak_price < ?)",
+                (price, ticker, price),
+            )
+        else:
+            conn.execute(
+                "UPDATE positions SET peak_price = ? WHERE ticker = ? AND (peak_price IS NULL OR peak_price > ?)",
+                (price, ticker, price),
+            )
+
 def delete_position(ticker: str) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM positions WHERE ticker = ?", (ticker,))
@@ -376,20 +403,22 @@ def log_closed_position(ticker: str, entry_price: float, exit_price: float,
                         exit_reason: str, signal_id: int | None,
                         signal_source: str = "congressional",
                         costs: float = 0.0,
-                        entry_commission: float = 0.0) -> None:
-    # Realized PnL = gross proceeds - entry cost (including both-side commissions)
-    gross_proceeds = exit_price * shares - costs          # exit proceeds after commission
-    entry_cost = entry_price * shares + entry_commission  # entry cost including commission
-    realized_pnl = gross_proceeds - entry_cost
+                        entry_commission: float = 0.0,
+                        direction: str = "long") -> None:
+    # Long: profit when exit > entry. Short: profit when exit < entry (bought
+    # back cheaper than the price it was sold short at). See
+    # docs/superpowers/specs/2026-07-17-short-selling-design.md Component 4.
+    sign = 1 if direction == "long" else -1
+    realized_pnl = sign * (exit_price - entry_price) * shares - costs - entry_commission
     with get_conn() as conn:
         conn.execute(
             """INSERT INTO closed_positions
                (ticker, entry_price, exit_price, shares, entry_date, exit_date,
-                exit_reason, realized_pnl, signal_id, closed_at, signal_source)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                exit_reason, realized_pnl, signal_id, closed_at, signal_source, direction)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, entry_price, exit_price, shares, entry_date, exit_date,
              exit_reason, realized_pnl, signal_id, datetime.now(UTC).isoformat(),
-             signal_source),
+             signal_source, direction),
         )
 
 def get_closed_positions() -> list[sqlite3.Row]:

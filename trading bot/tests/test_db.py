@@ -372,3 +372,46 @@ def test_record_job_run_is_idempotent_same_day(db):
             ("run_morning_pipeline", "2026-07-10"),
         ).fetchall()
     assert len(rows) == 1
+
+
+def test_insert_position_defaults_to_long_direction(db):
+    db.insert_position("AAPL", 150.0, 10.0, 5.0, "2026-07-17", None, "test")
+    rows = db.get_open_positions()
+    assert rows[0]["direction"] == "long"
+
+
+def test_insert_position_accepts_short_direction(db):
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-17", None, "test", direction="short")
+    rows = db.get_open_positions()
+    assert rows[0]["direction"] == "short"
+
+
+def test_log_closed_position_long_pnl_unchanged(db):
+    # Existing long formula: profit when exit > entry
+    db.log_closed_position(
+        ticker="AAPL", entry_price=100.0, exit_price=110.0, shares=10.0,
+        entry_date="2026-07-01", exit_date="2026-07-10", exit_reason="test",
+        signal_id=None,
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["realized_pnl"] == pytest.approx(100.0)  # (110-100)*10
+    assert rows[0]["direction"] == "long"
+
+
+def test_log_closed_position_short_pnl_profits_on_price_drop(db):
+    db.log_closed_position(
+        ticker="TSLA", entry_price=250.0, exit_price=230.0, shares=5.0,
+        entry_date="2026-07-01", exit_date="2026-07-10", exit_reason="test",
+        signal_id=None, direction="short",
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["realized_pnl"] == pytest.approx(100.0)  # (250-230)*5
+    assert rows[0]["direction"] == "short"
+
+
+def test_update_position_extreme_short_only_moves_down(db):
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test", direction="short")
+    db.update_position_extreme("TSLA", 230.0, "short")
+    db.update_position_extreme("TSLA", 240.0, "short")  # higher — must NOT overwrite
+    rows = db.get_open_positions()
+    assert rows[0]["peak_price"] == pytest.approx(230.0)
