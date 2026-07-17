@@ -182,8 +182,21 @@ def restart_bot(reason: str, status: dict | None, now: datetime | None = None) -
         # ImportError. sys.executable is the watchdog's own interpreter,
         # which is already known-correct (hardcoded absolute path in this
         # LaunchAgent's own plist).
+        #
+        # No "nohup": a genuine LaunchDaemon invocation has NO controlling
+        # terminal at all (unlike the interactive/osascript-triggered
+        # RunAtLoad fire that happened to still have some tty-like fd
+        # around during install) -- nohup's own startup then fails with
+        # "can't detach from console: Inappropriate ioctl for device"
+        # before it ever execs python, live-observed 2026-07-17 on the
+        # watchdog's second natural restart, leaving the bot down with no
+        # further log output at all. start_new_session=True already does
+        # nohup's actual job (os.setsid() detaches from any controlling
+        # terminal, so there's nothing left to send SIGHUP from) without
+        # needing the external nohup binary, which assumes a console
+        # exists to detach FROM.
         subprocess.Popen(
-            ["nohup", "caffeinate", "-i", "-s", sys.executable, "run_bot.py"],
+            ["caffeinate", "-i", "-s", sys.executable, "run_bot.py"],
             cwd=str(_REPO_DIR), stdout=log_fh, stderr=subprocess.STDOUT,
             start_new_session=True,
         )
