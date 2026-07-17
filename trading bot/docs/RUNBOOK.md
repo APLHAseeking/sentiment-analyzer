@@ -249,21 +249,46 @@ existing webhook either way (so a restart is visible, not silent).
 
 ```bash
 python -m monitoring.watchdog    # one-off manual cycle, logs its decision
-launchctl kickstart -k gui/$(id -u)/com.thomasvromen.tradingbot-watchdog  # force a cycle now
+sudo launchctl kickstart -k system/com.thomasvromen.tradingbot-watchdog  # force a cycle now
 tail -f watchdog.log
 ```
 
-Loaded via `~/Library/LaunchAgents/com.thomasvromen.tradingbot-watchdog.plist`
-(same `StartInterval` pattern as the dead-man's-switch plist above, not
-subject to the `KeepAlive`/Background-Task-Management block — see the
-launchd status note). `StartInterval` 900s (15 min) + `RunAtLoad`.
+**Status (2026-07-17): a LaunchDaemon, not a LaunchAgent.** Loaded via
+`/Library/LaunchDaemons/com.thomasvromen.tradingbot-watchdog.plist`
+(root-owned, `chmod 644` — launchd refuses to load an incorrectly
+permissioned system daemon), with a `UserName` key so it still runs as
+`thomasvromen` (not root) and reads `.env`/writes `trading.db`/`bot.log`/
+`bot_status.json` with normal ownership. `StartInterval` 900s (15 min) +
+`RunAtLoad`, same as before.
+
+**Why a daemon and not an agent:** a LaunchAgent (`gui/<uid>` domain)
+only runs while that user is logged in — a reboot, crash, or logout left
+the whole reliability stack (watchdog + bot) dead until someone logged
+back in, since `launchd` never even started them. A LaunchDaemon (`system`
+domain) starts at boot regardless of login state. **Does not close every
+gap:** FileVault requires its own pre-boot password before macOS itself
+boots at all, on a truly cold boot from fully powered off — no launchd
+domain, system or gui, runs before that. This closes "OS restarted or you
+got logged out while the disk stayed unlocked" (the common case), not
+"laptop was fully powered off."
+
+Install (needs one-time root — done via
+`osascript -e '...with administrator privileges'`, which pops the native
+auth dialog instead of requiring a Terminal/TTY, same pattern used for
+`sudo pmset` above):
+```bash
+cp path/to/staged.plist /Library/LaunchDaemons/com.thomasvromen.tradingbot-watchdog.plist
+chown root:wheel /Library/LaunchDaemons/com.thomasvromen.tradingbot-watchdog.plist
+chmod 644 /Library/LaunchDaemons/com.thomasvromen.tradingbot-watchdog.plist
+launchctl bootstrap system /Library/LaunchDaemons/com.thomasvromen.tradingbot-watchdog.plist
+```
 
 **To pause it** (e.g. during manual debugging of the bot itself, so the
 watchdog doesn't restart it mid-investigation):
 ```bash
-launchctl bootout gui/$(id -u)/com.thomasvromen.tradingbot-watchdog
+sudo launchctl bootout system/com.thomasvromen.tradingbot-watchdog
 # ...when done:
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.thomasvromen.tradingbot-watchdog.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.thomasvromen.tradingbot-watchdog.plist
 ```
 
 ## Daily health check
