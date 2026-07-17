@@ -8,14 +8,23 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-2026-07-17, ~10:45 CEST. Built and deployed the reliability watchdog (see Decisions/Done
-below) after the bot wedged twice more in 24h (07-16 ~22:30-18:51, and again overnight
-07-16 20:00 -> 07-17 10:44, both caught live during this work, not via the old alert-only
-path). Bot process PID 31860 (`caffeinate -i -s` wrapped, restarted 07-17 10:44 to deploy
-Tasks 1-3's code), watchdog LaunchAgent loaded and confirmed working end-to-end
-(`healthy:recent_activity` after the restart). Full suite: 975 passed. Outstanding: user
-still needs to run `sudo pmset -a powernap 0` themselves (agent can't run sudo) — confirm
-with `pmset -g custom | grep powernap` afterward.
+Session closing (2026-07-17, ~11:05 CEST). Independently re-verified everything below rather
+than trusting the docs as found (this work landed from a concurrent session, not this one):
+bot process PID 31860 alive and healthy, `bot_status.json` commit matches HEAD (`c43bd66`),
+watchdog LaunchAgent loaded (`launchctl list`) with real log evidence of a correct
+`healthy:recent_activity` cycle, full suite freshly re-run at 975 passed, `RISK_LOCKOUT`
+absent, 12 open positions (the 11 from 07-15 plus `ACGL` opened 07-16). Found and fixed one
+real inaccuracy: `docs/RUNBOOK.md` claimed the `sudo pmset -a powernap 0` mitigation was
+"applied 2026-07-17" — `pmset -g custom | grep powernap` still reads `1` on both Battery and
+AC, so that claim was false/premature. Corrected the doc; the action is still outstanding
+and needs the user to run it interactively (agent can't `sudo`). Read
+`monitoring/watchdog.py` in full — restart logic is sound (PID-reuse-safe kill, 10-min quiet
+gate, fires an alert either way); one minor non-blocking gap noted: no SIGKILL fallback if
+SIGTERM doesn't land within 10s.
+
+Earlier the same day (concurrent session, not this one): built and deployed the reliability
+watchdog after the bot wedged twice more in 24h (07-16 ~22:30→18:51, and again overnight
+07-16 20:00→07-17 10:44) — see Decisions/Done below.
 
 Earlier the same day: implemented the user-approved "widen screener review" design (top-N
 12→30 via new `UniverseConfig.screener_top_n`, daily cap 3→5) — commit `7a185ce`. Found the
@@ -27,10 +36,6 @@ path — commit `e7b15fa`. Bot now runs `nohup caffeinate -i -s python3 run_bot.
 of bare `nohup python3`.
 
 ## Next
-- Check `trading bot/tomorrow_1540_check.log` after 2026-07-16 15:45 CEST (written by an
-  OS-detached watcher, PPID=1, started 2026-07-15) — confirms whether the caffeinate fix
-  held overnight without needing a manual restart. If the file's missing, the watcher died;
-  just check live (`ps aux | grep run_bot.py` + `job_runs` for that date) instead.
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's `russell1000_constituent`
   endpoint (existence unconfirmed), wire up if it works. 4 free/no-signup alternates tried
   across sessions (iShares, FTSE Russell, stockanalysis.com, SlickCharts) — none viable.
@@ -62,7 +67,7 @@ of bare `nohup python3`.
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
-- Test command: cd "trading bot" && pytest — 947 tests green as of 2026-07-15 (later same day), 0 known failures
+- Test command: cd "trading bot" && pytest — 975 tests green as of 2026-07-17 (freshly re-run), 0 known failures
 - Branch: feature/profitable-strategies-lowvol-residmom-insider; 45+ commits ahead of origin, not pushed
 - SUE PIT backtest modules: screener/xbrl_pit_sue.py (companyfacts fetch/cache, PIT quarterly EPS, PIT SUE), backtesting/pit_constituents.py (PIT S&P 500 membership), backtesting/backtest_sue_pit.py (drift/HAC/gate). Report: trading bot/docs/SUE_PIT_BACKTEST_2026-07-14.md. Cache dir trading bot/pit_cache/ (gitignored).
 - Bot process: check via `ps aux | grep run_bot.py`; started via `nohup caffeinate -i -s python3 run_bot.py > bot.log 2>&1 &` from inside "trading bot/" (caffeinate wrapper added 2026-07-15, see RUNBOOK.md#sleep-wedges; note `python`, not `python3`, does not exist in this shell — use python3). Dead-man's-switch: `launchctl list | grep tradingbot`.
@@ -180,6 +185,14 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
   this exact work), restarted it to deploy the new code, and confirmed the watchdog correctly
   read the fresh status file and reported `healthy:recent_activity` on a forced cycle. Full
   suite: 975 passed (was 947 at session start).
+
+- 2026-07-17 (session close-out verification): independently re-verified the concurrent
+  session's watchdog work rather than trusting its docs — confirmed live (process, status
+  file, launchd registration, a real `healthy:recent_activity` log line, fresh 975-pass full
+  suite run) and read `monitoring/watchdog.py` in full (restart logic sound). Found and
+  corrected one real inaccuracy: `docs/RUNBOOK.md` claimed `sudo pmset -a powernap 0` was
+  "applied" — verified still `1` on both power sources, action remains outstanding for the
+  user. RESULT: all claims now backed by fresh evidence, one doc correction committed.
 
 ## Open items
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
