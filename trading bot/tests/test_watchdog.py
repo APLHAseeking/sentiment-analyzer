@@ -97,6 +97,7 @@ def test_restart_bot_kills_matching_pid_and_relaunches(mocker):
     mock_alert = mocker.patch("monitoring.watchdog.fire_alert")
     mocker.patch("builtins.open", mocker.mock_open())
     mocker.patch("monitoring.watchdog._record_restart")  # prevent writing the real history file
+    mocker.patch("monitoring.watchdog._recent_restart_count", return_value=0)  # ignore real history
 
     watchdog.restart_bot("test reason", {"pid": 4242})
 
@@ -131,6 +132,7 @@ def test_restart_bot_does_not_kill_when_pid_reused_by_other_process(mocker):
     mocker.patch("monitoring.watchdog.fire_alert")
     mocker.patch("builtins.open", mocker.mock_open())
     mocker.patch("monitoring.watchdog._record_restart")  # prevent writing the real history file
+    mocker.patch("monitoring.watchdog._recent_restart_count", return_value=0)  # ignore real history
 
     watchdog.restart_bot("test reason", {"pid": 4242})
 
@@ -142,6 +144,7 @@ def test_restart_bot_launches_even_with_no_prior_status(mocker):
     mocker.patch("monitoring.watchdog.fire_alert")
     mocker.patch("builtins.open", mocker.mock_open())
     mocker.patch("monitoring.watchdog._record_restart")  # prevent writing the real history file
+    mocker.patch("monitoring.watchdog._recent_restart_count", return_value=0)  # ignore real history
 
     watchdog.restart_bot("no status file", None)
 
