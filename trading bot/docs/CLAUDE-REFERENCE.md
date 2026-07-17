@@ -834,3 +834,65 @@ closed market.
 > possibility of a not-yet-found bug in the watchdog's own code (one was already found and
 > fixed live; the process that caught it — actual verification instead of trusting a "done"
 > claim — is the real mitigation, not a promise of zero remaining bugs).
+>
+> **2026-07-17 (second live outage, "update the whole folder" close-out, commits
+> `a9a7313`/`79f9b0b`/`c0ad57a`):** proof the previous entry's caution was warranted — a
+> SECOND bug in the watchdog's own restart mechanism surfaced live within the same session,
+> this time while responding to the user's request to update all documentation and confirm
+> readiness for an imminent full reboot. The 15:37 auto-restart attempt failed with `nohup:
+> can't detach from console: Inappropriate ioctl for device` — a genuine `LaunchDaemon`
+> invocation has no controlling terminal at all, and `nohup` needs one to detach FROM; it
+> exits before ever exec'ing python. The first `RunAtLoad` fire during Task 1's earlier
+> install had apparently inherited enough of a console from the interactive osascript
+> installation flow to mask this — the bug only showed up on a genuinely cold, natural
+> `StartInterval` cycle. The bot sat down through two full watchdog cycles (15:37, 15:52,
+> each retrying and failing identically) before this was caught. Fixed: dropped `nohup`
+> entirely from the launch command — `start_new_session=True` already performs its actual
+> function (`os.setsid()` detaches from any controlling terminal, so there is no terminal
+> left to send `SIGHUP` from in the first place). Verified two ways: a new regression test
+> asserting `"nohup"` never appears in the launch command, and direct production evidence —
+> the very next natural cycle (16:07) launched the bot cleanly with a full startup log and no
+> `nohup` error.
+>
+> That 16:07 process then hit a cluster of real errors — `sqlite3.OperationalError: unable
+> to open database file`, `[Errno 24] Too many open files`, and DNS resolution failing
+> simultaneously for sec.gov, Alpaca, and Slack. Diagnosed as transient resource exhaustion
+> from the day's accumulated restart churn (also correlated with the coding agent's own tool
+> layer intermittently failing to execute commands around the same window) rather than a new
+> code bug — confirmed resolved minutes later (`host www.google.com` resolved cleanly, a
+> direct `sqlite3` query against `trading.db` succeeded) and expected to clear unconditionally
+> on the user's planned reboot regardless, since that resets the file-descriptor table and
+> network stack from scratch. Not treated as "fixed" because nothing was changed to fix it —
+> reported as a transient condition with direct evidence it had already cleared.
+>
+> Caught the same test-isolation bug class for a third time this session, on the read side
+> this time: 3 `restart_bot` tests didn't mock `_recent_restart_count`, so once
+> `watchdog_restart_history.json` accumulated real entries from today's actual production
+> restarts, the tests started hitting the real crash-loop-suppression path — 2 failed
+> outright, a third passed for the wrong reason (`kill` not called because of suppression,
+> not because of the cmdline-mismatch safety check it claims to verify). Fixed by mocking the
+> read side (`_recent_restart_count`) alongside the write side (`_record_restart`) already
+> fixed earlier in the session.
+>
+> Converted `monitoring/dead_mans_switch.py` from a `LaunchAgent` to a `LaunchDaemon` too —
+> same install pattern, same reboot-survival reasoning as the watchdog. Necessary for
+> consistency, not optional polish: the watchdog surviving reboot while its own independent
+> backstop (built specifically to catch a bug IN the watchdog) did not would have reopened
+> exactly the kind of gap this whole session was closing. Live-verified via its own fresh
+> `RunAtLoad` cycle immediately reporting "Pipeline healthy" after install, and the old
+> LaunchAgent unloaded and its plist deleted to prevent double-firing, same as the watchdog's
+> own conversion.
+>
+> Also, sweeping the rest of the repo per the user's "don't forget any folder" request:
+> corrected a stale claim in `docs/guardrails/PROJECT.md` (said `ALERT_WEBHOOK_URL` was
+> still outstanding; it has been set in `.env` the whole time — nobody had corrected the note
+> after it was actually configured), added an explicit `docs/RUNBOOK.md#after-a-reboot`
+> checklist naming exactly what to expect and verify post-restart, and documented all 4 new
+> watchdog/dead-man's-switch alert types (`watchdog_restart`, `watchdog_crashed`,
+> `watchdog_crash_loop`, `dead_mans_switch_watchdog`) in the existing alert-meanings
+> reference so they don't read as unexplained noise the first time they fire. Left
+> deliberately untouched and flagged instead: a second, separate `trading bot/docs/STATE.md`
+> created by the concurrent strategy-review session, which duplicates this repo's
+> single-root-STATE.md convention — not this thread's file to merge or delete unilaterally.
+> Full suite: **985 passed** (unchanged count — this pass was fixes and documentation, not
+> new features).

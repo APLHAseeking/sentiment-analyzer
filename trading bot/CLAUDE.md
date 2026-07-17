@@ -207,6 +207,22 @@
 > before implementation. See `docs/RUNBOOK.md#watchdog` and `docs/STATE.md` Decisions for the
 > full honest framing of what's closed vs. still open. Test count: **985** (full suite green,
 > zero known failures).
+> 2026-07-17 (second live outage, repo-wide close-out for a planned reboot, commits
+> `a9a7313`/`79f9b0b`/`c0ad57a`): a follow-up "update everything, confirm the reboot will
+> work" pass caught a second real watchdog bug live — `nohup` needs a controlling terminal to
+> detach from, which a genuine `LaunchDaemon` invocation has none of; it failed outright
+> (`can't detach from console`) before ever launching python, silently through two full
+> restart cycles. Fixed by dropping `nohup` in favor of `start_new_session=True` (already did
+> the same job); verified via the very next natural cycle launching cleanly in production, not
+> just a unit test. The resulting process then hit transient DB-lock/too-many-open-files/DNS
+> errors from the day's restart churn — confirmed resolved within minutes, expected to clear
+> fully on reboot regardless. `monitoring/dead_mans_switch.py` also converted to a
+> LaunchDaemon (was still a LaunchAgent — an inconsistency that would have left the
+> watchdog's own backstop unable to survive reboot). Caught the same test-isolation bug class
+> a third time (unmocked `_recent_restart_count` reading real production data). Repo-wide doc
+> sweep: corrected a stale `ALERT_WEBHOOK_URL` claim in `docs/guardrails/PROJECT.md`, added
+> `docs/RUNBOOK.md#after-a-reboot`, documented the 4 new alert types. Test count: **985**
+> (unchanged — fixes and docs, not new features).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

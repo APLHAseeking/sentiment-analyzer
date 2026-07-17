@@ -8,45 +8,37 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-Strategy-review thread (this session, 2026-07-17): **CLOSED OUT**, report + all remediation
-done, suite green, nothing committed yet — see Done entry below for the full result.
+**2026-07-17, session closing at the user's request — about to reboot the Mac.** Both
+2026-07-17 work threads are done and committed, nothing left mid-operation:
+- Strategy/profitability review: CLOSED OUT, full remediation applied, commit `e9e0ee7` —
+  see Done entry for the full result.
+- Reliability watchdog hardening (this thread): CLOSED OUT. Bot live and healthy (PID
+  confirmed via `ps aux`, full suite 985 passed freshly after every fix below); watchdog AND
+  dead-man's-switch both converted to LaunchDaemons (`UserName: thomasvromen`, both
+  live-verified via their own `RunAtLoad` cycles firing correctly right after install) so
+  both survive a reboot/logout without needing a login session; the 4 residual gaps from
+  "will it ever happen again" are closed (crash-loop circuit breaker, 120-min hard ceiling,
+  mutual crash-alerting between the two daemons); Power Nap disabled (`powernap=0` confirmed
+  both power sources). See Decisions/Done below for the full narrative and
+  `trading bot/docs/CLAUDE-REFERENCE.md#history` for the complete detail — including a
+  SECOND live outage found and fixed during this same "update everything" pass (`nohup`
+  itself fails with no controlling terminal inside a true LaunchDaemon invocation; fixed by
+  dropping it in favor of `start_new_session=True`, which already did the same job).
 
-Reliability thread (concurrent, separate session) — session closing (2026-07-17, ~11:05 CEST). Independently re-verified everything below rather
-than trusting the docs as found (this work landed from a concurrent session, not this one):
-bot process PID 31860 alive and healthy, `bot_status.json` commit matches HEAD (`c43bd66`),
-watchdog LaunchAgent loaded (`launchctl list`) with real log evidence of a correct
-`healthy:recent_activity` cycle, full suite freshly re-run at 975 passed, `RISK_LOCKOUT`
-absent, 12 open positions (the 11 from 07-15 plus `ACGL` opened 07-16). Found and fixed one
-real inaccuracy: `docs/RUNBOOK.md` claimed the `sudo pmset -a powernap 0` mitigation was
-"applied 2026-07-17" — `pmset -g custom | grep powernap` still reads `1` on both Battery and
-AC, so that claim was false/premature. Corrected the doc; the action is still outstanding
-and needs the user to run it interactively (agent can't `sudo`). Read
-`monitoring/watchdog.py` in full — restart logic is sound (PID-reuse-safe kill, 10-min quiet
-gate, fires an alert either way); one minor non-blocking gap noted: no SIGKILL fallback if
-SIGTERM doesn't land within 10s.
+**The user is rebooting specifically to test this live.** After the reboot, the very first
+thing to do — for the user or a fresh session — is run the checklist at
+`trading bot/docs/RUNBOOK.md#after-a-reboot`. Expect: both LaunchDaemons already running
+(no manual reload needed, that's the entire point), the watchdog to have auto-launched the
+bot within ~15 min of boot (it does NOT survive reboot on its own — only the daemons do —
+see that section for why this is expected, not a bug), and `powernap` to still read `0`
+(pmset settings persist across reboot on their own).
 
-**Update, same day, later (this session):** `sudo pmset -a powernap 0` is now actually
-applied — user asked for a faster option than opening Terminal; ran
-`osascript -e 'do shell script "pmset -a powernap 0" with administrator privileges'`, which
-pops the native macOS auth dialog (password/Touch ID) instead of requiring an interactive
-`sudo` in a real TTY (the `!`-prefix path tried first failed: no TTY available in that
-session either). Verified via `pmset -g custom | grep powernap` — both lines now read `0`.
-`docs/RUNBOOK.md` updated accordingly.
-
-**Update, same day, later still (this session):** user asked "will it now ever happen again
-without intervention?" — answered honestly with 4 residual gaps (reboot-without-login, a bug
-in the watchdog itself, a persistent-code-bug crash-loop, a stuck-but-still-logging scenario
-that never trips the quiet-gate), then built a fix for all 4 on request. See Decisions/Done
-below for detail; full suite 985 passed. One live scare mid-build: the watchdog's own
-auto-restart at 11:00:09 crashed (bare `"python3"` resolved to the wrong interpreter under
-the LaunchAgent's minimal PATH — system 3.9, not Homebrew 3.11+ — `ImportError` on
-`datetime.UTC`), leaving the bot down ~13 min until caught by this exact "is it done" check.
-Fixed (`sys.executable`), proven via a real (not mocked) `restart_bot()` call against the
-live process, not just a unit test.
-
-Earlier the same day (concurrent session, not this one): built and deployed the reliability
-watchdog after the bot wedged twice more in 24h (07-16 ~22:30→18:51, and again overnight
-07-16 20:00→07-17 10:44) — see Decisions/Done below.
+**One file worth knowing about, not touched by this thread:** `trading bot/docs/STATE.md`
+(a second, separate STATE.md, inside `trading bot/docs/` rather than this repo-root one) was
+created by the concurrent strategy-review session and is currently untracked — this repo's
+convention (SESSION.md) is a single root-level `docs/STATE.md`, so that file is likely meant
+to be merged in or cleaned up, not a second permanent state file. Left alone deliberately,
+not mine to fold in — flag it to the user or check with them before merging/deleting it.
 
 Earlier the same day: implemented the user-approved "widen screener review" design (top-N
 12→30 via new `UniverseConfig.screener_top_n`, daily cap 3→5) — commit `7a185ce`. Found the
@@ -58,14 +50,21 @@ path — commit `e7b15fa`. Bot now runs `nohup caffeinate -i -s python3 run_bot.
 of bare `nohup python3`.
 
 ## Next
+- **First thing after the reboot**: run the checklist at
+  `trading bot/docs/RUNBOOK.md#after-a-reboot` (both LaunchDaemons should already be running;
+  the bot itself needs the watchdog's first ~15-min cycle to notice it's not running and
+  relaunch it — that delay is expected, not a bug).
+- Decide what to do with `trading bot/docs/STATE.md` (untracked, created by the concurrent
+  strategy-review session, duplicates this repo-root file's role) — merge, delete, or keep;
+  not decided or actioned by this thread, see `## Now`.
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's `russell1000_constituent`
   endpoint (existence unconfirmed), wire up if it works. 4 free/no-signup alternates tried
   across sessions (iShares, FTSE Russell, stockanalysis.com, SlickCharts) — none viable.
 - requirements.txt pinning/lockfile: still not started.
-- Sleep-induced wedges: `caffeinate -i -s` (in place 2026-07-15) covers idle/AC sleep but NOT
-  lid-closed (clamshell) sleep — verified via research, not fixable by caffeinate at all. If
-  it recurs specifically from a lid-close, next step is user's call between `sudo pmset -a
-  disablesleep 1` (same laptop, real battery/heat tradeoff) or migrating off the laptop
+- Remaining sleep-wedge hardening (Power Nap disabled, watchdog now bounds any recurrence to
+  ~15-30 min either way — see `## Open items` for current status): if wedges somehow still
+  recur, next step is user's call between `sudo pmset -a disablesleep 1` (same laptop, real
+  battery/heat tradeoff) or migrating off the laptop
   entirely (Oracle Cloud Always Free / a small VPS / a home always-on device) — see
   `docs/RUNBOOK.md#sleep-wedges` for the full writeup. Not actioned without the user choosing.
 
@@ -270,6 +269,39 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
   would have silently collided with the new dual-grace (`_GRACE_MINUTES` vs.
   `_HARD_GRACE_MINUTES`) call pattern — both classes of bug flagged explicitly in the plan's
   self-review before implementation, not discovered by surprise. Full suite: 985 passed.
+- 2026-07-17 (second live outage + "update the whole folder" close-out, commits `a9a7313`/
+  `79f9b0b`/`c0ad57a`): user asked to update all documentation across the repo and confirm
+  everything would survive an imminent full reboot. Live-caught a SECOND real outage while
+  doing it: the watchdog's 15:37 auto-restart attempt failed with `nohup: can't detach from
+  console: Inappropriate ioctl for device` — a genuine `LaunchDaemon` invocation has no
+  controlling terminal at all for `nohup` to detach FROM (unlike the interactive/osascript-
+  triggered first `RunAtLoad` fire during Task 1's install, which apparently still had one),
+  so `nohup` failed outright before ever exec'ing python, leaving the bot down with zero
+  further log output through two more watchdog cycles (15:52, silently retried and failed the
+  same way). Fixed: dropped `nohup` from the launch command entirely — `start_new_session=
+  True` already does its actual job (`os.setsid()` detaches from any controlling terminal).
+  Live-verified: the very next natural watchdog cycle (16:07) launched the bot cleanly with
+  no `nohup` error — direct proof from production, not just the new regression test. That
+  same cycle then hit real transient environmental errors (`sqlite3.OperationalError: unable
+  to open database file`, `Too many open files`, DNS resolution failing for sec.gov/Alpaca/
+  Slack simultaneously) — diagnosed as resource exhaustion from the day's restart churn, not
+  a new code bug; confirmed resolved minutes later (`host www.google.com` and a direct
+  `sqlite3` query both succeeded) and expected to clear fully on the reboot regardless (fresh
+  process, fresh file-descriptor table, fresh network stack). Caught the same test-isolation
+  bug class a third time in the same session: 3 `restart_bot` tests didn't mock
+  `_recent_restart_count`, so once `watchdog_restart_history.json` had real entries from
+  today's actual production restarts, 2 tests failed outright and a third passed for the
+  wrong reason (crash-loop suppression, not the cmdline-mismatch safety check it claims to
+  test) — fixed by mocking the read side too, not just the write side fixed earlier. Also
+  converted `monitoring/dead_mans_switch.py` from a LaunchAgent to a LaunchDaemon (same
+  pattern, same reasoning as the watchdog) for full reboot-consistency — the watchdog alone
+  surviving reboot while its own backstop didn't would have been a real gap; live-verified via
+  its own fresh `RunAtLoad` cycle reporting "Pipeline healthy" immediately after install.
+  Fixed a stale claim in `docs/guardrails/PROJECT.md` (said `ALERT_WEBHOOK_URL` was
+  outstanding; it's been set in `.env` this whole time). Added an explicit
+  `docs/RUNBOOK.md#after-a-reboot` checklist and documented all 4 new watchdog/dead-man's-
+  switch alert types in the existing alert-meanings reference. Full suite: 985 passed
+  (unchanged count — this pass was fixes and docs, not new features).
 
 ## Open items
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
