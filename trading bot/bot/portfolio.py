@@ -188,15 +188,16 @@ class Portfolio:
 
     def close_position(self, ticker: str, shares: float, exit_price: float,
                        exit_reason: str, signal_id: int | None, entry_price: float,
-                       entry_date: str, signal_source: str = "congressional") -> bool:
+                       entry_date: str, signal_source: str = "congressional",
+                       direction: str = "long") -> bool:
         """Returns True if the position was booked closed, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
-        order = self._place_sell_with_retry(ticker, shares)
+        order = self._place_closing_order_with_retry(ticker, shares, direction)
         _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
         if order.status in _NON_FILL:
             reason = order.reject_reason or order.status.value
             emit_event(
                 log, EventType.ORDER_REJECTED,
-                f"Sell for {ticker} {order.status.value} after retries ({reason}) — "
+                f"Close for {ticker} {order.status.value} after retries ({reason}) — "
                 "position left intact for next reconcile/poll",
                 data={"ticker": ticker, "reason": reason, "status": order.status.value},
                 level=logging.ERROR,
@@ -220,13 +221,14 @@ class Portfolio:
             signal_id=signal_id,
             signal_source=signal_source,
             exit_commission=exit_commission,
+            direction=direction,
         )
         return True
 
     def _book_closed_position(self, ticker: str, entry_price: float, exit_price: float,
                               shares: float, entry_date: str, exit_reason: str,
                               signal_id: int | None, signal_source: str,
-                              exit_commission: float) -> None:
+                              exit_commission: float, direction: str = "long") -> None:
         """Shared booking logic: write the closed_positions row, delete the open
         position, and cancel any resting stop. Used both for a freshly-placed
         sell (close_position) and for a fill discovered after the fact via
@@ -248,6 +250,7 @@ class Portfolio:
             signal_source=signal_source,
             costs=exit_commission,
             entry_commission=entry_commission,
+            direction=direction,
         )
         db.delete_position(ticker)
         if hasattr(self.broker, "cancel_stop_order"):
@@ -275,32 +278,36 @@ class Portfolio:
                 time.sleep(delay)
         return stop_id
 
-    def _place_sell_with_retry(self, ticker: str, qty: float, max_retries: int = 3):
+    def _place_closing_order_with_retry(self, ticker: str, qty: float, direction: str,
+                                        max_retries: int = 3):
+        """Places the order that CLOSES a position: sell (long) or buy-to-cover (short)."""
         import time
+        close_side = "sell" if direction == "long" else "buy"
         order = None
         for attempt in range(max_retries):
-            order = self.broker.place_order(ticker=ticker, side="sell", qty=qty)
+            order = self.broker.place_order(ticker=ticker, side=close_side, qty=qty)
             if order.status != OrderStatus.REJECTED:
                 return order
             if attempt < max_retries - 1:
                 delay = 1.0 * (attempt + 1)
-                log.warning("Sell rejected for %s (attempt %d/%d): %s — retrying in %.0fs",
-                            ticker, attempt + 1, max_retries, order.reject_reason, delay)
+                log.warning("%s rejected for %s (attempt %d/%d): %s — retrying in %.0fs",
+                            close_side, ticker, attempt + 1, max_retries, order.reject_reason, delay)
                 time.sleep(delay)
         return order
 
     def reduce_position(self, ticker: str, shares: float, exit_price: float,
                         signal_id: int | None, entry_price: float, entry_date: str,
-                        signal_source: str = "congressional") -> bool:
+                        signal_source: str = "congressional",
+                        direction: str = "long") -> bool:
         """Returns True if the partial close was booked, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
         sell_qty = shares / 2
-        order = self._place_sell_with_retry(ticker, sell_qty)
+        order = self._place_closing_order_with_retry(ticker, sell_qty, direction)
         _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
         if order.status in _NON_FILL:
             reason = order.reject_reason or order.status.value
             emit_event(
                 log, EventType.ORDER_REJECTED,
-                f"Reduce sell for {ticker} {order.status.value} after retries ({reason}) — "
+                f"Reduce for {ticker} {order.status.value} after retries ({reason}) — "
                 "shares left unchanged",
                 data={"ticker": ticker, "reason": reason, "status": order.status.value},
                 level=logging.ERROR,
@@ -332,6 +339,7 @@ class Portfolio:
             signal_source=signal_source,
             costs=exit_commission,
             entry_commission=entry_commission,
+            direction=direction,
         )
         db.update_position_shares(ticker, shares - actual_filled)
         # Cancel the stale full-qty stop; the next enforce_stop_losses poll re-places

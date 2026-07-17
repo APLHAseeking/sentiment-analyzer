@@ -1456,3 +1456,36 @@ def test_open_short_position_stop_is_above_entry(portfolio, mock_broker):
     stop_kwargs = mock_broker.place_stop_order.call_args[1]
     assert stop_kwargs["stop_price"] > 250.0
     assert stop_kwargs["side"] == "buy"
+
+def test_close_short_position_buys_to_cover(portfolio, mock_broker, db):
+    """close_position on a short must buy-to-cover, not sell — matches the
+    mock_broker fixture's default pattern (a real Order object; direct
+    `.status = OrderStatus.FILLED` attribute assignment on it is safe since
+    it's a real dataclass instance, not an enum member)."""
+    from execution.broker_interface import OrderStatus
+    mock_broker.place_order.return_value.status = OrderStatus.FILLED
+    mock_broker.place_order.return_value.filled_qty = 5.0
+    mock_broker.place_order.return_value.filled_avg_price = 230.0
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test", direction="short")
+    closed = portfolio.close_position(
+        "TSLA", shares=5.0, exit_price=230.0, exit_reason="stop_loss",
+        signal_id=None, entry_price=250.0, entry_date="2026-07-14", direction="short",
+    )
+    assert closed is True
+    kwargs = mock_broker.place_order.call_args[1]
+    assert kwargs["side"] == "buy"
+
+def test_reduce_short_position_buys_to_cover_half(portfolio, mock_broker, db):
+    from execution.broker_interface import OrderStatus
+    mock_broker.place_order.return_value.status = OrderStatus.FILLED
+    mock_broker.place_order.return_value.filled_qty = 2.5
+    mock_broker.place_order.return_value.filled_avg_price = 230.0
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test", direction="short")
+    reduced = portfolio.reduce_position(
+        "TSLA", shares=5.0, exit_price=230.0, signal_id=None,
+        entry_price=250.0, entry_date="2026-07-14", direction="short",
+    )
+    assert reduced is True
+    kwargs = mock_broker.place_order.call_args[1]
+    assert kwargs["side"] == "buy"
+    assert kwargs["qty"] == pytest.approx(2.5)
