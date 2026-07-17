@@ -255,7 +255,7 @@ def _build_factor_df(
             roe = _to_float(info.get("returnOnEquity"))
             margin = _to_float(info.get("profitMargins"))
             de = _to_float(info.get("debtToEquity"))
-            fcf_yield = fcf / mcap if fcf and mcap and mcap > 0 else None
+            fcf_yield = fcf / mcap if fcf is not None and mcap is not None and mcap > 0 else None
             # New signals from yfinance.info
             evebitda = _to_float(info.get("enterpriseToEbitda"))
             gross_margin = _to_float(info.get("grossMargins"))
@@ -279,10 +279,10 @@ def _build_factor_df(
             rows.append({
                 "ticker": ticker,
                 "sector": sector,
-                "pe_inv": -pe if pe and pe > 0 else None,
-                "pb_inv": -pb if pb and pb > 0 else None,
+                "pe_inv": -pe if pe is not None and pe > 0 else None,
+                "pb_inv": -pb if pb is not None and pb > 0 else None,
                 "fcf_yield": fcf_yield,
-                "evebitda_inv": -evebitda if evebitda and evebitda > 0 else None,
+                "evebitda_inv": -evebitda if evebitda is not None and evebitda > 0 else None,
                 "roe": roe,
                 "gross_margin": gross_margin,
                 "margin": margin,

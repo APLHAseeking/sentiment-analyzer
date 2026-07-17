@@ -8,13 +8,8 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-**Concurrent thread (this session, 2026-07-17): full code/strategy/process review of the
-trading bot for profitability optimization** — explicitly NOT the reliability/scheduler work
-below (owned by a separate session). Plan approved: `~/.claude/plans/make-a-plan-to-floofy-sunrise.md`.
-Track A (wiring verification — is `AllocationEngine`'s regime-scaled sizing actually consumed
-by `main_loop.py`, or is deterministic ATR/structure-stop sizing the only thing that runs?)
-starting now. Report-first, no fixes this pass — findings land in
-`trading bot/TRADING_BOT_STRATEGY_REVIEW_2026-07-17.md` for user sign-off before any remediation.
+Strategy-review thread (this session, 2026-07-17): **CLOSED OUT**, report + all remediation
+done, suite green, nothing committed yet — see Done entry below for the full result.
 
 Reliability thread (concurrent, separate session) — session closing (2026-07-17, ~11:05 CEST). Independently re-verified everything below rather
 than trusting the docs as found (this work landed from a concurrent session, not this one):
@@ -99,6 +94,39 @@ of bare `nohup python3`.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-17 (strategy/profitability review + full remediation, this session, independent of
+  the reliability thread below): full code/strategy/process review of the trading bot's
+  trading logic (explicitly not reliability/uptime). Report:
+  `trading bot/TRADING_BOT_STRATEGY_REVIEW_2026-07-17.md`. Top findings and fixes: (1) real
+  live entry hurdle was 4.5% not the documented 1.0% floor (`_ESTIMATED_COST_PCT=1.5` never
+  updated after the 07-10 prompt-text loosening) — fixed to 0.4 (~1.2% floor); (2) first real
+  backtest of the congressional signal (previously synthetic-only) shows negative excess
+  returns — left the 3%/1-per-day caps unchanged per that finding, no weight change (matches
+  repo convention of never silently auto-editing signal weights); (3) unguarded `run_scraper()`
+  in `run_morning_pipeline` could zero the entire day's primary fundamental signal on any
+  scraper exception — now wrapped in try/except with a DEAD_FEED alert; (4) `hmm_engine.py`
+  `update_single` could silently classify off a stale feature row when only one column had a
+  NaN — now raises (caller already has a graceful try/except fallback to a fresh
+  classification); (5) confirmed `AllocationEngine`'s regime-based sizing is genuinely wired
+  in and live, not dead code (ruled out the suspected critical bug); (6) deleted confirmed-dead
+  `bot/scheduler.py` + its two now-redundant test files (`test_scheduler.py`,
+  `test_integration.py` — the latter's coverage was fully superseded by
+  `test_orchestrator.py`'s current tests); (7) `screener/factor_scorer.py` truthy-zero fix
+  (`fcf_yield`/`pe_inv`/`pb_inv`/`evebitda_inv`); (8) `bot/portfolio.py` failed `cancel_order`
+  now alerts distinctly instead of looking identical to the success path; (9) wired
+  `performance/tracker.py`'s `PerformanceTracker` (built, never invoked) into
+  `log_weekly_report()` so live-vs-backtest comparison actually runs weekly; (10) expanded
+  `test_run_bot.py` coverage for CLI dispatch/`run_paper()` sequencing; (11) two stale-doc
+  fixes (`system/config.py:195` comment, `FACTOR_BACKTEST_2026-06-28.md`'s momentum-weight
+  table). Deliberately NOT done: `main_loop.py`'s 4-method duplication refactor (real
+  opportunity, too large/risky for a blanket fix pass); dangling `docs/STATE.md` cross-refs in
+  historical CLAUDE.md/CLAUDE-REFERENCE.md prose (frozen changelog entries, not rewritten).
+  Work done via 7 parallel subagents + some fixes done directly; several subagents fell into a
+  self-invented "wait for a background pytest monitor that doesn't exist" pattern and had to be
+  explicitly resumed — worth watching for in future fan-out dispatches. RESULT: one
+  authoritative full-suite run after all fixes landed — **972 passed, 0 failed** (was 975 at
+  session start; net −3 from the 3 deleted dead-code test files, all in-scope deletions
+  accounted for individually per workstream above). Not yet committed as of this Done entry.
 - 2026-07-15 (session close-out verification): re-verified live bot health fresh rather than
   trusting prior claims — found the running process (PID 62191) pre-dated that morning's two
   fix commits (a0cd1c4, 91607a5) by ~17 hours, same stale-process pattern as 2026-07-14.

@@ -462,6 +462,24 @@ class HMMRegimeEngine:
         if last_row_df.shape[0] == 0:
             raise RuntimeError("New bar produced all-NaN features — tail too short")
 
+        # dropna() above drops ANY row with a NaN in one of the selected
+        # feature columns, not just the last one — if the intended new bar
+        # has a NaN in exactly one feature (e.g. a rolling-window feature hit
+        # a single-column data gap) while an earlier cached day doesn't,
+        # iloc[-1:] silently returns that earlier, stale row. Nothing else
+        # catches this: date_str is a caller-supplied display label, never
+        # checked against which row was actually selected. Guard against it
+        # explicitly by comparing the selected row's date to new_bar's own
+        # (the actual as-of date being classified).
+        expected_date = new_bar.index[-1]
+        if last_row_df.index[-1] != expected_date:
+            raise RuntimeError(
+                f"update_single: stale classification — latest non-NaN feature "
+                f"row is dated {last_row_df.index[-1]}, but the new bar is dated "
+                f"{expected_date}. A NaN in one feature column silently dropped "
+                "today's row via dropna(); refusing to classify off a stale bar."
+            )
+
         # Align to the scaler's expected feature count. Missing columns are
         # filled by NAME with the training mean (→ scales to ~0) instead of
         # zero or a positionally-shifted real value (→ corrupted feature row).

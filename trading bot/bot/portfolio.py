@@ -64,15 +64,36 @@ class Portfolio:
             # actually filled in the interim — reconcile_with_broker's
             # untracked-position path is the backstop for that race) and skip
             # this candidate rather than book on a guess.
-            self.broker.cancel_order(order.order_id)
-            emit_event(
-                log, EventType.ORDER_REJECTED,
-                f"{ticker} buy order {order.order_id} did not confirm FILLED "
-                f"(status={order.status.value}) — cancelled, position not opened",
-                data={"ticker": ticker, "order_id": order.order_id, "status": order.status.value},
-                level=logging.ERROR,
-                alert=True,
-            )
+            cancelled = self.broker.cancel_order(order.order_id)
+            if cancelled:
+                emit_event(
+                    log, EventType.ORDER_REJECTED,
+                    f"{ticker} buy order {order.order_id} did not confirm FILLED "
+                    f"(status={order.status.value}) — cancelled, position not opened",
+                    data={"ticker": ticker, "order_id": order.order_id, "status": order.status.value},
+                    level=logging.ERROR,
+                    alert=True,
+                )
+            else:
+                # cancel_order returned a falsy result — the order may not actually
+                # be cancelled (transient broker error, or a state that can't be
+                # cancelled). Unlike the success path above, this is NOT a
+                # "handled, no action needed" outcome: a stray order could still be
+                # resting at the broker, invisible to both the DB (we never book
+                # it) and reconcile_with_broker's untracked-position check (which
+                # only looks at broker *positions*, not outstanding *orders*).
+                emit_event(
+                    log, EventType.ORDER_REJECTED,
+                    f"{ticker} buy order {order.order_id} did not confirm FILLED "
+                    f"(status={order.status.value}) — cancel FAILED, order may still "
+                    f"be resting at the broker — check manually",
+                    data={
+                        "ticker": ticker, "order_id": order.order_id,
+                        "status": order.status.value, "cancel_failed": True,
+                    },
+                    level=logging.CRITICAL,
+                    alert=True,
+                )
             return False
 
         # Use actual fill data when available; fall back to pre-trade NAV estimate

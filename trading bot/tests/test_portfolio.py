@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from bot.portfolio import Portfolio
 
@@ -387,6 +389,38 @@ def test_open_position_unconfirmed_fill_does_not_insert_to_db(mock_broker, db):
     open_positions = db.get_open_positions()
     assert not any(p["ticker"] == "CF" for p in open_positions)
     mock_broker.cancel_order.assert_called_once_with("b5b24e9e-fake")
+
+
+def test_open_position_unconfirmed_fill_alerts_distinctly_when_cancel_fails(mock_broker, db, mocker):
+    """cancel_order can fail for reasons other than 'already filled' (transient
+    broker error, uncancellable state) — reconcile_with_broker's untracked-
+    position check only looks at broker *positions*, not outstanding *orders*,
+    so a failed cancel here is a real visibility gap. The alert emitted for a
+    failed cancel must be distinguishable from the success-path alert."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    pending_order = Order(
+        ticker="CF", side=OrderSide.BUY, qty=7.34, order_type=OrderType.MARKET,
+    )
+    pending_order.status = OrderStatus.SUBMITTED
+    pending_order.order_id = "b5b24e9e-fake"
+    mock_broker.place_order.return_value = pending_order
+    mock_broker.get_positions.return_value = []
+    mock_broker.cancel_order.return_value = False
+
+    mock_emit = mocker.patch("bot.portfolio.emit_event")
+
+    portfolio = Portfolio(broker=mock_broker)
+    result = portfolio.open_position("CF", 5.0, None, "test", 113.20)
+
+    assert result is False
+    mock_broker.cancel_order.assert_called_once_with("b5b24e9e-fake")
+    mock_emit.assert_called_once()
+    args, kwargs = mock_emit.call_args
+    message = args[2]
+    assert "cancel FAILED" in message
+    assert "cancelled, position not opened" not in message
+    assert kwargs["data"]["cancel_failed"] is True
+    assert kwargs["level"] == logging.CRITICAL
 
 
 def test_reconcile_removes_ghost_positions(mock_broker, db):

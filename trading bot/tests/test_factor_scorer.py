@@ -70,6 +70,17 @@ def test_build_factor_df_evebitda_negative_becomes_none():
     assert df.loc["BAD", "evebitda_inv"] is None or pd.isna(df.loc["BAD", "evebitda_inv"])
 
 
+def test_build_factor_df_zero_fcf_scores_as_zero_yield_not_none():
+    """A legitimate fcf == 0.0 (real zero free cash flow) must score as fcf_yield ==
+    0.0, not be silently dropped to None/missing the way a truthy `if fcf` check
+    would (0.0 is falsy in Python but is not missing data)."""
+    infos = {"ZERO": _make_info(fcf=0.0, mcap=10e9)}
+    momentum = {"ZERO": _mom()}
+    df = _build_factor_df(infos, momentum)
+    assert df.loc["ZERO", "fcf_yield"] == pytest.approx(0.0)
+    assert not pd.isna(df.loc["ZERO", "fcf_yield"])
+
+
 def test_build_factor_df_skips_none_info():
     infos = {"AAPL": _make_info(), "BAD": None}
     momentum = {"AAPL": _mom(), "BAD": (None, None, None, None)}

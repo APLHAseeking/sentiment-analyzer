@@ -82,3 +82,41 @@ def test_log_weekly_report_includes_per_source_breakdown(db, caplog):
         log_weekly_report()
     assert "fundamental" in caplog.text
     assert "congressional" in caplog.text
+
+
+def test_log_weekly_report_includes_performance_tracker_summary(db, caplog):
+    import logging
+    for i in range(10):
+        db.log_portfolio(
+            f"2026-01-{i + 2:02d}",
+            cash=99_000.0,
+            positions_value=1_000.0 + i * 100,
+            total_nav=100_000.0 + i * 100,
+        )
+    db.log_regime(
+        date="2026-01-02",
+        regime_label="bull",
+        regime_index=2,
+        confidence=0.8,
+        is_stable=True,
+        n_regimes=3,
+    )
+    db.log_closed_position(
+        ticker="AAPL", entry_price=100.0, exit_price=110.0, shares=10.0,
+        entry_date="2026-01-02", exit_date="2026-01-15",
+        exit_reason="ai_exit", signal_id=1, signal_source="congressional",
+    )
+    with caplog.at_level(logging.INFO, logger="bot.analytics"):
+        from bot.analytics import log_weekly_report
+        log_weekly_report()
+    assert "LIVE VS BACKTEST COMPARISON" in caplog.text
+    assert "Sharpe" in caplog.text
+    assert "regime: bull" in caplog.text
+
+
+def test_log_weekly_report_handles_no_portfolio_history(db, caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="bot.analytics"):
+        from bot.analytics import log_weekly_report
+        log_weekly_report()  # must not raise even with an empty portfolio_log
+    assert "not enough portfolio history yet for live-vs-backtest comparison" in caplog.text

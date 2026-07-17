@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 
 import bot.db as db
+from performance.tracker import PerformanceTracker
 
 log = logging.getLogger(__name__)
 
@@ -77,4 +78,32 @@ def log_weekly_report() -> None:
         log.info(
             "  [%s] %d trades | %d wins | $%.2f P&L",
             source, len(pnls), wins, sum(pnls),
+        )
+
+    tracker = PerformanceTracker()
+    summary = tracker.summary()
+    if "error" in summary:
+        log.info(
+            "=== LIVE VS BACKTEST COMPARISON ===\n"
+            "not enough portfolio history yet for live-vs-backtest comparison (%s)",
+            summary["error"],
+        )
+    else:
+        log.info(
+            "=== LIVE VS BACKTEST COMPARISON ===\n"
+            "Total return: %.2f%% | Annualized: %.2f%% | Vol: %.2f%%\n"
+            "Sharpe: %.3f | Sortino: %.3f | Calmar: %.3f\n"
+            "Max drawdown: %.2f%% | Win rate: %.1f%% | Profit factor: %.3f\n"
+            "Trades: %d | Avg trade return: %.3f%%",
+            summary["total_return_pct"], summary["annualized_return_pct"], summary["annualized_vol_pct"],
+            summary["sharpe"], summary["sortino"], summary["calmar"],
+            summary["max_drawdown_pct"], summary["win_rate"] * 100, summary["profit_factor"],
+            summary["n_trades"], summary["avg_trade_return_pct"],
+        )
+
+    by_regime = tracker.by_regime()
+    for regime_label, stats in sorted(by_regime.items()):
+        log.info(
+            "  [regime: %s] %d trades | avg return: %.2f%% | win rate: %.1f%%",
+            regime_label, stats["n_trades"], stats["avg_return_pct"], stats["win_rate"] * 100,
         )

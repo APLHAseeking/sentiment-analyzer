@@ -53,7 +53,10 @@ costs"* — not *"beat the S&P by 5.8%."*
   within the momentum sleeve it now carries the largest sub-weight via `_MOMENTUM_WEIGHTS`
   (`resid_mom` 0.45, `mom_12m` 0.30, `mom_6m` 0.15, `high52_ratio` 0.10) — up from the prior
   equal 0.25. Kept below a 0.5 majority to avoid over-concentrating on one
-  survivorship-biased backtest.
+  survivorship-biased backtest. **Stale as of 2026-07-07:** `_MOMENTUM_WEIGHTS` gained a 5th
+  component (`sue`) the same day the XBRL signals landed — current live weights are
+  `resid_mom` 0.40, `mom_12m` 0.25, `sue` 0.15, `mom_6m` 0.12, `high52_ratio` 0.08 (see
+  `screener/factor_scorer.py`), not the 4-component table above.
 - **Low-vol / BAB — defensive, not a return engine.** Lower absolute return but the
   lowest beta (0.61) and a drawdown below SPY. Weighted **up in bear/crash** (0.15–0.20)
   for capital preservation, down in strong rallies (0.05) where low-beta names lag.

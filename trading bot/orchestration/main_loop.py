@@ -102,8 +102,12 @@ _ATR_FALLBACK_PCT = 10.0          # conservative (high-vol) ATR fallback when hi
                                    # a smaller position results, the safe direction when
                                    # volatility is unknown (vol_target_size_pct: size ∝ 1/atr_pct)
 _MIN_ECONOMIC_POSITION_PCT = 0.1  # below this, an order is not worth the commission/slippage
-_ESTIMATED_COST_PCT = 1.5         # round-trip cost estimate passed to AI entry scoring
-                                   # (same knob as bot/scheduler.py's exit-review constant)
+_ESTIMATED_COST_PCT = 0.4         # round-trip cost estimate passed to AI entry scoring.
+                                   # Real modeled cost is ExecutionConfig.slippage_bps=5.0
+                                   # (~0.05%) + zero Alpaca commission ≈ 0.10%; 0.4 gives a
+                                   # 1.2% floor via the entry hurdle's 3x term (see
+                                   # bot/ai_analyst.py's _ENTRY_SCHEMA), just above the 1.0%
+                                   # absolute floor and the real ~0.10% cost.
 
 
 def _ma_conviction_delta(close_prices: np.ndarray, current_price: float) -> int:
@@ -518,9 +522,19 @@ class RegimeAwareOrchestrator:
             )
 
         # --- Scrape congressional disclosures (always, for DB persistence) ---
-        new_disclosures = run_scraper()
-        qualified = filter_disclosures(new_disclosures)
-        log.info("Disclosures: %d new, %d qualified", len(new_disclosures), len(qualified))
+        try:
+            new_disclosures = run_scraper()
+            qualified = filter_disclosures(new_disclosures)
+            log.info("Disclosures: %d new, %d qualified", len(new_disclosures), len(qualified))
+        except Exception:
+            log.exception("Congressional scraper/filter failed — degrading to zero disclosures")
+            emit_event(
+                log, EventType.DEAD_FEED,
+                "Congressional scraper failed — continuing with zero disclosures for this run "
+                "(Phase 1 fundamental / Phase 2.5 insider / Phase 3 hedge still run normally)",
+                alert=True,
+            )
+            qualified = []
         congress_tickers: set[str] = {disc["ticker"] for disc in qualified}
 
         if not _at_capacity:

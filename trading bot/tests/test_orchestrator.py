@@ -153,6 +153,93 @@ def test_pipeline_enforces_stop_losses_even_at_capacity(mocker, orch):
     assert orch._portfolio.enforce_take_profits.call_count >= 1
 
 
+def test_estimated_cost_pct_gives_floor_just_above_absolute_1pct():
+    """Regression for the 2026-07-10 entry-hurdle loosening (5x/1.5% -> 3x/1.0%)
+    that only edited bot/ai_analyst.py's prompt text and never updated this
+    constant — leaving the real floor at 3 * 1.5 = 4.5%, four and a half times
+    the intended 1.0% absolute floor. _ESTIMATED_COST_PCT must be low enough
+    that the entry hurdle's 3x term (see bot/ai_analyst.py's _ENTRY_SCHEMA)
+    lands close to, but at/above, the 1.0% absolute floor."""
+    from orchestration.main_loop import _ESTIMATED_COST_PCT
+
+    assert _ESTIMATED_COST_PCT == pytest.approx(0.4)
+    floor_via_multiplier = 3 * _ESTIMATED_COST_PCT
+    assert floor_via_multiplier >= 1.0
+    assert floor_via_multiplier < 1.5, (
+        "floor has drifted back toward the old 4.5% bug — check for a stale "
+        "_ESTIMATED_COST_PCT edit"
+    )
+
+
+def test_congressional_estimated_cost_pct_wired_to_current_constant(mocker, orch):
+    """_process_signal must pass the module's current _ESTIMATED_COST_PCT
+    through to score_entry_with_debate, not a stale hardcoded value."""
+    from bot.ai_analyst import EntryScore
+    from orchestration.main_loop import _ESTIMATED_COST_PCT
+    from risk.risk_manager import RiskVeto
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    orch._regime_state = None
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    score_spy = mocker.patch(
+        "orchestration.main_loop.score_entry_with_debate",
+        return_value=EntryScore(
+            conviction=8, position_pct=4.0, rationale="good", entry="buy", risk_flags=(),
+        ),
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+
+    disc = {
+        "id": "d1", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    orch._process_signal(disc, {})
+
+    assert score_spy.call_args[1]["estimated_cost_pct"] == _ESTIMATED_COST_PCT
+
+
+def test_morning_pipeline_survives_congressional_scraper_exception(mocker, orch):
+    """A congressional-scraper failure (this has broken this way twice before
+    — see docs/CLAUDE-REFERENCE.md#data-caveats) must not propagate out of
+    run_morning_pipeline and silently zero every signal source for the day.
+    Phase 1 (fundamental screener, the primary signal source) must still run,
+    and a DEAD_FEED alert must fire."""
+    from monitoring.logger import EventType
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.run_scraper", side_effect=RuntimeError("scraper down"))
+    filter_spy = mocker.patch("orchestration.main_loop.filter_disclosures")
+    mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
+        FactorCandidate(ticker="AAPL", composite_score=80, value_score=25,
+                         momentum_score=28, quality_score=27, research=None),
+    ])
+    fundamental_spy = mocker.patch.object(orch, "_process_fundamental_candidate", return_value=False)
+    emit_spy = mocker.patch("orchestration.main_loop.emit_event")
+
+    orch.run_morning_pipeline()  # must not raise
+
+    fundamental_spy.assert_called_once()  # Phase 1 still ran
+    filter_spy.assert_not_called()  # never reached after run_scraper raised
+    dead_feed_calls = [
+        c for c in emit_spy.call_args_list if c.args[1] is EventType.DEAD_FEED
+    ]
+    assert dead_feed_calls, "expected a DEAD_FEED alert on scraper failure"
+    assert dead_feed_calls[0].kwargs.get("alert") is True
+
+
 from datetime import date, timedelta
 
 

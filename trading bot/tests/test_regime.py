@@ -317,6 +317,27 @@ def test_update_single_advances_recent_labels(fitted_engine):
     assert len(engine._recent_labels) == count_before + 3
 
 
+def test_update_single_detects_stale_row_masked_by_partial_nan(fitted_engine):
+    """A NaN in exactly one non-core feature column (volume -> vol_z) for the
+    intended new bar must not let dropna().iloc[-1:] silently fall back to an
+    earlier, fully-populated cached day. Confirmed (pre-fix) to actually pick
+    the prior day's row while still labeling the result with date_str, with no
+    error or warning — see manual repro. This asserts the fix's staleness
+    guard fires instead of that silent fallback.
+    """
+    engine, data, feature_cfg = fitted_engine
+    engine.initialize_incremental(data.iloc[:500], feature_cfg)
+
+    new_bar = data.iloc[500:501].copy()
+    new_bar["volume"] = np.nan  # knocks out vol_z only for this bar; core
+    # features (ret_1d/vol_20d/trend_z, driven by close) stay valid, so the
+    # row is NOT dropped by compute_features' own dropna(subset=core_cols) —
+    # it only gets dropped by update_single's own dropna() over `available`.
+
+    with pytest.raises(RuntimeError, match="stale"):
+        engine.update_single(new_bar, date_str="2021-06-01")
+
+
 def test_rolling_refit_refits_successfully(fitted_engine):
     from features.feature_pipeline import FeatureConfig
     engine, data, feature_cfg = fitted_engine
