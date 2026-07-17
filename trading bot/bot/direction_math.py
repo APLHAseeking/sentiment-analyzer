@@ -34,14 +34,8 @@ def stop_trigger_price(direction: str, extreme_price: float, stop_pct: float) ->
 
 
 def is_stop_triggered(direction: str, current_price: float, stop_price: float) -> bool:
+    """Check if the trailing stop has been triggered at the current price."""
     _check_direction(direction)
     if direction == "long":
         return current_price <= stop_price
     return current_price >= stop_price
-
-
-def is_take_profit_triggered(direction: str, current_price: float, target_price: float) -> bool:
-    _check_direction(direction)
-    if direction == "long":
-        return current_price >= target_price
-    return current_price <= target_price

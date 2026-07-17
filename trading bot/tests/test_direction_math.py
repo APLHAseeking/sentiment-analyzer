@@ -1,6 +1,6 @@
 import pytest
 from bot.direction_math import (
-    pnl_pct, stop_trigger_price, is_stop_triggered, is_take_profit_triggered,
+    pnl_pct, stop_trigger_price, is_stop_triggered,
 )
 
 
@@ -38,16 +38,6 @@ def test_is_stop_triggered_long_true_when_current_at_or_below_stop():
 def test_is_stop_triggered_short_true_when_current_at_or_above_stop():
     assert is_stop_triggered("short", current_price=95.0, stop_price=92.0) is True
     assert is_stop_triggered("short", current_price=90.0, stop_price=92.0) is False
-
-
-def test_is_take_profit_triggered_long_true_when_current_at_or_above_target():
-    assert is_take_profit_triggered("long", current_price=125.0, target_price=125.0) is True
-    assert is_take_profit_triggered("long", current_price=124.0, target_price=125.0) is False
-
-
-def test_is_take_profit_triggered_short_true_when_current_at_or_below_target():
-    assert is_take_profit_triggered("short", current_price=75.0, target_price=75.0) is True
-    assert is_take_profit_triggered("short", current_price=76.0, target_price=75.0) is False
 
 
 def test_invalid_direction_raises():
