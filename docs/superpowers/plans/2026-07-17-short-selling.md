@@ -31,6 +31,16 @@
 
 ## Task 1: Direction-aware math helpers
 
+> **Executed 2026-07-17, commits `e08e056`/`a147aa1`.** Code quality review found
+> `is_take_profit_triggered` (shown below) has no caller anywhere in this plan —
+> Task 7's `enforce_take_profits` compares `pnl_pct(...)` against a percentage
+> threshold directly, matching the existing codebase's convention, and never
+> converts to a target price. It was removed rather than forced into use
+> elsewhere; the module ships with 3 functions (`pnl_pct`, `stop_trigger_price`,
+> `is_stop_triggered`), not 4, and 9 tests, not 11. The steps below are kept
+> as originally written for the historical record — do not re-add the removed
+> function if re-running this task from scratch.
+
 **Files:**
 - Create: `trading bot/bot/direction_math.py`
 - Test: `trading bot/tests/test_direction_math.py`
