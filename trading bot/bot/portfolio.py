@@ -348,17 +348,20 @@ class Portfolio:
             self.broker.cancel_stop_order(ticker)
         return True
 
-    def _find_matching_fill(self, ticker: str):
-        """Look for a filled sell order for `ticker` in the broker's order history.
+    def _find_matching_fill(self, ticker: str, direction: str = "long"):
+        """Look for a filled closing order for `ticker` in the broker's order history.
+
+        A long's closing fill is a SELL; a short's is a BUY (buy-to-cover).
 
         Used by reconcile_with_broker to distinguish a ghost position whose
         resting stop (or other order) actually filled server-side from one
         that vanished with no record at all. Returns the matching Order, or
-        None if get_order_history() is unavailable or has no filled sell for
+        None if get_order_history() is unavailable or has no matching fill for
         this ticker.
         """
         if not hasattr(self.broker, "get_order_history"):
             return None
+        expected_side = OrderSide.SELL if direction == "long" else OrderSide.BUY
         try:
             history = self.broker.get_order_history()
         except Exception as exc:
@@ -367,7 +370,7 @@ class Portfolio:
         for order in history:
             if (
                 order.ticker == ticker
-                and order.side == OrderSide.SELL
+                and order.side == expected_side
                 and order.status == OrderStatus.FILLED
             ):
                 return order
@@ -403,7 +406,8 @@ class Portfolio:
 
         for ticker in ghost:
             meta = db_meta_by_ticker.get(ticker, {})
-            fill = self._find_matching_fill(ticker)
+            direction = meta.get("direction", "long")
+            fill = self._find_matching_fill(ticker, direction)
             if fill is not None:
                 # The position didn't vanish — a resting order (e.g. a GTC stop)
                 # filled server-side. Book the real outcome instead of discarding it.
@@ -423,6 +427,7 @@ class Portfolio:
                     signal_id=meta.get("signal_id"),
                     signal_source=meta.get("signal_source", "congressional"),
                     exit_commission=exit_commission,
+                    direction=direction,
                 )
             else:
                 log.warning(

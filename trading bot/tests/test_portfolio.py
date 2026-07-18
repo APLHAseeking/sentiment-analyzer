@@ -528,6 +528,55 @@ def test_reconcile_ghost_without_matching_fill_still_deletes_and_alerts(mock_bro
     mock_fire_alert.assert_called_once()
 
 
+def test_reconcile_finds_short_covering_fill(portfolio, mock_broker, db):
+    """A ghost short position's closing fill is a BUY (buy-to-cover), not a SELL —
+    _find_matching_fill must search on the position's own direction, not assume long."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus
+
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test", direction="short")
+    mock_broker.get_positions.return_value = []  # gone from the broker — a ghost
+
+    fill_order = Order(ticker="TSLA", side=OrderSide.BUY, qty=5.0)
+    fill_order.status = OrderStatus.FILLED
+    fill_order.filled_qty = 5.0
+    fill_order.filled_avg_price = 230.0
+    mock_broker.get_order_history.return_value = [fill_order]
+
+    result = portfolio.reconcile_with_broker()
+
+    assert "TSLA" in result["ghost_positions"]
+    closed = db.get_closed_positions()
+    assert len(closed) == 1
+    assert closed[0]["ticker"] == "TSLA"
+    assert closed[0]["direction"] == "short"
+    # Short covering at 230 after shorting at 250 is a $100 profit on 5 shares — confirms
+    # the booking used direction="short", not the silent "long" default (which would have
+    # computed a $100 LOSS instead: (230-250)*5 = -100 vs the correct (250-230)*5 = +100).
+    assert closed[0]["realized_pnl"] == pytest.approx(100.0)
+
+
+def test_reconcile_long_still_matches_sell_fill(portfolio, mock_broker, db):
+    """Regression lock: the existing long-side path (closing fill = SELL) must
+    still work exactly as before now that direction is threaded through."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus
+
+    db.insert_position("AAPL", 150.0, 10.0, 5.0, "2026-07-14", None, "Test")  # direction defaults "long"
+    mock_broker.get_positions.return_value = []
+
+    fill_order = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0)
+    fill_order.status = OrderStatus.FILLED
+    fill_order.filled_qty = 10.0
+    fill_order.filled_avg_price = 160.0
+    mock_broker.get_order_history.return_value = [fill_order]
+
+    portfolio.reconcile_with_broker()
+
+    closed = db.get_closed_positions()
+    assert len(closed) == 1
+    assert closed[0]["direction"] == "long"
+    assert closed[0]["realized_pnl"] == pytest.approx(100.0)  # (160-150)*10
+
+
 def test_enforce_take_profits_source_exclude_skips_matching(mock_broker, db):
     from system.config import RiskConfig
     p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(take_profit_pct=5.0))
