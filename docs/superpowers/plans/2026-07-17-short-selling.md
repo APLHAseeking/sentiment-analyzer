@@ -903,6 +903,19 @@ call site (unchanged) behaves exactly as before."
 
 ## Task 6: Portfolio — direction-aware `close_position`/`reduce_position` (buy-to-cover)
 
+> **Code review gap found 2026-07-17, fixed in commit `0d2649e`.** Task 6 correctly
+> scoped itself to `close_position`/`reduce_position`, but the plan never mentioned
+> the sibling ghost-position path in `reconcile_with_broker`. `_find_matching_fill`
+> hardcoded `OrderSide.SELL` as the closing side, so a short's buy-to-cover fill was
+> never found — the ghost fell through to a bare delete with no P&L recorded
+> (CRITICAL alert, no error but silently wrong for shorts). The reconcile call site's
+> `_book_closed_position(...)` also never passed `direction=`, defaulting to `"long"`
+> for anything that did get booked (unreachable today only because of the first bug).
+> Fixed: both now thread the position's own `direction` (already available via
+> `db_meta_by_ticker`, added by this task) through the lookup and the booking. 2
+> regression tests added (`test_reconcile_finds_short_covering_fill`,
+> `test_reconcile_long_still_matches_sell_fill`).
+
 **Files:**
 - Modify: `trading bot/bot/portfolio.py`
 - Test: `trading bot/tests/test_portfolio.py`
