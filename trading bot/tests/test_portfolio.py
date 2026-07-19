@@ -1538,3 +1538,40 @@ def test_reduce_short_position_buys_to_cover_half(portfolio, mock_broker, db):
     kwargs = mock_broker.place_order.call_args[1]
     assert kwargs["side"] == "buy"
     assert kwargs["qty"] == pytest.approx(2.5)
+
+# ------------------------------------------------------------------
+# Task 7: direction-aware enforce_stop_losses / enforce_take_profits
+# ------------------------------------------------------------------
+
+def test_short_stop_loss_triggers_when_price_rises(portfolio, mock_broker, db):
+    # Short TSLA at 250, trough (best case) at 230, stop is 8% above trough = 248.4.
+    # Current price 250 >= stop -> triggers.
+    from execution.broker_interface import OrderStatus
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 250.0, "avg_entry_price": 250.0,
+    }]
+    mock_broker.place_order.return_value.status = OrderStatus.FILLED
+    mock_broker.place_order.return_value.filled_qty = 10.0
+    mock_broker.place_order.return_value.filled_avg_price = 250.0
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    # NOTE: update_position_peak only ever RAISES the stored value, so it
+    # cannot be used to seed a short's trough below the entry-seeded 250.0 —
+    # use update_position_extreme (direction-aware) instead.
+    db.update_position_extreme("TSLA", 230.0, "short")
+    closed = portfolio.enforce_stop_losses()
+    assert "TSLA" in closed
+    kwargs = mock_broker.place_order.call_args[1]
+    assert kwargs["side"] == "buy"
+
+def test_short_stop_loss_does_not_trigger_within_threshold(portfolio, mock_broker, db):
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 235.0, "avg_entry_price": 250.0,
+    }]
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    db.update_position_extreme("TSLA", 230.0, "short")
+    closed = portfolio.enforce_stop_losses()
+    assert closed == []

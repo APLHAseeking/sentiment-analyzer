@@ -4,7 +4,7 @@ import logging
 from datetime import date
 
 import bot.db as db
-from bot.direction_math import stop_trigger_price
+from bot.direction_math import is_stop_triggered, pnl_pct, stop_trigger_price
 from execution.broker_interface import OrderSide, OrderStatus
 from monitoring.logger import EventType, emit_event
 
@@ -498,6 +498,7 @@ class Portfolio:
             ticker = pos["ticker"]
             meta = open_positions.get(ticker, {})
             source = meta.get("signal_source", "congressional")
+            direction = meta.get("direction", "long")
 
             # Scope filter FIRST: a hedge-only call must not touch long stops (and
             # vice versa), so each position's resting stop uses its own call's pct.
@@ -518,13 +519,15 @@ class Portfolio:
             )
 
             current = pos["current_price"]
-            stored_peak = meta.get("peak_price")
-            peak = stored_peak if stored_peak is not None else pos["avg_entry_price"]
-            db.update_position_peak(ticker, current)
+            stored_extreme = meta.get("peak_price")
+            extreme = stored_extreme if stored_extreme is not None else pos["avg_entry_price"]
+            db.update_position_extreme(ticker, current, direction)
 
-            # Trail the resting stop upward (only-up). Cancel the old stop before
-            # placing the new one so brokers (Alpaca) don't accumulate duplicates.
-            new_stop = current * (1 - pct / 100)
+            # Trail the resting stop toward the extreme (only-up for a long,
+            # only-down for a short). Cancel the old stop before placing the
+            # new one so brokers (Alpaca) don't accumulate duplicates.
+            new_stop = stop_trigger_price(direction, current, pct)
+            stop_side = "buy" if direction == "short" else "sell"
             existing_stop = 0.0
             existing_stop_id: str | None = None
             try:
@@ -540,11 +543,17 @@ class Portfolio:
                                 existing_stop_id = _resting[2]
             except Exception:
                 pass
-            if new_stop > existing_stop:
+            # "Better than existing" means tighter, in the direction that
+            # reduces risk: higher for a long's stop, lower for a short's.
+            is_improvement = (
+                new_stop > existing_stop if direction == "long" else
+                (existing_stop == 0.0 or new_stop < existing_stop)
+            )
+            if is_improvement:
                 # Place the new stop BEFORE cancelling the old one so the
                 # position always has a resting stop (no gap between cancel and place).
                 new_stop_id = self.broker.place_stop_order(
-                    ticker=ticker, qty=pos["qty"], stop_price=new_stop
+                    ticker=ticker, qty=pos["qty"], stop_price=new_stop, side=stop_side
                 )
                 if new_stop_id is not None:
                     # Cancel the OLD stop by its specific id, never by ticker —
@@ -569,23 +578,24 @@ class Portfolio:
                         alert=True,
                     )
 
-            # A non-positive peak (e.g. an explicitly-stored 0.0) can't be used
-            # as a meaningful denominator — skip the stop-loss distance check
-            # for this poll rather than dividing by zero (same guard style as
-            # enforce_take_profits' `if entry <= 0: continue`).
-            if peak <= 0:
+            # A non-positive extreme (e.g. an explicitly-stored 0.0) can't be
+            # used as a meaningful denominator — skip the stop-loss distance
+            # check for this poll rather than dividing by zero (same guard
+            # style as enforce_take_profits' `if entry <= 0: continue`).
+            if extreme <= 0:
                 continue
-            drop_from_peak = (peak - current) / peak * 100
-            if drop_from_peak >= pct:
+            stop_price = stop_trigger_price(direction, extreme, pct)
+            if is_stop_triggered(direction, current, stop_price):
                 if self.close_position(
                     ticker=ticker,
-                    shares=pos["qty"],
+                    shares=abs(pos["qty"]),
                     exit_price=current,
                     exit_reason="stop_loss",
                     signal_id=meta.get("signal_id"),
                     entry_price=meta.get("entry_price") or pos["avg_entry_price"],
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=meta.get("signal_source", "congressional"),
+                    direction=direction,
                 ):
                     closed.append(ticker)
         return closed
@@ -607,6 +617,7 @@ class Portfolio:
                 continue
             meta = open_positions.get(ticker, {})
             source = meta.get("signal_source", "congressional")
+            direction = meta.get("direction", "long")
 
             if source_exclude is not None and source == source_exclude:
                 continue
@@ -616,31 +627,33 @@ class Portfolio:
             current = pos["current_price"]
             if entry <= 0:
                 continue
-            gain_pct = (current - entry) / entry * 100
+            gain_pct = pnl_pct(direction, entry, current)
 
             if gain_pct >= he_pct:
                 # Hard exit: full close
                 if self.close_position(
                     ticker=ticker,
-                    shares=pos["qty"],
+                    shares=abs(pos["qty"]),
                     exit_price=current,
                     exit_reason="hard_exit",
                     signal_id=meta.get("signal_id"),
                     entry_price=entry,
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=source,
+                    direction=direction,
                 ):
                     reduced.append(ticker)
             elif gain_pct >= tp_pct and not meta.get("take_profit_taken", 0):
                 # Partial reduce: sell 50%, mark flag so we don't reduce again
                 if self.reduce_position(
                     ticker=ticker,
-                    shares=pos["qty"],
+                    shares=abs(pos["qty"]),
                     exit_price=current,
                     signal_id=meta.get("signal_id"),
                     entry_price=entry,
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=source,
+                    direction=direction,
                 ):
                     db.mark_take_profit_taken(ticker)
                     reduced.append(ticker)
