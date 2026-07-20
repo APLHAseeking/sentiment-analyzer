@@ -231,6 +231,13 @@
 > all (short-selling is Alpaca-only). See
 > `docs/superpowers/specs/2026-07-17-short-selling-design.md` for the full design and these
 > questions. Test count: **1045** (full suite green, zero known failures).
+> 2026-07-20 (holistic branch review + remediation): first whole-diff review of the completed
+> branch found and fixed 5 issues (sector-cap netting masked short exposure, short candidates
+> never persisted a `fundamental_signals` row, a misleading reconcile alert, `RiskManager`'s
+> per-position cap not short-aware, and the never-live-verified NAV sign-convention assumption
+> converted to a runtime self-check) — none flag-off-behavior-changing. See
+> `docs/CLAUDE-REFERENCE.md#history` for detail. Test count: **1055** (full suite green, zero
+> known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

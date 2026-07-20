@@ -896,3 +896,41 @@ closed market.
 > single-root-STATE.md convention — not this thread's file to merge or delete unilaterally.
 > Full suite: **985 passed** (unchanged count — this pass was fixes and documentation, not
 > new features).
+> 2026-07-20 (short-selling holistic branch review + remediation): first whole-diff review of
+> the completed short-selling branch (`3f77432..HEAD`, 29 commits, still flag-off) as one
+> unit, after 13 task-scoped implementer→spec→quality review cycles never looked at it that
+> way. Confirmed the core safety guarantee (flag off → zero behavior change) holds under an
+> independent trace, and that the direction-blind-close bug class already fixed twice in this
+> branch (`997fe35`/`6bb12f9`) does not recur a third time anywhere in the diff. Found and
+> fixed 5 issues, none of them flag-off-behavior-changing: (1) `orchestration/main_loop.py`'s
+> sector-allocation seeding (two call sites: the entry-pipeline seed and the hedge-plan seed)
+> summed signed `qty * price` per sector — pre-existing code untouched by any short-selling
+> task, so no per-task review caught it — meaning a short's negative qty netted against a
+> same-sector long and silently masked true concentration from `max_sector_pct`; both now use
+> `abs(qty)` for gross exposure. (2) `_process_fundamental_short_candidate` opened positions
+> without ever calling `insert_fundamental_signal`, unlike its long-side counterpart — added a
+> `direction` column to `fundamental_signals` (migration 10) and threaded it through
+> `insert_fundamental_signal`/`get_fundamental_signals`, filtering the latter to
+> `direction='long'` so `run_bot.py --backtest` (the sole consumer) keeps its exact current
+> result set and a short row's inverted `expected_return_pct` sign convention can never
+> silently corrupt it. (3) `reconcile_with_broker`'s `auto_flatten_untracked=True` branch
+> correctly skipped selling into an untracked short (guarded on `qty > 0`) but still emitted
+> an "auto-flattened" alert even when nothing was closed — split the branch so the alert only
+> claims success when a sell actually fired; the untracked-short case now says "left OPEN...
+> manual review required" at CRITICAL. (4) `RiskManager.validate_order`'s per-position cap
+> check used the long `max_position_pct` unconditionally — harmless today only because callers
+> pre-clamp to the short cap and `Settings.validate()` enforces short≤long, but not
+> semantically short-aware; added a `direction` param (default `"long"`, every existing caller
+> unaffected) and use `max_short_position_pct` for `direction="short"`. (5) The design spec's
+> explicit requirement to live-verify Alpaca's negative-qty-for-shorts sign convention against
+> a real paper account was never done/recorded — since that verification itself needs live
+> credentials this session doesn't have, converted the assumption into a standing runtime
+> self-check instead: `enforce_stop_losses` now compares each tracked position's DB `direction`
+> against the broker's live qty sign every poll and fires a CRITICAL alert on any disagreement
+> (proceeding with the DB-recorded direction), rather than trusting the sign forever unverified.
+> **The live-account verification itself is still not done** — this only guarantees it fails
+> loud instead of silently the first time a real short position exists. All 5 fixes are inert
+> while `enable_short_selling=False` (verified: none of them can fire without a short position
+> existing, and none can exist with the flag off). 10 new regression tests, one per fix (two
+> for #4 and #5 each — cap-exceeded/cap-respected, mismatch-fires/no-false-positive). Test
+> count: **1055 passed** (was 1045; +10, zero regressions, zero failures).
