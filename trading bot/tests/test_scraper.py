@@ -47,6 +47,13 @@ def test_parse_fields():
     assert t["disclosure_date"] == "2026-04-10"
     assert t["amount_range"] == "$50,001 - $100,000"
 
+def test_parse_normalizes_purchase_and_sale_to_buy_sell_vocabulary():
+    """HTML fallback must translate Capitol Trades' 'Purchase'/'Sale' labels into the
+    'buy'/'sell' vocabulary that bot.signal_engine gates on — not just lowercase them."""
+    trades = _parse_trades_page(SAMPLE_HTML)
+    assert trades[0]["transaction_type"] == "buy"
+    assert trades[1]["transaction_type"] == "sell"
+
 def test_parse_skips_rows_missing_id_or_ticker():
     html = "<html><body><table class='q-table'><tbody><tr><td></td></tr></tbody></table></body></html>"
     assert _parse_trades_page(html) == []
