@@ -223,6 +223,11 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         "Add direction to closed_positions",
         "ALTER TABLE closed_positions ADD COLUMN direction TEXT NOT NULL DEFAULT 'long'",
     ),
+    (
+        10,
+        "Add direction to fundamental_signals",
+        "ALTER TABLE fundamental_signals ADD COLUMN direction TEXT NOT NULL DEFAULT 'long'",
+    ),
 ]
 
 
@@ -643,25 +648,32 @@ def insert_fundamental_signal(
     rationale: str,
     signal_source: str = "fundamental",
     expected_return_pct: float = 0.0,
+    direction: str = "long",
 ) -> int:
+    if direction not in ("long", "short"):
+        raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT INTO fundamental_signals
                (ticker, signal_date, composite_score, position_pct, rationale, signal_source,
-                created_at, expected_return_pct)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, expected_return_pct, direction)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, signal_date, composite_score, position_pct, rationale,
-             signal_source, datetime.now(UTC).isoformat(), expected_return_pct),
+             signal_source, datetime.now(UTC).isoformat(), expected_return_pct, direction),
         )
         return cur.lastrowid
 
 
 def get_fundamental_signals(since_date: str = "2000-01-01") -> list[sqlite3.Row]:
+    # direction='long' only: run_bot.py --backtest treats every returned row as
+    # a buy signal — a short row (expected_return_pct means expected DECLINE,
+    # the opposite sign convention) would silently corrupt the backtest if not
+    # filtered out here. See docs/superpowers/specs/2026-07-17-short-selling-design.md.
     with get_conn() as conn:
         return conn.execute(
             """SELECT ticker, signal_date as date, composite_score, position_pct, 5 as conviction
                FROM fundamental_signals
-               WHERE signal_date >= ?
+               WHERE signal_date >= ? AND direction = 'long'
                ORDER BY signal_date ASC""",
             (since_date,),
         ).fetchall()

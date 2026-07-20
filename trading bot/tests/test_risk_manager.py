@@ -342,6 +342,42 @@ def test_validate_order_rejects_when_incoming_position_pushes_sector_over_cap(tm
     assert "sector" in veto.reason.lower()
 
 
+def test_validate_order_rejects_short_over_short_cap_but_under_long_cap(tmp_path):
+    """A short's per-position cap must be max_short_position_pct, not the
+    (looser) long max_position_pct — a position_pct between the two caps must
+    be rejected for direction="short" even though it would pass for "long".
+    Regression for the 2026-07-20 holistic branch review finding that the
+    check used the long cap unconditionally."""
+    mgr = _make_manager(tmp_path, max_position_pct=8.0, max_short_position_pct=4.0)
+    mgr.start_of_day(100_000)
+
+    long_veto = mgr.validate_order(
+        ticker="AAPL", position_pct=6.0, sector="Technology",
+        sector_allocation={}, position_size_usd=5_000, adv_usd=1e9,
+        direction="long",
+    )
+    short_veto = mgr.validate_order(
+        ticker="XYZ", position_pct=6.0, sector="Technology",
+        sector_allocation={}, position_size_usd=5_000, adv_usd=1e9,
+        direction="short",
+    )
+
+    assert long_veto.allowed is True
+    assert short_veto.allowed is False
+    assert "max_short_position_pct" in short_veto.reason
+
+
+def test_validate_order_allows_short_within_short_cap(tmp_path):
+    mgr = _make_manager(tmp_path, max_position_pct=8.0, max_short_position_pct=4.0)
+    mgr.start_of_day(100_000)
+    veto = mgr.validate_order(
+        ticker="XYZ", position_pct=3.0, sector="Technology",
+        sector_allocation={}, position_size_usd=5_000, adv_usd=1e9,
+        direction="short",
+    )
+    assert veto.allowed is True
+
+
 def test_validate_order_rejects_when_adv_missing(tmp_path):
     """Missing ADV data is a hard veto for ordinary (non-hedge) orders."""
     mgr = _make_manager(tmp_path, max_adv_pct=10.0)

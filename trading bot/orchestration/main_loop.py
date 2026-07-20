@@ -566,7 +566,10 @@ class RegimeAwareOrchestrator:
                     if nav > 0:
                         for pos in positions:
                             sector = get_sector_for_ticker(pos["ticker"])
-                            pv = pos["qty"] * pos["current_price"]
+                            # abs(): sector concentration is a GROSS exposure measure —
+                            # a short's negative qty must add to a sector's risk, not
+                            # net against a same-sector long and mask true concentration.
+                            pv = abs(pos["qty"]) * pos["current_price"]
                             sector_allocation[sector] = sector_allocation.get(sector, 0.0) + pv / nav * 100
             except Exception as exc:
                 log.warning("Sector allocation computation failed: %s", exc)
@@ -1330,6 +1333,7 @@ class RegimeAwareOrchestrator:
             position_size_usd=position_size_usd,
             adv_usd=adv_usd,
             current_invested_pct=_current_invested_pct,
+            direction="short",
         )
         if not veto.allowed:
             emit_event(log, EventType.RISK_VETO, f"short {ticker} vetoed: {veto.reason}")
@@ -1348,6 +1352,19 @@ class RegimeAwareOrchestrator:
         )
         if not opened:
             return False
+        try:
+            insert_fundamental_signal(
+                ticker=ticker,
+                signal_date=date.today().isoformat(),
+                composite_score=candidate.composite_score,
+                position_pct=final_pct,
+                rationale=score.rationale,
+                signal_source="fundamental",
+                expected_return_pct=score.expected_return_pct,
+                direction="short",
+            )
+        except Exception as exc:
+            log.debug("Could not persist short fundamental signal for %s: %s", ticker, exc)
         sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
         emit_event(
             log, EventType.ORDER_PLACED,
@@ -1375,7 +1392,7 @@ class RegimeAwareOrchestrator:
             # negligible sizing benefit given hedge ETF sizes).
             nav = cash + sum(p["qty"] * p["current_price"] for p in positions) if positions else cash
 
-            # Sector allocation from long positions only (exclude hedges)
+            # Sector allocation excluding hedges (hedges aren't sector-concentration risk).
             # dict(row) up front: get_open_positions() returns sqlite3.Row, which has
             # no .get() — the next(...) fallback below is a plain {} either way, so
             # meta must be a real dict in both branches for .get() to be safe.
@@ -1389,7 +1406,9 @@ class RegimeAwareOrchestrator:
                     if meta.get("signal_source") == "hedge":
                         continue
                     sector = get_sector_for_ticker(pos["ticker"])
-                    pv = pos["qty"] * pos["current_price"]
+                    # abs(): gross exposure — a short must not net against a
+                    # same-sector long and mask true sector concentration.
+                    pv = abs(pos["qty"]) * pos["current_price"]
                     sector_allocation[sector] = sector_allocation.get(sector, 0.0) + pv / nav * 100
 
             orders = self._hedge_engine.compute_hedge_plan(

@@ -2487,3 +2487,81 @@ def test_process_fundamental_short_candidate_returns_false_on_risk_veto(mocker, 
 
     assert result is False
     orch._portfolio.open_position.assert_not_called()
+
+
+def test_process_fundamental_short_candidate_persists_signal_with_short_direction(mocker, orch):
+    """Opening a short must also record a fundamental_signals row (parity with
+    _process_fundamental_candidate's long-side insert_fundamental_signal call),
+    tagged direction="short" — regression for the 2026-07-20 holistic branch
+    review finding that the short path silently skipped this, leaving no
+    signal history for run_bot.py --backtest / PerformanceTracker."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_short",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=3.0,
+                     rationale="overvalued", entry="sell", risk_flags=(),
+                     expected_return_pct=6.0,
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=50.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    orch._portfolio.open_position.return_value = True
+    signal_spy = mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)
+
+    candidate = FactorCandidate(
+        ticker="XYZ", composite_score=10, value_score=5,
+        momentum_score=3, quality_score=4, research=None,
+    )
+    result = orch._process_fundamental_short_candidate(candidate, {})
+
+    assert result is True
+    signal_spy.assert_called_once()
+    call_kwargs = signal_spy.call_args[1]
+    assert call_kwargs["ticker"] == "XYZ"
+    assert call_kwargs["direction"] == "short"
+    assert call_kwargs["signal_source"] == "fundamental"
+    assert call_kwargs["expected_return_pct"] == 6.0
+
+
+def test_sector_allocation_seed_counts_short_as_gross_exposure(mocker, orch):
+    """Sector-allocation seeding (feeds RiskManager.validate_order's
+    max_sector_pct check) must sum GROSS exposure per sector — a short's
+    negative qty must not net against a same-sector long and mask real
+    concentration. Regression for the 2026-07-20 holistic branch review
+    finding: main_loop.py's sector_allocation seed assumed qty is always
+    positive (pre-existing code, untouched by any single short-selling task,
+    so no per-task review caught it)."""
+    from screener.factor_scorer import FactorCandidate
+
+    broker = MagicMock()
+    broker.get_cash.return_value = 8_500.0
+    broker.get_positions.return_value = [
+        {"ticker": "AAPL", "qty": 10.0, "current_price": 100.0, "avg_entry_price": 100.0},
+        {"ticker": "TSLA", "qty": -10.0, "current_price": 50.0, "avg_entry_price": 50.0},
+    ]
+    orch._broker = broker
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
+        FactorCandidate(ticker="MSFT", composite_score=80, value_score=25,
+                         momentum_score=28, quality_score=27, research=None),
+    ])
+    candidate_spy = mocker.patch.object(orch, "_process_fundamental_candidate", return_value=False)
+
+    orch.run_morning_pipeline()
+
+    candidate_spy.assert_called_once()
+    _, sector_allocation, _ = candidate_spy.call_args[0]
+    # NAV = cash + (10*100 + (-10)*50) = 8500 + 500 = 9000.
+    # Gross Technology exposure = (1000 + 500) / 9000 * 100, NOT the netted
+    # (1000 - 500) / 9000 * 100.
+    assert sector_allocation["Technology"] == pytest.approx(1500 / 9000 * 100)

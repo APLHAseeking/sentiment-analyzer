@@ -321,6 +321,44 @@ def test_get_fundamental_signals_filters_by_date(db):
     assert recent_rows[0]["ticker"] == "MSFT"
 
 
+def test_insert_fundamental_signal_defaults_to_long_direction(db):
+    db.insert_fundamental_signal(
+        ticker="NVDA", signal_date="2026-03-15", composite_score=8,
+        position_pct=4.5, rationale="Strong momentum and value",
+    )
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT direction FROM fundamental_signals").fetchone()
+    assert row["direction"] == "long"
+
+
+def test_get_fundamental_signals_excludes_short_direction(db):
+    """run_bot.py --backtest treats every returned row as a buy signal — a
+    short row's expected_return_pct means expected DECLINE (opposite sign
+    convention), so get_fundamental_signals() must filter it out rather than
+    silently feeding it into the backtest as a long entry."""
+    db.insert_fundamental_signal(
+        ticker="AAPL", signal_date="2026-01-10", composite_score=7,
+        position_pct=3.0, rationale="Value play", direction="long",
+    )
+    db.insert_fundamental_signal(
+        ticker="XYZ", signal_date="2026-01-12", composite_score=5,
+        position_pct=3.0, rationale="Overvalued", direction="short",
+    )
+
+    rows = db.get_fundamental_signals()
+
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "AAPL"
+
+
+def test_insert_fundamental_signal_rejects_invalid_direction(db):
+    with pytest.raises(ValueError):
+        db.insert_fundamental_signal(
+            ticker="AAPL", signal_date="2026-01-10", composite_score=7,
+            position_pct=3.0, rationale="Value play", direction="sideways",
+        )
+
+
 def test_insert_position_defaults_stop_pct_to_15(db):
     db.insert_disclosures([{
         "id": "sp-001", "politician": "Jane", "ticker": "AAPL",
