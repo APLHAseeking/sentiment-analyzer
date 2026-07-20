@@ -7,6 +7,31 @@ operational how-to.
 <a id="after-a-reboot"></a>
 ## After a reboot (read this first if you just restarted the Mac)
 
+> **2026-07-20 correction: the LaunchDaemon setup described below is currently
+> OFF and abandoned, do not assume it's protecting you.** Both LaunchDaemons
+> (and their LaunchAgent duplicates) fail every attempt with exit 78
+> (`EX_CONFIG`) since the 2026-07-17 16:29 reboot — confirmed live via
+> `launchctl kickstart`, zero bytes ever reach `watchdog.log`. Root cause:
+> Background Task Management's approval record for these unsigned/adhoc
+> items desyncs from actual enforcement after a reboot; `sfltool dumpbtm`
+> claims "allowed" while spawns are still blocked. A `cron`-based fallback
+> was built and live-verified working (cron's own daemon is Apple-signed and
+> not subject to this gate) but was then **reverted at the user's explicit
+> request** — this exact automation problem (launchd, then cron as a
+> fallback) has now failed or been abandoned across multiple sessions
+> (2026-07-14, 2026-07-17, 2026-07-20), and the user has decided to stop
+> re-attempting it rather than burn another session on it. Current state:
+> both LaunchAgents unloaded, crontab empty, `/Library/LaunchDaemons/`
+> copies still on disk but inert (need `sudo rm`, not urgent). **Both
+> scripts are manual-only now** — run `python -m monitoring.watchdog` /
+> `python -m monitoring.dead_mans_switch` yourself when you want a health
+> check, same as the main bot's own accepted manual-`nohup` pattern. Do not
+> re-propose launchd or cron automation for these two without materially
+> new information; see `CLAUDE.md`'s status banner (2026-07-20 entry) for
+> the full investigation. The rest of this section is left as historical
+> reference for what the LaunchDaemon setup was supposed to do, in case
+> that ever changes.
+
 As of 2026-07-17, both `monitoring/watchdog.py` and
 `monitoring/dead_mans_switch.py` run as **LaunchDaemons**
 (`/Library/LaunchDaemons/`, not per-login `LaunchAgents`) — they start at

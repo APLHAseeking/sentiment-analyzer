@@ -2,6 +2,11 @@
 
 > **⚠️ PHASE STATUS — READ FIRST** (current status only; full review/change history lives in
 > `docs/CLAUDE-REFERENCE.md#history` — append new entries THERE, keep this banner short)
+> **2026-07-20: watchdog/dead-man's-switch automated supervision is OFF, abandoned — do not
+> re-attempt launchd or cron for these without new information.** See the dated entry at the
+> end of this banner and `docs/RUNBOOK.md#after-a-reboot` for the full story. Both scripts
+> are manual-only (`python -m monitoring.watchdog` / `monitoring.dead_mans_switch`); the main
+> bot itself is unaffected and still needs to be checked manually, same as before.
 > Phase 0 gate: **BLOCKED ON DATA** — real point-in-time data not yet acquired; all historical
 > performance numbers are look-ahead biased until then. See `docs/PHASE0_FINDINGS.md` for gate
 > decision rules and required datasets.
@@ -223,6 +228,33 @@
 > sweep: corrected a stale `ALERT_WEBHOOK_URL` claim in `docs/guardrails/PROJECT.md`, added
 > `docs/RUNBOOK.md#after-a-reboot`, documented the 4 new alert types. Test count: **985**
 > (unchanged — fixes and docs, not new features).
+> 2026-07-20 (watchdog/dead-man's-switch supervision closed out, not fixed): live-health
+> check found both LaunchDaemons (and their gui-domain LaunchAgent counterparts, an
+> undocumented leftover duplicate from the 07-17 migration that was never cleaned up) had
+> been failing every attempt since the 07-17 16:29 reboot — exit 78 (`EX_CONFIG`), zero bytes
+> ever written to their log files. Live-reproduced via `launchctl kickstart`: confirmed
+> launchd-layer spawn failure, not a script bug (same command run manually, or with a fully
+> stripped launchd-like environment, exits 0 clean both times). Ruled out binary corruption
+> (python3 unchanged since April) and a stale registration (`bootout`+`bootstrap` reload
+> didn't help). Root cause: `sfltool dumpbtm` reports the items as "enabled, allowed,
+> notified," but actual enforcement disagrees — Background Task Management's approval cache
+> desyncs from reality after a reboot for unsigned/adhoc-signed launch items, and the only
+> known fix is the System Settings -> Login Items toggle (off/on) or `sudo sfltool resetbtm`
+> (system-wide blast radius, resets every app's approvals, not just ours). User declined both.
+> Built and live-verified a `cron`-based fallback instead (cron's own daemon is Apple-signed,
+> pre-approved, and sidesteps the gate entirely) — proved twice, including a real write into
+> the TCC-protected `~/Documents/.../trading bot/` folder with zero prompt. **Then reverted at
+> the user's explicit request**: this same problem (launchd, then cron proposed as the
+> workaround) has now been hit or attempted across at least three sessions
+> (2026-07-14/2026-07-17/2026-07-20) without a durable fix, and the user chose to stop paying
+> the cost of re-litigating it. Final state: both gui-domain LaunchAgents unloaded, crontab
+> cleared back to empty, `/Library/LaunchDaemons/` copies left on disk but inert (harmless,
+> needs `sudo rm` to fully clean up, not urgent). Decision, not a bug to re-open: both scripts
+> are manual-only going forward, run on demand exactly like the main bot's own accepted
+> manual-`nohup` pattern. **Do not re-propose launchd or cron automation for these two without
+> materially new information** — see `docs/RUNBOOK.md#after-a-reboot` for the full
+> investigation detail. Main bot process itself unaffected throughout, confirmed healthy and
+> on current commit.
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 
