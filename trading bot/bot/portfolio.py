@@ -523,9 +523,14 @@ class Portfolio:
             extreme = stored_extreme if stored_extreme is not None else pos["avg_entry_price"]
             db.update_position_extreme(ticker, current, direction)
 
-            # Trail the resting stop toward the extreme (only-up for a long,
-            # only-down for a short). Cancel the old stop before placing the
-            # new one so brokers (Alpaca) don't accumulate duplicates.
+            # Resting broker stop order trails the LIVE current price (only
+            # moves in the risk-reducing direction — see is_improvement below),
+            # NOT the stored extreme. This preserves the original long-side
+            # trailing behavior byte-for-byte. Do NOT change this to use
+            # `extreme` — that was tried in an earlier draft of this task and
+            # broke test_enforce_stop_losses_trails_stop_upward. Cancel the
+            # old stop before placing the new one so brokers (Alpaca) don't
+            # accumulate duplicates.
             new_stop = stop_trigger_price(direction, current, pct)
             stop_side = "buy" if direction == "short" else "sell"
             existing_stop = 0.0
@@ -545,6 +550,12 @@ class Portfolio:
                 pass
             # "Better than existing" means tighter, in the direction that
             # reduces risk: higher for a long's stop, lower for a short's.
+            # The short branch needs an explicit existing_stop==0.0 check
+            # (unlike the long branch, where new_stop > 0.0 already handles
+            # "no resting stop yet" naturally) because a short's stop price
+            # is always positive too, so new_stop < 0.0 would never be true —
+            # without this check, a short's FIRST-EVER resting stop would
+            # never get placed, leaving it with zero broker-side protection.
             is_improvement = (
                 new_stop > existing_stop if direction == "long" else
                 (existing_stop == 0.0 or new_stop < existing_stop)
@@ -584,6 +595,10 @@ class Portfolio:
             # style as enforce_take_profits' `if entry <= 0: continue`).
             if extreme <= 0:
                 continue
+            # This is a SEPARATE value from new_stop above — new_stop is the
+            # resting broker order (trails current price); this is the actual
+            # close-trigger threshold (off the stored peak/trough extreme).
+            # Do not conflate the two.
             stop_price = stop_trigger_price(direction, extreme, pct)
             if is_stop_triggered(direction, current, stop_price):
                 if self.close_position(

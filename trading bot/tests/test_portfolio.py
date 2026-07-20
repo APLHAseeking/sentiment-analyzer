@@ -726,6 +726,40 @@ def test_enforce_stop_losses_does_not_trail_stop_downward(mock_broker, db):
     mock_broker.place_stop_order.assert_not_called()
 
 
+def test_short_stop_trails_downward_as_trough_falls(portfolio, mock_broker, db):
+    # Short TSLA at 250. Trough has fallen to 200 (better for the short).
+    # Resting stop should trail down toward the live current price, side="buy".
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 205.0, "avg_entry_price": 250.0,
+    }]
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    db.update_position_extreme("TSLA", 200.0, "short")
+    portfolio.enforce_stop_losses()
+    stop_kwargs = mock_broker.place_stop_order.call_args[1]
+    assert stop_kwargs["side"] == "buy"
+    assert stop_kwargs["stop_price"] == pytest.approx(205.0 * 1.08)
+
+
+def test_short_stop_does_not_trail_to_a_worse_price(portfolio, mock_broker, db):
+    # An existing resting stop that's already tighter (lower) than what this
+    # poll would compute must NOT be replaced with a worse (higher) one.
+    # Trough is 230 here (not 200) so the close-trigger check (stop_price =
+    # 230*1.08 = 248.4) stays above current (240) and this test stays
+    # isolated to the trailing-stop-improvement logic, not the close trigger.
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 240.0, "avg_entry_price": 250.0,
+    }]
+    mock_broker.get_stop_orders.return_value = {"TSLA": (210.0, 10.0, "existing-stop-id")}
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    db.update_position_extreme("TSLA", 230.0, "short")
+    portfolio.enforce_stop_losses()
+    mock_broker.place_stop_order.assert_not_called()
+
+
 def test_open_position_rejected_order_does_not_place_stop(mock_broker, db):
     """If the order is rejected, no stop should be registered."""
     from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
