@@ -447,23 +447,43 @@ class Portfolio:
 
         for ticker in untracked:
             if getattr(self._risk, "auto_flatten_untracked", False):
-                # Aggressive mode: close the position immediately via market sell
+                # Aggressive mode: close the position immediately via market sell.
+                # Only supports closing a LONG (positive qty) this way — a short's
+                # close is a buy-to-cover, which this mode doesn't implement.
                 broker_qty = next(
                     (p["qty"] for p in broker_pos_list if p["ticker"] == ticker), 0.0
                 )
-                log.warning(
-                    "RECONCILIATION: %s at broker but not in SQLite — auto-flattening "
-                    "(auto_flatten_untracked=True), qty=%.4f",
-                    ticker, broker_qty,
-                )
                 if broker_qty > 0:
+                    log.warning(
+                        "RECONCILIATION: %s at broker but not in SQLite — auto-flattening "
+                        "(auto_flatten_untracked=True), qty=%.4f",
+                        ticker, broker_qty,
+                    )
                     self.broker.place_order(ticker=ticker, side="sell", qty=broker_qty)
-                emit_event(
-                    log, EventType.DEAD_FEED,
-                    f"RECONCILIATION: untracked position {ticker} auto-flattened "
-                    f"(qty={broker_qty:.4f})",
-                    alert=True,
-                )
+                    emit_event(
+                        log, EventType.DEAD_FEED,
+                        f"RECONCILIATION: untracked position {ticker} auto-flattened "
+                        f"(qty={broker_qty:.4f})",
+                        alert=True,
+                    )
+                else:
+                    # Do not claim "auto-flattened" when nothing was actually closed —
+                    # an untracked SHORT is left fully open here, uncapped downside.
+                    log.critical(
+                        "RECONCILIATION: %s at broker but not in SQLite — untracked SHORT "
+                        "(qty=%.4f); auto_flatten_untracked has no buy-to-cover path. "
+                        "NOT flattened — manual review required.",
+                        ticker, broker_qty,
+                    )
+                    emit_event(
+                        log, EventType.DEAD_FEED,
+                        f"RECONCILIATION: untracked SHORT position {ticker} "
+                        f"(qty={broker_qty:.4f}) left OPEN — auto_flatten_untracked only "
+                        "closes longs. Manual review required.",
+                        data={"ticker": ticker, "qty": broker_qty},
+                        level=logging.CRITICAL,
+                        alert=True,
+                    )
             else:
                 # Safe mode (default): alert loudly so a human can investigate
                 log.critical(
@@ -499,6 +519,29 @@ class Portfolio:
             meta = open_positions.get(ticker, {})
             source = meta.get("signal_source", "congressional")
             direction = meta.get("direction", "long")
+
+            # Self-check for the sign-convention assumption this feature relies
+            # on (Alpaca returns negative qty for a short position) — never
+            # live-verified against a real account per
+            # docs/superpowers/specs/2026-07-17-short-selling-design.md
+            # Component 4. Alerts loudly instead of silently trusting it if a
+            # tracked position's DB direction and the broker's qty sign ever
+            # disagree; proceeds using the DB-recorded direction either way.
+            # Only meaningful for a ticker we actually have DB metadata for —
+            # an untracked broker position is reconcile_with_broker's concern.
+            if meta:
+                broker_is_short = pos.get("qty", 0) < 0
+                if (direction == "short") != broker_is_short:
+                    emit_event(
+                        log, EventType.DEAD_FEED,
+                        f"Direction mismatch for {ticker}: DB direction={direction!r} but "
+                        f"broker qty={pos.get('qty')} implies "
+                        f"{'short' if broker_is_short else 'long'} — sign-convention or "
+                        "data-integrity issue. Proceeding with the DB-recorded direction.",
+                        data={"ticker": ticker, "db_direction": direction, "broker_qty": pos.get("qty")},
+                        level=logging.CRITICAL,
+                        alert=True,
+                    )
 
             # Scope filter FIRST: a hedge-only call must not touch long stops (and
             # vice versa), so each position's resting stop uses its own call's pct.

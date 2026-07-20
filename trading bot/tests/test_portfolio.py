@@ -822,6 +822,30 @@ def test_reconcile_no_flatten_emits_critical_alert(mock_broker, db, mocker):
     mock_fire_alert.assert_called_once()
 
 
+def test_reconcile_auto_flatten_untracked_short_does_not_sell_and_says_so(mock_broker, db, mocker):
+    """An untracked SHORT (negative qty) under auto_flatten_untracked=True must
+    NOT be sold further (that would increase the short, not close it — no
+    buy-to-cover path exists here) and the alert must say the position is
+    still open, not "auto-flattened". Regression for the 2026-07-20 holistic
+    branch review finding that the alert text lied about this case."""
+    from system.config import RiskConfig
+    mock_broker.get_positions.return_value = [
+        {"ticker": "UNTRKSHORT", "qty": -15.0, "current_price": 50.0, "avg_entry_price": 45.0}
+    ]
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    risk_cfg = RiskConfig(auto_flatten_untracked=True)
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+    result = portfolio.reconcile_with_broker()
+
+    assert "UNTRKSHORT" in result["untracked_positions"]
+    mock_broker.place_order.assert_not_called()
+    mock_fire_alert.assert_called_once()
+    alert_message = mock_fire_alert.call_args[1]["message"]
+    assert "auto-flattened" not in alert_message
+    assert "left OPEN" in alert_message
+
+
 def test_close_position_rejected_sell_does_not_log_or_delete(mock_broker, db, mocker):
     """A rejected sell must leave the DB position intact and book no closed_position."""
     from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
@@ -1609,3 +1633,44 @@ def test_short_stop_loss_does_not_trigger_within_threshold(portfolio, mock_broke
     db.update_position_extreme("TSLA", 230.0, "short")
     closed = portfolio.enforce_stop_losses()
     assert closed == []
+
+
+def test_enforce_stop_losses_alerts_on_direction_mismatch(portfolio, mock_broker, db, mocker):
+    """DB says direction="short" but the broker reports a positive qty for the
+    same ticker — a sign-convention or data-integrity problem, not something
+    to silently trust. Regression for the 2026-07-20 holistic branch review
+    finding that Alpaca's negative-qty-for-shorts assumption was never
+    live-verified; this converts the assumption into a self-check that alerts
+    loudly instead of failing silently if it's ever wrong."""
+    mock_emit = mocker.patch("bot.portfolio.emit_event")
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": 10.0,  # broker implies LONG (positive)
+        "current_price": 235.0, "avg_entry_price": 250.0,
+    }]
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)  # DB says SHORT
+    db.update_position_extreme("TSLA", 230.0, "short")
+
+    portfolio.enforce_stop_losses()
+
+    messages = [c.args[2] for c in mock_emit.call_args_list]
+    assert any("Direction mismatch" in m for m in messages)
+
+
+def test_enforce_stop_losses_no_mismatch_alert_for_consistent_short(portfolio, mock_broker, db, mocker):
+    """A short whose DB direction and broker qty sign agree must not trigger
+    the direction-mismatch self-check — no false positive on the legitimate
+    (and only currently exercised) short case."""
+    mock_emit = mocker.patch("bot.portfolio.emit_event")
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 235.0, "avg_entry_price": 250.0,
+    }]
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    db.update_position_extreme("TSLA", 230.0, "short")
+
+    portfolio.enforce_stop_losses()
+
+    messages = [c.args[2] for c in mock_emit.call_args_list]
+    assert not any("Direction mismatch" in m for m in messages)
