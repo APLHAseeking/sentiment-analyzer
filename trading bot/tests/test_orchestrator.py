@@ -2304,3 +2304,42 @@ def test_start_catch_up_after_close_does_not_open_positions(mocker, orch):
     mock_prefetch.assert_called_once()  # prefetch has no market-hours guard
     orch._portfolio.reconcile_with_broker.assert_not_called()
     orch._portfolio.enforce_stop_losses.assert_not_called()
+
+
+def test_short_phase_skipped_when_flag_off(mocker, orch):
+    """enable_short_selling=False (the default) must not call
+    run_factor_screen_short at all — Phase 1.5 stays entirely inert until the
+    flag is flipped on, so the long-only bot's behavior is unchanged."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, strategy=dataclasses.replace(orch._cfg.strategy, enable_short_selling=False)
+    )
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    short_screen_mock = mocker.patch(
+        "orchestration.main_loop.run_factor_screen_short", return_value=[]
+    )
+
+    orch.run_morning_pipeline()
+
+    short_screen_mock.assert_not_called()
+
+
+def test_short_phase_runs_when_flag_on(mocker, orch):
+    """enable_short_selling=True must reach Phase 1.5 and call
+    run_factor_screen_short exactly once, with short_top_n sourced from
+    UniverseConfig.screener_short_top_n (proves the config value is wired
+    through, not hardcoded)."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, strategy=dataclasses.replace(orch._cfg.strategy, enable_short_selling=True)
+    )
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    short_screen_mock = mocker.patch(
+        "orchestration.main_loop.run_factor_screen_short", return_value=[]
+    )
+
+    orch.run_morning_pipeline()
+
+    short_screen_mock.assert_called_once()
+    call_kwargs = short_screen_mock.call_args[1]
+    assert call_kwargs["short_top_n"] == orch._cfg.universe.screener_short_top_n

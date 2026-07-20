@@ -48,7 +48,10 @@ from bot.signal_engine import (
 from bot.committee import get_committees_for_politician
 from bot.insider import run_insider_scraper
 from bot.insider_signal import filter_insider_disclosures, get_insider_cluster_count
-from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore, score_technical
+from bot.ai_analyst import (
+    score_entry_with_debate, review_exit, EntryScore, score_technical,
+    score_entry_short, review_short_exit,
+)
 from bot.db import (
     get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken,
     record_job_run, job_ran_today, insert_fundamental_signal,
@@ -66,7 +69,9 @@ from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
 from risk.risk_manager import HEDGE_SECTOR_LABEL, RiskManager, RiskState
 from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt, atr_pct_from_ohlc, structure_stop_size_pct
-from screener.factor_scorer import run_factor_screen, prefetch_screener_data, FactorCandidate
+from screener.factor_scorer import (
+    run_factor_screen, run_factor_screen_short, prefetch_screener_data, FactorCandidate,
+)
 from monitoring.logger import EventType, emit_event, setup_logging
 from monitoring.status_file import write_status_file
 from dashboard.data_store import DashboardStore
@@ -606,6 +611,37 @@ class RegimeAwareOrchestrator:
                         )
             except Exception:
                 log.exception("Phase 1 fundamental screener failed — skipping")
+
+            # ── Phase 1.5: Short candidates (bearish mirror of Phase 1) ──────────
+            # Entirely inert while Settings.strategy.enable_short_selling is False —
+            # see docs/superpowers/specs/2026-07-17-short-selling-design.md.
+            if self._cfg.strategy.enable_short_selling:
+                try:
+                    short_candidates = run_factor_screen_short(
+                        universe,
+                        short_top_n=self._cfg.universe.screener_short_top_n,
+                        research_workers=self._cfg.universe.research_concurrency,
+                        regime_label=self._regime_state.regime_label if self._regime_state else None,
+                    )
+                    for candidate in short_candidates:
+                        if not self._portfolio.can_open_new_short_position():
+                            log.info("Short position limit reached — stopping Phase 1.5")
+                            break
+                        if candidate.ticker in all_open_tickers:
+                            continue
+                        try:
+                            opened = self._process_fundamental_short_candidate(
+                                candidate, sector_allocation
+                            )
+                            if opened:
+                                all_open_tickers.add(candidate.ticker)
+                        except Exception:
+                            log.exception(
+                                "Failed processing short candidate %s — skipping",
+                                candidate.ticker,
+                            )
+                except Exception:
+                    log.exception("Phase 1.5 short screener failed — skipping")
 
             # ── Phase 2: Congressional signals (supplementary) ───────────────────
             # Capped at _CONGRESSIONAL_MAX_PCT per position and
@@ -1222,6 +1258,102 @@ class RegimeAwareOrchestrator:
                 "conviction": score.conviction,
                 "signal_type": signal_type,
                 "factor_score": candidate.composite_score,
+            },
+        )
+        return True
+
+    def _process_fundamental_short_candidate(
+        self,
+        candidate: FactorCandidate,
+        sector_allocation: dict,
+    ) -> bool:
+        """Score a bottom-ranked factor candidate for a SHORT and open it if approved.
+
+        Only called when Settings.strategy.enable_short_selling is True. Mirrors
+        _process_fundamental_candidate's shape; see
+        docs/superpowers/specs/2026-07-17-short-selling-design.md.
+
+        Returns True if a short was opened.
+        """
+        ticker = candidate.ticker
+        sector = get_sector_for_ticker(ticker)
+
+        has_event, event_reason = has_upcoming_event(
+            ticker, window_days=self._cfg.universe.event_exclusion_window_days
+        )
+        if has_event:
+            log.info("Skipping short %s: upcoming event — %s", ticker, event_reason)
+            return False
+
+        score: EntryScore = score_entry_short(
+            sector=sector,
+            estimated_cost_pct=_ESTIMATED_COST_PCT,
+            factor_score=candidate.composite_score,
+            ticker=ticker,
+            research=candidate.research,
+        )
+
+        if score.entry != "sell":
+            log.info("Skipping short %s: conviction %d", ticker, score.conviction)
+            return False
+
+        _t = yf.Ticker(ticker, session=get_shared_yf_session())
+        try:
+            entry_price = _t.fast_info.last_price or 0.0
+        except Exception:
+            entry_price = 0.0
+        if not entry_price:
+            emit_event(log, EventType.DEAD_FEED,
+                       f"No price available for short {ticker} — yfinance returned None",
+                       alert=True)
+            return False
+
+        # Short sizing: the LLM's position_pct, capped by the short-specific
+        # RiskConfig limit (Portfolio.open_position enforces the hard cap again
+        # as a backstop) — deliberately simpler than the long path's ATR/regime/
+        # correlation/portfolio-vol gate stack, per
+        # docs/superpowers/specs/2026-07-17-short-selling-design.md's scope.
+        final_pct = min(score.position_pct, self._cfg.risk.max_short_position_pct)
+
+        _positions_now = self._broker.get_positions()
+        _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
+        _nav = self._broker.get_cash() + _invested_usd
+        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
+        position_size_usd = _nav * final_pct / 100
+        adv_usd = candidate.research.avg_daily_volume_usd if candidate.research else None
+        veto = self._risk.validate_order(
+            ticker=ticker,
+            position_pct=final_pct,
+            sector=sector,
+            sector_allocation=sector_allocation,
+            position_size_usd=position_size_usd,
+            adv_usd=adv_usd,
+            current_invested_pct=_current_invested_pct,
+        )
+        if not veto.allowed:
+            emit_event(log, EventType.RISK_VETO, f"short {ticker} vetoed: {veto.reason}")
+            return False
+        final_pct *= veto.size_multiplier
+
+        opened = self._portfolio.open_position(
+            ticker=ticker,
+            position_pct=final_pct,
+            signal_id=None,
+            rationale=score.rationale,
+            entry_price=entry_price,
+            signal_source="fundamental",
+            initial_stop_pct=self._cfg.risk.short_trailing_stop_pct,
+            direction="short",
+        )
+        if not opened:
+            return False
+        sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
+        emit_event(
+            log, EventType.ORDER_PLACED,
+            f"Opened SHORT {ticker} pct={final_pct:.1f}% conv={score.conviction}",
+            data={
+                "ticker": ticker, "pct": final_pct, "direction": "short",
+                "conviction": score.conviction, "factor_score": candidate.composite_score,
             },
         )
         return True
