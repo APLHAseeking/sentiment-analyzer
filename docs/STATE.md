@@ -44,12 +44,10 @@ are also still on disk at `/Library/LaunchDaemons/` (su-wrapper version, also no
 bootout'd from launchd). None of this is actively harmful — just dead weight until the
 `resetbtm` decision is made.
 
-**One file worth knowing about, not touched by this thread:** `trading bot/docs/STATE.md`
-(a second, separate STATE.md, inside `trading bot/docs/` rather than this repo-root one) was
-created by the concurrent strategy-review session and is currently untracked — this repo's
-convention (SESSION.md) is a single root-level `docs/STATE.md`, so that file is likely meant
-to be merged in or cleaned up, not a second permanent state file. Left alone deliberately,
-not mine to fold in — flag it to the user or check with them before merging/deleting it.
+**Resolved 2026-07-20** (full trading-bot review session): the second, separate
+`trading bot/docs/STATE.md` flagged below has been merged into this file and deleted — its
+short-selling-branch content is folded into `## Done`/`## Open items` below, and the full
+merge/review detail lives in `trading bot/docs/BOT_REVIEW_2026-07-20.md`.
 
 Earlier the same day: implemented the user-approved "widen screener review" design (top-N
 12→30 via new `UniverseConfig.screener_top_n`, daily cap 3→5) — commit `7a185ce`. Found the
@@ -70,9 +68,6 @@ of bare `nohup python3`.
   a clean run (not just `runs` incrementing — check `last exit code` is NOT `78`). Not
   urgent: the bot runs fine without it, this only matters for the next unattended
   crash/reboot.
-- Decide what to do with `trading bot/docs/STATE.md` (untracked, created by the concurrent
-  strategy-review session, duplicates this repo-root file's role) — merge, delete, or keep;
-  not decided or actioned by this thread, see `## Now`.
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's `russell1000_constituent`
   endpoint (existence unconfirmed), wire up if it works. 4 free/no-signup alternates tried
   across sessions (iShares, FTSE Russell, stockanalysis.com, SlickCharts) — none viable.
@@ -342,7 +337,38 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
   pass (no code touched). Bot confirmed alive and both LaunchDaemons confirmed registered
   fresh, immediately before this entry was written.
 
+- 2026-07-20 (short-selling branch merge, commit `bb7ebe2`): `worktree-short-selling`
+  (`Settings.strategy.enable_short_selling`, default False) holistically reviewed as one diff
+  (`3f77432..HEAD`, 29 commits) — 5 cross-task findings fixed (sector-cap netting masked short
+  exposure, short candidates never persisted a signal row, a misleading reconcile alert, risk
+  cap not direction-aware, Alpaca NAV sign-convention converted to a runtime self-check) — then
+  merged into `feature/profitable-strategies-lowvol-residmom-insider`. One merge conflict (in
+  `trading bot/CLAUDE.md`'s status banner, both branches had appended history at the same
+  point) resolved by hand, keeping both sides. `pytest -q` -> 1055 passed. Flag still defaults
+  False, zero live behavior change. Not pushed to origin.
+- 2026-07-20 (full trading-bot review, this session): produced
+  `trading bot/docs/BOT_REVIEW_2026-07-20.md` — consolidated architecture walkthrough +
+  thematically-grouped incident logbook (fill-confirmation bugs, scheduler/reliability bugs,
+  test-hygiene bugs, strategy/signal findings, data-source breakage) + open-items list +
+  prioritized recommendations, synthesized from `trading bot/CLAUDE.md`'s banner and
+  `docs/CLAUDE-REFERENCE.md#history`. Also merged and deleted the duplicate
+  `trading bot/docs/STATE.md` per this file's own long-standing flag (see `## Now`). No code
+  or config changed.
+
 ## Open items
+- Short-selling: 5 design-spec open questions still unresolved (regime-aware short sizing,
+  hedge-mechanism overlap, aggregate gross/net exposure cap, short borrow fees not modeled,
+  `SimulatedBroker` cannot execute a short) — must be revisited before ever flipping
+  `enable_short_selling=True`. The Alpaca negative-qty-for-shorts sign convention is also
+  still not live-verified against a real paper account (only a mismatch-alert self-check
+  exists). Full design: `docs/superpowers/specs/2026-07-17-short-selling-design.md`.
+- Congressional signal has a measured negative real-data excess return (1mo -0.64%, t=-2.57;
+  3mo -2.54%, t=-4.93, per the 2026-07-17 review) and is still live at 3%/1-per-day — no
+  decision made yet on whether to reduce, disable, or explicitly keep it.
+- The two competing launchd/BTM root-cause write-ups (this file's `## Failed attempts` below,
+  vs. `trading bot/CLAUDE.md`'s 2026-07-20 banner entry) were never reconciled — see
+  `trading bot/docs/BOT_REVIEW_2026-07-20.md#3-currently-open--unresolved` for the
+  side-by-side. Moot for action purposes: launchd/cron automation is closed either way.
 - **2026-07-17 post-reboot: the watchdog/dead-man's-switch LaunchDaemons do NOT actually
   self-heal after a real reboot** — found live, first genuine cold-reboot test since the
   2026-07-17 LaunchDaemon conversion. Both `com.thomasvromen.tradingbot-watchdog` and
