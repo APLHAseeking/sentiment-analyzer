@@ -197,10 +197,15 @@ class SizingConfig:
     """
     target_portfolio_vol_pct: float = 15.0   # target annualised portfolio vol — ACTIVE: main_loop.py
                                               # multiplies every trade's size by target/realized vol
-    # Risk budget per trade as % of NAV. With the corrected vol-target formula a
-    # 2%-ATR name → 7.5%, a 3%-ATR name → 5%, low-vol names cap at max_position_pct.
-    # Tune this to your target gross exposure; keep it ≤ max_position_pct (validated).
-    per_trade_risk_pct: float = 0.15
+    # Risk budget per trade as % of NAV. With the vol-target formula a 2.7%-ATR
+    # name → 7.5%, a 4%-ATR name → 5%, low-vol names cap at max_position_pct.
+    # Raised 0.15→0.20 on 2026-07-20: prior value left the book at ~39% invested
+    # against an 80% max_invested_pct ceiling — capital was sitting idle well
+    # under both this cap and the per-position cap. Kept below 0.30 — that
+    # collided with the separate _CONGRESSIONAL_MAX_PCT=3.0 cap in
+    # orchestration/main_loop.py for congressional-sourced signals. Tune to
+    # target gross exposure; keep it ≤ max_position_pct (validated).
+    per_trade_risk_pct: float = 0.20
     atr_window: int = 14                     # ATR lookback in bars
     enable_technical_gate: bool = False      # config-gated TA layer; False = today's behavior
     min_reward_risk: float = 2.0             # below this, a technical "buy" is treated as skip
@@ -228,7 +233,10 @@ class StrategyConfig:
 @dataclass(frozen=True)
 class RiskConfig:
     # Position limits
-    max_positions: int = 20
+    # Raised 20→30 on 2026-07-20: bot was hitting this slot cap while only
+    # ~39% of NAV was deployed (well under max_invested_pct=80.0 below) —
+    # the count, not the capital, was the binding constraint.
+    max_positions: int = 30
     max_positions_per_day: int = 5
     max_position_pct: float = 8.0         # % of NAV per position
     max_sector_pct: float = 30.0          # sector concentration cap

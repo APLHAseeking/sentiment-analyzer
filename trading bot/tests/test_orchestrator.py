@@ -651,7 +651,7 @@ def test_process_fundamental_candidate_applies_correlation_multiplier(mocker, or
     mocker.patch("orchestration.main_loop.get_sector_for_ticker",
                  return_value="Technology")
     mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
-    llm_position_pct = 4.0
+    llm_position_pct = 4.5
     mocker.patch("orchestration.main_loop.score_entry_with_debate",
                  return_value=EntryScore(
                      conviction=8, position_pct=llm_position_pct,
@@ -1595,12 +1595,13 @@ def test_process_signal_golden_cross_vs_below_ma200_position_size(mocker, orch):
     n = 252
     idx = pd.date_range("2025-06-01", periods=n, freq="B")
 
-    # Golden cross: steady uptrend. 2.5% H-L spread gives ATR≈5% → base_pct≈3%;
-    # conviction 8 tilts to 3.12% (capped at 3% congressional cap) while conviction
-    # 5 tilts to 2.4% (below cap), so the two scenarios remain distinguishable.
+    # Golden cross: steady uptrend. 5% H-L spread gives ATR≈10% → base_pct≈2%,
+    # comfortably below the 3% congressional cap even after a ±20% conviction
+    # tilt (1.6%-2.4%), so the golden-vs-below-MA200 comparison isn't masked
+    # by both branches saturating the cap.
     up_closes = np.linspace(80.0, 110.0, n)
-    up_df = pd.DataFrame({"Close": up_closes, "High": up_closes * 1.025,
-                           "Low": up_closes * 0.975, "Volume": 1e6}, index=idx)
+    up_df = pd.DataFrame({"Close": up_closes, "High": up_closes * 1.05,
+                           "Low": up_closes * 0.95, "Volume": 1e6}, index=idx)
     ticker_up = MagicMock()
     ticker_up.fast_info.last_price = 115.0
     ticker_up.history.return_value = up_df
@@ -1615,8 +1616,8 @@ def test_process_signal_golden_cross_vs_below_ma200_position_size(mocker, orch):
 
     # Below MA200: downtrend
     dn_closes = np.linspace(120.0, 80.0, n)
-    dn_df = pd.DataFrame({"Close": dn_closes, "High": dn_closes * 1.025,
-                           "Low": dn_closes * 0.975, "Volume": 1e6}, index=idx)
+    dn_df = pd.DataFrame({"Close": dn_closes, "High": dn_closes * 1.05,
+                           "Low": dn_closes * 0.95, "Volume": 1e6}, index=idx)
     ticker_dn = MagicMock()
     ticker_dn.fast_info.last_price = 75.0
     ticker_dn.history.return_value = dn_df

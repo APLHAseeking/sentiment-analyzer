@@ -5,7 +5,7 @@ from system.config import Settings, Credentials, RiskConfig, RegimeConfig, Alloc
 
 def test_settings_instantiates_with_defaults():
     s = Settings()
-    assert s.risk.max_positions == 20
+    assert s.risk.max_positions == 30
     assert s.regime.min_stable_bars == 3
     assert s.allocation.min_confidence_to_trade == 0.40
 
