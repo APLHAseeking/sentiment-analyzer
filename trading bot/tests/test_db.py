@@ -321,6 +321,44 @@ def test_get_fundamental_signals_filters_by_date(db):
     assert recent_rows[0]["ticker"] == "MSFT"
 
 
+def test_insert_fundamental_signal_defaults_to_long_direction(db):
+    db.insert_fundamental_signal(
+        ticker="NVDA", signal_date="2026-03-15", composite_score=8,
+        position_pct=4.5, rationale="Strong momentum and value",
+    )
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT direction FROM fundamental_signals").fetchone()
+    assert row["direction"] == "long"
+
+
+def test_get_fundamental_signals_excludes_short_direction(db):
+    """run_bot.py --backtest treats every returned row as a buy signal — a
+    short row's expected_return_pct means expected DECLINE (opposite sign
+    convention), so get_fundamental_signals() must filter it out rather than
+    silently feeding it into the backtest as a long entry."""
+    db.insert_fundamental_signal(
+        ticker="AAPL", signal_date="2026-01-10", composite_score=7,
+        position_pct=3.0, rationale="Value play", direction="long",
+    )
+    db.insert_fundamental_signal(
+        ticker="XYZ", signal_date="2026-01-12", composite_score=5,
+        position_pct=3.0, rationale="Overvalued", direction="short",
+    )
+
+    rows = db.get_fundamental_signals()
+
+    assert len(rows) == 1
+    assert rows[0]["ticker"] == "AAPL"
+
+
+def test_insert_fundamental_signal_rejects_invalid_direction(db):
+    with pytest.raises(ValueError):
+        db.insert_fundamental_signal(
+            ticker="AAPL", signal_date="2026-01-10", composite_score=7,
+            position_pct=3.0, rationale="Value play", direction="sideways",
+        )
+
+
 def test_insert_position_defaults_stop_pct_to_15(db):
     db.insert_disclosures([{
         "id": "sp-001", "politician": "Jane", "ticker": "AAPL",
@@ -372,3 +410,60 @@ def test_record_job_run_is_idempotent_same_day(db):
             ("run_morning_pipeline", "2026-07-10"),
         ).fetchall()
     assert len(rows) == 1
+
+
+def test_insert_position_defaults_to_long_direction(db):
+    db.insert_position("AAPL", 150.0, 10.0, 5.0, "2026-07-17", None, "test")
+    rows = db.get_open_positions()
+    assert rows[0]["direction"] == "long"
+
+
+def test_insert_position_accepts_short_direction(db):
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-17", None, "test", direction="short")
+    rows = db.get_open_positions()
+    assert rows[0]["direction"] == "short"
+
+
+def test_log_closed_position_long_pnl_unchanged(db):
+    # Existing long formula: profit when exit > entry
+    db.log_closed_position(
+        ticker="AAPL", entry_price=100.0, exit_price=110.0, shares=10.0,
+        entry_date="2026-07-01", exit_date="2026-07-10", exit_reason="test",
+        signal_id=None,
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["realized_pnl"] == pytest.approx(100.0)  # (110-100)*10
+    assert rows[0]["direction"] == "long"
+
+
+def test_log_closed_position_short_pnl_profits_on_price_drop(db):
+    db.log_closed_position(
+        ticker="TSLA", entry_price=250.0, exit_price=230.0, shares=5.0,
+        entry_date="2026-07-01", exit_date="2026-07-10", exit_reason="test",
+        signal_id=None, direction="short",
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["realized_pnl"] == pytest.approx(100.0)  # (250-230)*5
+    assert rows[0]["direction"] == "short"
+
+
+def test_update_position_extreme_short_only_moves_down(db):
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test", direction="short")
+    db.update_position_extreme("TSLA", 230.0, "short")
+    db.update_position_extreme("TSLA", 240.0, "short")  # higher — must NOT overwrite
+    rows = db.get_open_positions()
+    assert rows[0]["peak_price"] == pytest.approx(230.0)
+
+
+def test_insert_position_rejects_invalid_direction(db):
+    with pytest.raises(ValueError):
+        db.insert_position("XYZ", 100.0, 10.0, 5.0, "2026-07-17", None, "test", direction="sideways")
+
+
+def test_log_closed_position_rejects_invalid_direction(db):
+    with pytest.raises(ValueError):
+        db.log_closed_position(
+            ticker="XYZ", entry_price=100.0, exit_price=110.0, shares=10.0,
+            entry_date="2026-07-01", exit_date="2026-07-10", exit_reason="test",
+            signal_id=None, direction="sideways",
+        )

@@ -212,3 +212,20 @@ def test_multiple_tickers_tracked_independently(broker):
     assert len(stops) == 2
     assert stops["AAPL"][:2] == (90.0, 10.0)
     assert stops["MSFT"][:2] == (200.0, 5.0)
+
+
+# ------------------------------------------------------------------
+# Stop order tests with side parameter (short-selling support)
+# ------------------------------------------------------------------
+
+def test_place_stop_order_accepts_side_param(broker):
+    # Doesn't need to DO anything with side (SimulatedBroker's stops are just
+    # passive records consumed by Portfolio's own direction-aware polling) —
+    # it just must not raise TypeError when a short-side caller passes side="buy".
+    order_id = broker.place_stop_order(ticker="TSLA", qty=5.0, stop_price=260.0, side="buy")
+    assert order_id is not None
+
+
+def test_place_stop_order_still_works_with_no_side(broker):
+    order_id = broker.place_stop_order(ticker="AAPL", qty=5.0, stop_price=140.0)
+    assert order_id is not None

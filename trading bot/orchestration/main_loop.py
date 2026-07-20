@@ -48,7 +48,11 @@ from bot.signal_engine import (
 from bot.committee import get_committees_for_politician
 from bot.insider import run_insider_scraper
 from bot.insider_signal import filter_insider_disclosures, get_insider_cluster_count
-from bot.ai_analyst import score_entry_with_debate, review_exit, EntryScore, score_technical
+from bot.ai_analyst import (
+    score_entry_with_debate, review_exit, EntryScore, score_technical,
+    score_entry_short,
+    review_short_exit,
+)
 from bot.db import (
     get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken,
     record_job_run, job_ran_today, insert_fundamental_signal,
@@ -66,7 +70,9 @@ from regime.hmm_engine import HMMRegimeEngine, RegimeState
 from regime.allocation_engine import AllocationEngine
 from risk.risk_manager import HEDGE_SECTOR_LABEL, RiskManager, RiskState
 from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt, atr_pct_from_ohlc, structure_stop_size_pct
-from screener.factor_scorer import run_factor_screen, prefetch_screener_data, FactorCandidate
+from screener.factor_scorer import (
+    run_factor_screen, run_factor_screen_short, prefetch_screener_data, FactorCandidate,
+)
 from monitoring.logger import EventType, emit_event, setup_logging
 from monitoring.status_file import write_status_file
 from dashboard.data_store import DashboardStore
@@ -560,7 +566,10 @@ class RegimeAwareOrchestrator:
                     if nav > 0:
                         for pos in positions:
                             sector = get_sector_for_ticker(pos["ticker"])
-                            pv = pos["qty"] * pos["current_price"]
+                            # abs(): sector concentration is a GROSS exposure measure —
+                            # a short's negative qty must add to a sector's risk, not
+                            # net against a same-sector long and mask true concentration.
+                            pv = abs(pos["qty"]) * pos["current_price"]
                             sector_allocation[sector] = sector_allocation.get(sector, 0.0) + pv / nav * 100
             except Exception as exc:
                 log.warning("Sector allocation computation failed: %s", exc)
@@ -606,6 +615,37 @@ class RegimeAwareOrchestrator:
                         )
             except Exception:
                 log.exception("Phase 1 fundamental screener failed — skipping")
+
+            # ── Phase 1.5: Short candidates (bearish mirror of Phase 1) ──────────
+            # Entirely inert while Settings.strategy.enable_short_selling is False —
+            # see docs/superpowers/specs/2026-07-17-short-selling-design.md.
+            if self._cfg.strategy.enable_short_selling:
+                try:
+                    short_candidates = run_factor_screen_short(
+                        universe,
+                        short_top_n=self._cfg.universe.screener_short_top_n,
+                        research_workers=self._cfg.universe.research_concurrency,
+                        regime_label=self._regime_state.regime_label if self._regime_state else None,
+                    )
+                    for candidate in short_candidates:
+                        if not self._portfolio.can_open_new_short_position():
+                            log.info("Short position limit reached — stopping Phase 1.5")
+                            break
+                        if candidate.ticker in all_open_tickers:
+                            continue
+                        try:
+                            opened = self._process_fundamental_short_candidate(
+                                candidate, sector_allocation
+                            )
+                            if opened:
+                                all_open_tickers.add(candidate.ticker)
+                        except Exception:
+                            log.exception(
+                                "Failed processing short candidate %s — skipping",
+                                candidate.ticker,
+                            )
+                except Exception:
+                    log.exception("Phase 1.5 short screener failed — skipping")
 
             # ── Phase 2: Congressional signals (supplementary) ───────────────────
             # Capped at _CONGRESSIONAL_MAX_PCT per position and
@@ -1226,6 +1266,116 @@ class RegimeAwareOrchestrator:
         )
         return True
 
+    def _process_fundamental_short_candidate(
+        self,
+        candidate: FactorCandidate,
+        sector_allocation: dict,
+    ) -> bool:
+        """Score a bottom-ranked factor candidate for a SHORT and open it if approved.
+
+        Only called when Settings.strategy.enable_short_selling is True. Mirrors
+        _process_fundamental_candidate's shape; see
+        docs/superpowers/specs/2026-07-17-short-selling-design.md.
+
+        Returns True if a short was opened.
+        """
+        ticker = candidate.ticker
+        sector = get_sector_for_ticker(ticker)
+
+        has_event, event_reason = has_upcoming_event(
+            ticker, window_days=self._cfg.universe.event_exclusion_window_days
+        )
+        if has_event:
+            log.info("Skipping short %s: upcoming event — %s", ticker, event_reason)
+            return False
+
+        score: EntryScore = score_entry_short(
+            sector=sector,
+            estimated_cost_pct=_ESTIMATED_COST_PCT,
+            factor_score=candidate.composite_score,
+            ticker=ticker,
+            research=candidate.research,
+        )
+
+        if score.entry != "sell":
+            log.info("Skipping short %s: conviction %d", ticker, score.conviction)
+            return False
+
+        _t = yf.Ticker(ticker, session=get_shared_yf_session())
+        try:
+            entry_price = _t.fast_info.last_price or 0.0
+        except Exception:
+            entry_price = 0.0
+        if not entry_price:
+            emit_event(log, EventType.DEAD_FEED,
+                       f"No price available for short {ticker} — yfinance returned None",
+                       alert=True)
+            return False
+
+        # Short sizing: the LLM's position_pct, capped by the short-specific
+        # RiskConfig limit (Portfolio.open_position enforces the hard cap again
+        # as a backstop) — deliberately simpler than the long path's ATR/regime/
+        # correlation/portfolio-vol gate stack, per
+        # docs/superpowers/specs/2026-07-17-short-selling-design.md's scope.
+        final_pct = min(score.position_pct, self._cfg.risk.max_short_position_pct)
+
+        _positions_now = self._broker.get_positions()
+        _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
+        _nav = self._broker.get_cash() + _invested_usd
+        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
+        position_size_usd = _nav * final_pct / 100
+        adv_usd = candidate.research.avg_daily_volume_usd if candidate.research else None
+        veto = self._risk.validate_order(
+            ticker=ticker,
+            position_pct=final_pct,
+            sector=sector,
+            sector_allocation=sector_allocation,
+            position_size_usd=position_size_usd,
+            adv_usd=adv_usd,
+            current_invested_pct=_current_invested_pct,
+            direction="short",
+        )
+        if not veto.allowed:
+            emit_event(log, EventType.RISK_VETO, f"short {ticker} vetoed: {veto.reason}")
+            return False
+        final_pct *= veto.size_multiplier
+
+        opened = self._portfolio.open_position(
+            ticker=ticker,
+            position_pct=final_pct,
+            signal_id=None,
+            rationale=score.rationale,
+            entry_price=entry_price,
+            signal_source="fundamental",
+            initial_stop_pct=self._cfg.risk.short_trailing_stop_pct,
+            direction="short",
+        )
+        if not opened:
+            return False
+        try:
+            insert_fundamental_signal(
+                ticker=ticker,
+                signal_date=date.today().isoformat(),
+                composite_score=candidate.composite_score,
+                position_pct=final_pct,
+                rationale=score.rationale,
+                signal_source="fundamental",
+                expected_return_pct=score.expected_return_pct,
+                direction="short",
+            )
+        except Exception as exc:
+            log.debug("Could not persist short fundamental signal for %s: %s", ticker, exc)
+        sector_allocation[sector] = sector_allocation.get(sector, 0.0) + final_pct
+        emit_event(
+            log, EventType.ORDER_PLACED,
+            f"Opened SHORT {ticker} pct={final_pct:.1f}% conv={score.conviction}",
+            data={
+                "ticker": ticker, "pct": final_pct, "direction": "short",
+                "conviction": score.conviction, "factor_score": candidate.composite_score,
+            },
+        )
+        return True
+
     # ------------------------------------------------------------------
     # Hedge entry / exit
     # ------------------------------------------------------------------
@@ -1242,7 +1392,7 @@ class RegimeAwareOrchestrator:
             # negligible sizing benefit given hedge ETF sizes).
             nav = cash + sum(p["qty"] * p["current_price"] for p in positions) if positions else cash
 
-            # Sector allocation from long positions only (exclude hedges)
+            # Sector allocation excluding hedges (hedges aren't sector-concentration risk).
             # dict(row) up front: get_open_positions() returns sqlite3.Row, which has
             # no .get() — the next(...) fallback below is a plain {} either way, so
             # meta must be a real dict in both branches for .get() to be safe.
@@ -1256,7 +1406,9 @@ class RegimeAwareOrchestrator:
                     if meta.get("signal_source") == "hedge":
                         continue
                     sector = get_sector_for_ticker(pos["ticker"])
-                    pv = pos["qty"] * pos["current_price"]
+                    # abs(): gross exposure — a short must not net against a
+                    # same-sector long and mask true sector concentration.
+                    pv = abs(pos["qty"]) * pos["current_price"]
                     sector_allocation[sector] = sector_allocation.get(sector, 0.0) + pv / nav * 100
 
             orders = self._hedge_engine.compute_hedge_plan(
@@ -1413,8 +1565,13 @@ class RegimeAwareOrchestrator:
                     current_price = pos["entry_price"]
                 days_held = (date.today() - date.fromisoformat(pos["entry_date"])).days
                 research = research_map.get(pos["ticker"])
-                decision = review_exit(pos["ticker"], pos["entry_price"],
-                                       current_price, days_held, research=research)
+                direction = pos["direction"]
+                if direction == "short":
+                    decision = review_short_exit(pos["ticker"], pos["entry_price"],
+                                                 current_price, days_held, research=research)
+                else:
+                    decision = review_exit(pos["ticker"], pos["entry_price"],
+                                           current_price, days_held, research=research)
                 if decision.action == "exit":
                     # close_position() returns False on a no-fill sell and already
                     # alerts internally — only log success if it actually filled.
@@ -1422,6 +1579,7 @@ class RegimeAwareOrchestrator:
                         pos["ticker"], pos["shares"], exit_price=current_price,
                         exit_reason="ai_exit", signal_id=pos["signal_id"] or 0,
                         entry_price=pos["entry_price"], entry_date=pos["entry_date"],
+                        direction=direction,
                     )
                     if closed:
                         log.info("Closed %s: %s", pos["ticker"], decision.rationale)
@@ -1432,7 +1590,7 @@ class RegimeAwareOrchestrator:
                     reduced = self._portfolio.reduce_position(
                         pos["ticker"], pos["shares"], exit_price=current_price,
                         signal_id=pos["signal_id"] or 0, entry_price=pos["entry_price"],
-                        entry_date=pos["entry_date"],
+                        entry_date=pos["entry_date"], direction=direction,
                     )
                     if reduced:
                         mark_take_profit_taken(pos["ticker"])
@@ -1494,14 +1652,16 @@ class RegimeAwareOrchestrator:
                     price = 0.0
                 if not price:
                     continue
-                # close_position() returns False on a no-fill sell and already
-                # alerts internally — a deleverage force-close that silently fails
-                # must not be logged as if risk exposure was actually reduced.
+                direction = pos["direction"]
+                # close_position() returns False on a no-fill sell/buy-to-cover and
+                # already alerts internally — a deleverage force-close that silently
+                # fails must not be logged as if risk exposure was actually reduced.
                 closed = self._portfolio.close_position(
                     pos["ticker"], pos["shares"], exit_price=price,
                     exit_reason=reason, signal_id=pos["signal_id"],
                     entry_price=pos["entry_price"], entry_date=pos["entry_date"],
                     signal_source=pos["signal_source"],
+                    direction=direction,
                 )
                 if closed:
                     log.info("Force-closed %s: %s", pos["ticker"], reason)

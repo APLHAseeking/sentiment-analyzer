@@ -293,6 +293,7 @@ class RiskManager:
         position_size_usd: float,
         adv_usd: float | None,
         current_invested_pct: float = 0.0,
+        direction: str = "long",
     ) -> RiskVeto:
         """Validate a proposed order against all position-level risk rules."""
         # Stale-data kill-switch takes precedence over all other checks
@@ -304,13 +305,18 @@ class RiskManager:
         if not veto.allowed:
             return veto
 
-        # Per-position size cap
-        if position_pct > self._risk.max_position_pct:
+        # Per-position size cap — a short's cap is the tighter, independent
+        # max_short_position_pct, not the long cap. Callers already pre-clamp
+        # to the short cap before calling, so this rarely fires today, but the
+        # check itself must know which cap actually applies to this order.
+        max_pct = self._risk.max_short_position_pct if direction == "short" else self._risk.max_position_pct
+        if position_pct > max_pct:
             return RiskVeto(
                 allowed=False,
                 reason=(
-                    f"Position size {position_pct:.1f}% exceeds max_position_pct "
-                    f"{self._risk.max_position_pct:.1f}%"
+                    f"Position size {position_pct:.1f}% exceeds "
+                    f"{'max_short_position_pct' if direction == 'short' else 'max_position_pct'} "
+                    f"{max_pct:.1f}%"
                 ),
             )
 

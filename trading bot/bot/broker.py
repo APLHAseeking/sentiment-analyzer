@@ -85,6 +85,29 @@ class AlpacaBroker(BrokerInterface):
         except Exception as exc:
             raise RuntimeError(f"Alpaca get_account failed: {exc}") from exc
 
+    def shorting_enabled(self) -> bool:
+        """Whether this Alpaca account is margin-enabled and can hold short positions.
+
+        Must be verified once via a real (paper) account call before the
+        short-selling flag is ever turned on — see
+        docs/superpowers/specs/2026-07-17-short-selling-design.md Component 4.
+        """
+        try:
+            return bool(getattr(self._api.get_account(), "shorting_enabled", False))
+        except Exception as exc:
+            raise RuntimeError(f"Alpaca get_account failed: {exc}") from exc
+
+    def is_shortable(self, ticker: str) -> bool:
+        """Whether `ticker` can currently be shorted (shortable AND not hard-to-borrow)."""
+        try:
+            asset = self._api.get_asset(ticker.upper())
+            return bool(getattr(asset, "shortable", False)) and bool(
+                getattr(asset, "easy_to_borrow", False)
+            )
+        except Exception as exc:
+            log.warning("is_shortable check failed for %s: %s", ticker, exc)
+            return False
+
     def get_positions(self) -> list[dict]:
         try:
             return [
@@ -236,8 +259,12 @@ class AlpacaBroker(BrokerInterface):
                 log.warning("Skipping unparseable order in get_order_history: %s", exc)
         return history
 
-    def place_stop_order(self, ticker: str, qty: float, stop_price: float) -> str | None:
-        """Submit a stop-sell order to Alpaca. Returns order ID or None on failure.
+    def place_stop_order(self, ticker: str, qty: float, stop_price: float,
+                         side: str = "sell") -> str | None:
+        """Submit a stop order to Alpaca. Returns order ID or None on failure.
+
+        `side="sell"` (default) is a long position's stop-loss. `side="buy"` is
+        a short position's stop (buy-to-cover if price rises against it).
 
         Alpaca rejects fractional-share orders with GTC ("fractional orders
         must be DAY orders") — NAV-based sizing routinely produces fractional
@@ -246,19 +273,23 @@ class AlpacaBroker(BrokerInterface):
         poll re-places it each intraday check regardless (existing_stop reads
         back as 0.0 once expired), so overnight re-arming is already handled.
         """
+        if side not in ("buy", "sell"):
+            log.warning("Invalid side for place_stop_order: %r — expected 'buy' or 'sell'", side)
+            return None
+
         from alpaca.trading.requests import StopOrderRequest
         tif = TimeInForce.DAY if qty != int(qty) else TimeInForce.GTC
         req = StopOrderRequest(
             symbol=ticker.upper(),
             qty=qty,
-            side=AlpacaSide.SELL,
+            side=AlpacaSide.BUY if side == "buy" else AlpacaSide.SELL,
             time_in_force=tif,
             stop_price=round(stop_price, 2),
         )
         try:
             submitted = self._api.submit_order(req)
-            log.info("Stop order placed %s qty=%.4f @ $%.2f id=%s",
-                     ticker, qty, stop_price, submitted.id)
+            log.info("Stop order placed %s %s qty=%.4f @ $%.2f id=%s",
+                     side, ticker, qty, stop_price, submitted.id)
             return str(submitted.id)
         except Exception as exc:
             log.warning("Failed to place stop order for %s: %s", ticker, exc)

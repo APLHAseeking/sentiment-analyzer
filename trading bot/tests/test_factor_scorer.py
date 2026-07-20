@@ -547,3 +547,44 @@ def test_make_shared_yf_session_falls_back_to_none_on_import_failure():
     with patch.dict("sys.modules", {"curl_cffi.requests": None}):
         result = _make_shared_yf_session()
     assert result is None
+
+
+def test_run_factor_screen_short_takes_bottom_n(monkeypatch):
+    """run_factor_screen_short mirrors run_factor_screen but takes the WORST
+    short_top_n composite scores (nsmallest) instead of the best (nlargest).
+
+    fake_scored includes every column run_factor_screen's (and therefore
+    run_factor_screen_short's) candidate-construction loop reads —
+    composite_score, value_score, momentum_score, quality_score,
+    low_vol_score, reversal_score — not just composite_score as the plan's
+    literal snippet had it; the real loop reads all six per row.
+    """
+    from screener import factor_scorer
+
+    fake_scored = pd.DataFrame(
+        {
+            "composite_score": [10, 20, 30, 40, 50],
+            "value_score": [1, 2, 3, 4, 5],
+            "momentum_score": [1, 2, 3, 4, 5],
+            "quality_score": [1, 2, 3, 4, 5],
+            "low_vol_score": [1, 2, 3, 4, 5],
+            "reversal_score": [1, 2, 3, 4, 5],
+        },
+        index=["WORST", "B", "C", "D", "BEST"],
+    )
+    monkeypatch.setattr(factor_scorer, "_build_factor_df", lambda *a, **k: fake_scored)
+    monkeypatch.setattr(factor_scorer, "_compute_composite", lambda df, regime_label=None: fake_scored)
+    monkeypatch.setattr(factor_scorer, "_fetch_all_infos", lambda tickers: {})
+    monkeypatch.setattr(factor_scorer, "_fetch_momentum_batch", lambda tickers: {})
+    monkeypatch.setattr(factor_scorer, "_fetch_price_factors_batch", lambda tickers: {})
+    monkeypatch.setattr(factor_scorer, "_fetch_xbrl_safe", lambda tickers: {})
+    # Real gather_research hits the network/LLM — mock it like the existing
+    # run_factor_screen tests do, so this test stays offline.
+    monkeypatch.setattr(
+        factor_scorer, "_gather_research_with_momentum",
+        lambda t, m1, m12: (t, None),
+    )
+
+    candidates = factor_scorer.run_factor_screen_short(["WORST", "B", "C", "D", "BEST"], short_top_n=2)
+    tickers = {c.ticker for c in candidates}
+    assert tickers == {"WORST", "B"}

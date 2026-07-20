@@ -31,6 +31,16 @@
 
 ## Task 1: Direction-aware math helpers
 
+> **Executed 2026-07-17, commits `e08e056`/`a147aa1`.** Code quality review found
+> `is_take_profit_triggered` (shown below) has no caller anywhere in this plan —
+> Task 7's `enforce_take_profits` compares `pnl_pct(...)` against a percentage
+> threshold directly, matching the existing codebase's convention, and never
+> converts to a target price. It was removed rather than forced into use
+> elsewhere; the module ships with 3 functions (`pnl_pct`, `stop_trigger_price`,
+> `is_stop_triggered`), not 4, and 9 tests, not 11. The steps below are kept
+> as originally written for the historical record — do not re-add the removed
+> function if re-running this task from scratch.
+
 **Files:**
 - Create: `trading bot/bot/direction_math.py`
 - Test: `trading bot/tests/test_direction_math.py`
@@ -417,6 +427,16 @@ sign for short positions (profit when exit < entry)."
 ---
 
 ## Task 4: Broker — account shorting support, shortable check, stop-order side
+
+> **Code review gap found 2026-07-17, fixed in commit `0fe1dd8`.** Task 4's
+> execution correctly added `side="sell"` parameter to `AlpacaBroker.place_stop_order`
+> in `bot/broker.py`, but the plan never mentioned the abstract base class
+> (`execution/broker_interface.py`) or the offline `SimulatedBroker`
+> (`execution/paper_broker.py`). This gap would have caused `TypeError:
+> place_stop_order() got an unexpected keyword argument 'side'` when turning
+> on `--simulated` mode with short-selling enabled. Follow-up commit added
+> the `side` parameter to both the abstract base and SimulatedBroker implementation
+> plus 2 regression tests confirming backward compatibility.
 
 **Files:**
 - Modify: `trading bot/bot/broker.py`
@@ -882,6 +902,19 @@ call site (unchanged) behaves exactly as before."
 ---
 
 ## Task 6: Portfolio — direction-aware `close_position`/`reduce_position` (buy-to-cover)
+
+> **Code review gap found 2026-07-17, fixed in commit `0d2649e`.** Task 6 correctly
+> scoped itself to `close_position`/`reduce_position`, but the plan never mentioned
+> the sibling ghost-position path in `reconcile_with_broker`. `_find_matching_fill`
+> hardcoded `OrderSide.SELL` as the closing side, so a short's buy-to-cover fill was
+> never found — the ghost fell through to a bare delete with no P&L recorded
+> (CRITICAL alert, no error but silently wrong for shorts). The reconcile call site's
+> `_book_closed_position(...)` also never passed `direction=`, defaulting to `"long"`
+> for anything that did get booked (unreachable today only because of the first bug).
+> Fixed: both now thread the position's own `direction` (already available via
+> `db_meta_by_ticker`, added by this task) through the lookup and the booking. 2
+> regression tests added (`test_reconcile_finds_short_covering_fill`,
+> `test_reconcile_long_still_matches_sell_fill`).
 
 **Files:**
 - Modify: `trading bot/bot/portfolio.py`
@@ -1924,6 +1957,17 @@ zero behavior change to the running bot until the flag is flipped."
 ---
 
 ## Task 10b: Orchestration — `run_exit_review` must route shorts to the short AI gate
+
+> **Second gap found in this same review, fixed in commit `6bb12f9`.** The sweep for
+> this task's own fix didn't check every call site: `_close_all_positions` (the
+> deleverage circuit breaker's force-close-everything path, called from both
+> `run_intraday_check` and `run_eod` on a breached risk state) also called
+> `close_position()` with no `direction` kwarg, silently defaulting to `"long"`. A
+> short force-closed during deleveraging would have gotten a **sell** order instead
+> of a buy-to-cover — increasing risk exposure at the exact moment the circuit
+> breaker exists to cut it. Fixed the same way: read `pos["direction"]` (always
+> present, same reasoning as below) and pass it through. Regression test proven
+> red/green.
 
 **Files:**
 - Modify: `trading bot/orchestration/main_loop.py`

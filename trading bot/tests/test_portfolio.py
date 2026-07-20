@@ -22,6 +22,28 @@ def test_cannot_open_at_max_positions(portfolio, mock_broker):
     ]
     assert portfolio.can_open_new_position() is False
 
+def test_short_positions_do_not_count_against_long_limit(portfolio, mock_broker):
+    from system.config import settings
+    # max_positions long slots all open as LONG, plus some short positions —
+    # the shorts must not push this over the long limit.
+    mock_broker.get_positions.return_value = (
+        [{"ticker": f"L{i}", "qty": 1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+         for i in range(settings.risk.max_positions - 1)]
+        + [{"ticker": f"S{i}", "qty": -1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+           for i in range(3)]
+    )
+    assert portfolio.can_open_new_position() is True  # one long slot still free
+
+def test_long_positions_do_not_count_against_short_limit(portfolio, mock_broker):
+    from system.config import settings
+    mock_broker.get_positions.return_value = (
+        [{"ticker": f"S{i}", "qty": -1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+         for i in range(settings.risk.max_short_positions - 1)]
+        + [{"ticker": f"L{i}", "qty": 1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+           for i in range(10)]
+    )
+    assert portfolio.can_open_new_short_position() is True  # one short slot still free
+
 def test_cannot_open_after_daily_limit(portfolio, mock_broker):
     portfolio._opened_today = portfolio._risk.max_positions_per_day
     assert portfolio.can_open_new_position() is False
@@ -506,6 +528,55 @@ def test_reconcile_ghost_without_matching_fill_still_deletes_and_alerts(mock_bro
     mock_fire_alert.assert_called_once()
 
 
+def test_reconcile_finds_short_covering_fill(portfolio, mock_broker, db):
+    """A ghost short position's closing fill is a BUY (buy-to-cover), not a SELL —
+    _find_matching_fill must search on the position's own direction, not assume long."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus
+
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test", direction="short")
+    mock_broker.get_positions.return_value = []  # gone from the broker — a ghost
+
+    fill_order = Order(ticker="TSLA", side=OrderSide.BUY, qty=5.0)
+    fill_order.status = OrderStatus.FILLED
+    fill_order.filled_qty = 5.0
+    fill_order.filled_avg_price = 230.0
+    mock_broker.get_order_history.return_value = [fill_order]
+
+    result = portfolio.reconcile_with_broker()
+
+    assert "TSLA" in result["ghost_positions"]
+    closed = db.get_closed_positions()
+    assert len(closed) == 1
+    assert closed[0]["ticker"] == "TSLA"
+    assert closed[0]["direction"] == "short"
+    # Short covering at 230 after shorting at 250 is a $100 profit on 5 shares — confirms
+    # the booking used direction="short", not the silent "long" default (which would have
+    # computed a $100 LOSS instead: (230-250)*5 = -100 vs the correct (250-230)*5 = +100).
+    assert closed[0]["realized_pnl"] == pytest.approx(100.0)
+
+
+def test_reconcile_long_still_matches_sell_fill(portfolio, mock_broker, db):
+    """Regression lock: the existing long-side path (closing fill = SELL) must
+    still work exactly as before now that direction is threaded through."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus
+
+    db.insert_position("AAPL", 150.0, 10.0, 5.0, "2026-07-14", None, "Test")  # direction defaults "long"
+    mock_broker.get_positions.return_value = []
+
+    fill_order = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0)
+    fill_order.status = OrderStatus.FILLED
+    fill_order.filled_qty = 10.0
+    fill_order.filled_avg_price = 160.0
+    mock_broker.get_order_history.return_value = [fill_order]
+
+    portfolio.reconcile_with_broker()
+
+    closed = db.get_closed_positions()
+    assert len(closed) == 1
+    assert closed[0]["direction"] == "long"
+    assert closed[0]["realized_pnl"] == pytest.approx(100.0)  # (160-150)*10
+
+
 def test_enforce_take_profits_source_exclude_skips_matching(mock_broker, db):
     from system.config import RiskConfig
     p = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(take_profit_pct=5.0))
@@ -655,6 +726,40 @@ def test_enforce_stop_losses_does_not_trail_stop_downward(mock_broker, db):
     mock_broker.place_stop_order.assert_not_called()
 
 
+def test_short_stop_trails_downward_as_trough_falls(portfolio, mock_broker, db):
+    # Short TSLA at 250. Trough has fallen to 200 (better for the short).
+    # Resting stop should trail down toward the live current price, side="buy".
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 205.0, "avg_entry_price": 250.0,
+    }]
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    db.update_position_extreme("TSLA", 200.0, "short")
+    portfolio.enforce_stop_losses()
+    stop_kwargs = mock_broker.place_stop_order.call_args[1]
+    assert stop_kwargs["side"] == "buy"
+    assert stop_kwargs["stop_price"] == pytest.approx(205.0 * 1.08)
+
+
+def test_short_stop_does_not_trail_to_a_worse_price(portfolio, mock_broker, db):
+    # An existing resting stop that's already tighter (lower) than what this
+    # poll would compute must NOT be replaced with a worse (higher) one.
+    # Trough is 230 here (not 200) so the close-trigger check (stop_price =
+    # 230*1.08 = 248.4) stays above current (240) and this test stays
+    # isolated to the trailing-stop-improvement logic, not the close trigger.
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 240.0, "avg_entry_price": 250.0,
+    }]
+    mock_broker.get_stop_orders.return_value = {"TSLA": (210.0, 10.0, "existing-stop-id")}
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    db.update_position_extreme("TSLA", 230.0, "short")
+    portfolio.enforce_stop_losses()
+    mock_broker.place_stop_order.assert_not_called()
+
+
 def test_open_position_rejected_order_does_not_place_stop(mock_broker, db):
     """If the order is rejected, no stop should be registered."""
     from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
@@ -715,6 +820,30 @@ def test_reconcile_no_flatten_emits_critical_alert(mock_broker, db, mocker):
     mock_broker.place_order.assert_not_called()
     # But an alert must have been fired
     mock_fire_alert.assert_called_once()
+
+
+def test_reconcile_auto_flatten_untracked_short_does_not_sell_and_says_so(mock_broker, db, mocker):
+    """An untracked SHORT (negative qty) under auto_flatten_untracked=True must
+    NOT be sold further (that would increase the short, not close it — no
+    buy-to-cover path exists here) and the alert must say the position is
+    still open, not "auto-flattened". Regression for the 2026-07-20 holistic
+    branch review finding that the alert text lied about this case."""
+    from system.config import RiskConfig
+    mock_broker.get_positions.return_value = [
+        {"ticker": "UNTRKSHORT", "qty": -15.0, "current_price": 50.0, "avg_entry_price": 45.0}
+    ]
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    risk_cfg = RiskConfig(auto_flatten_untracked=True)
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=risk_cfg)
+    result = portfolio.reconcile_with_broker()
+
+    assert "UNTRKSHORT" in result["untracked_positions"]
+    mock_broker.place_order.assert_not_called()
+    mock_fire_alert.assert_called_once()
+    alert_message = mock_fire_alert.call_args[1]["message"]
+    assert "auto-flattened" not in alert_message
+    assert "left OPEN" in alert_message
 
 
 def test_close_position_rejected_sell_does_not_log_or_delete(mock_broker, db, mocker):
@@ -1359,3 +1488,189 @@ def test_open_position_recomputes_position_pct_from_actual_fill(mock_broker, db)
     # Expected position_pct = 4590 / 100_000 * 100 = 4.59
     pos = db.get_open_positions()[0]
     assert pos["position_pct"] == pytest.approx(4.59)
+
+
+# ------------------------------------------------------------------
+# Task 5: open_position direction support + short position-limit tracking
+# ------------------------------------------------------------------
+
+def test_can_open_new_short_when_under_limit(portfolio, mock_broker):
+    mock_broker.get_positions.return_value = []
+    assert portfolio.can_open_new_short_position() is True
+
+def test_cannot_open_short_at_max_short_positions(portfolio, mock_broker):
+    from system.config import settings
+    mock_broker.get_positions.return_value = [
+        {"ticker": f"S{i}", "qty": -1.0, "current_price": 100.0, "avg_entry_price": 100.0}
+        for i in range(settings.risk.max_short_positions)
+    ]
+    assert portfolio.can_open_new_short_position() is False
+
+def test_cannot_open_short_after_daily_short_limit(portfolio, mock_broker):
+    portfolio._opened_short_today = portfolio._risk.max_short_positions_per_day
+    assert portfolio.can_open_new_short_position() is False
+
+def test_open_short_position_places_sell_order(portfolio, mock_broker):
+    mock_broker.is_shortable.return_value = True
+    mock_broker.shorting_enabled.return_value = True
+    portfolio.open_position(
+        "TSLA", position_pct=4.0, signal_id=1, rationale="Test",
+        entry_price=250.0, direction="short",
+    )
+    kwargs = mock_broker.place_order.call_args[1]
+    assert kwargs["side"] == "sell"
+
+def test_open_short_position_skipped_when_account_cannot_short(portfolio, mock_broker):
+    mock_broker.shorting_enabled.return_value = False
+    opened = portfolio.open_position(
+        "TSLA", position_pct=4.0, signal_id=1, rationale="Test",
+        entry_price=250.0, direction="short",
+    )
+    assert opened is False
+    mock_broker.place_order.assert_not_called()
+
+def test_open_short_position_skipped_when_not_shortable(portfolio, mock_broker):
+    mock_broker.shorting_enabled.return_value = True
+    mock_broker.is_shortable.return_value = False
+    opened = portfolio.open_position(
+        "GME", position_pct=4.0, signal_id=1, rationale="Test",
+        entry_price=25.0, direction="short",
+    )
+    assert opened is False
+    mock_broker.place_order.assert_not_called()
+
+def test_open_short_position_stop_is_above_entry(portfolio, mock_broker):
+    """Mirrors test_open_position_uses_broker_fill_data_when_available's mocking
+    pattern: a real Order with status set to the OrderStatus.FILLED enum member
+    (not `.status.value = "filled"`, which both fails to satisfy the code's
+    `order.status == OrderStatus.FILLED` enum comparison and would error outright —
+    OrderStatus.FILLED is an enum member and does not allow attribute assignment)."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    mock_broker.is_shortable.return_value = True
+    mock_broker.shorting_enabled.return_value = True
+    filled_order = Order(
+        ticker="TSLA", side=OrderSide.SELL, qty=4.0, order_type=OrderType.MARKET,
+    )
+    filled_order.status = OrderStatus.FILLED
+    filled_order.filled_qty = 4.0
+    filled_order.filled_avg_price = 250.0
+    mock_broker.place_order.return_value = filled_order
+
+    portfolio.open_position(
+        "TSLA", position_pct=4.0, signal_id=1, rationale="Test",
+        entry_price=250.0, direction="short",
+    )
+    stop_kwargs = mock_broker.place_stop_order.call_args[1]
+    assert stop_kwargs["stop_price"] > 250.0
+    assert stop_kwargs["side"] == "buy"
+
+def test_close_short_position_buys_to_cover(portfolio, mock_broker, db):
+    """close_position on a short must buy-to-cover, not sell — matches the
+    mock_broker fixture's default pattern (a real Order object; direct
+    `.status = OrderStatus.FILLED` attribute assignment on it is safe since
+    it's a real dataclass instance, not an enum member)."""
+    from execution.broker_interface import OrderStatus
+    mock_broker.place_order.return_value.status = OrderStatus.FILLED
+    mock_broker.place_order.return_value.filled_qty = 5.0
+    mock_broker.place_order.return_value.filled_avg_price = 230.0
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test", direction="short")
+    closed = portfolio.close_position(
+        "TSLA", shares=5.0, exit_price=230.0, exit_reason="stop_loss",
+        signal_id=None, entry_price=250.0, entry_date="2026-07-14", direction="short",
+    )
+    assert closed is True
+    kwargs = mock_broker.place_order.call_args[1]
+    assert kwargs["side"] == "buy"
+
+def test_reduce_short_position_buys_to_cover_half(portfolio, mock_broker, db):
+    from execution.broker_interface import OrderStatus
+    mock_broker.place_order.return_value.status = OrderStatus.FILLED
+    mock_broker.place_order.return_value.filled_qty = 2.5
+    mock_broker.place_order.return_value.filled_avg_price = 230.0
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test", direction="short")
+    reduced = portfolio.reduce_position(
+        "TSLA", shares=5.0, exit_price=230.0, signal_id=None,
+        entry_price=250.0, entry_date="2026-07-14", direction="short",
+    )
+    assert reduced is True
+    kwargs = mock_broker.place_order.call_args[1]
+    assert kwargs["side"] == "buy"
+    assert kwargs["qty"] == pytest.approx(2.5)
+
+# ------------------------------------------------------------------
+# Task 7: direction-aware enforce_stop_losses / enforce_take_profits
+# ------------------------------------------------------------------
+
+def test_short_stop_loss_triggers_when_price_rises(portfolio, mock_broker, db):
+    # Short TSLA at 250, trough (best case) at 230, stop is 8% above trough = 248.4.
+    # Current price 250 >= stop -> triggers.
+    from execution.broker_interface import OrderStatus
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 250.0, "avg_entry_price": 250.0,
+    }]
+    mock_broker.place_order.return_value.status = OrderStatus.FILLED
+    mock_broker.place_order.return_value.filled_qty = 10.0
+    mock_broker.place_order.return_value.filled_avg_price = 250.0
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    # NOTE: update_position_peak only ever RAISES the stored value, so it
+    # cannot be used to seed a short's trough below the entry-seeded 250.0 —
+    # use update_position_extreme (direction-aware) instead.
+    db.update_position_extreme("TSLA", 230.0, "short")
+    closed = portfolio.enforce_stop_losses()
+    assert "TSLA" in closed
+    kwargs = mock_broker.place_order.call_args[1]
+    assert kwargs["side"] == "buy"
+
+def test_short_stop_loss_does_not_trigger_within_threshold(portfolio, mock_broker, db):
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 235.0, "avg_entry_price": 250.0,
+    }]
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    db.update_position_extreme("TSLA", 230.0, "short")
+    closed = portfolio.enforce_stop_losses()
+    assert closed == []
+
+
+def test_enforce_stop_losses_alerts_on_direction_mismatch(portfolio, mock_broker, db, mocker):
+    """DB says direction="short" but the broker reports a positive qty for the
+    same ticker — a sign-convention or data-integrity problem, not something
+    to silently trust. Regression for the 2026-07-20 holistic branch review
+    finding that Alpaca's negative-qty-for-shorts assumption was never
+    live-verified; this converts the assumption into a self-check that alerts
+    loudly instead of failing silently if it's ever wrong."""
+    mock_emit = mocker.patch("bot.portfolio.emit_event")
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": 10.0,  # broker implies LONG (positive)
+        "current_price": 235.0, "avg_entry_price": 250.0,
+    }]
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)  # DB says SHORT
+    db.update_position_extreme("TSLA", 230.0, "short")
+
+    portfolio.enforce_stop_losses()
+
+    messages = [c.args[2] for c in mock_emit.call_args_list]
+    assert any("Direction mismatch" in m for m in messages)
+
+
+def test_enforce_stop_losses_no_mismatch_alert_for_consistent_short(portfolio, mock_broker, db, mocker):
+    """A short whose DB direction and broker qty sign agree must not trigger
+    the direction-mismatch self-check — no false positive on the legitimate
+    (and only currently exercised) short case."""
+    mock_emit = mocker.patch("bot.portfolio.emit_event")
+    mock_broker.get_positions.return_value = [{
+        "ticker": "TSLA", "qty": -10.0,
+        "current_price": 235.0, "avg_entry_price": 250.0,
+    }]
+    db.insert_position("TSLA", 250.0, 10.0, 4.0, "2026-07-14", None, "Test",
+                       direction="short", stop_pct=8.0)
+    db.update_position_extreme("TSLA", 230.0, "short")
+
+    portfolio.enforce_stop_losses()
+
+    messages = [c.args[2] for c in mock_emit.call_args_list]
+    assert not any("Direction mismatch" in m for m in messages)

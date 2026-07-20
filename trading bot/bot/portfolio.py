@@ -4,6 +4,7 @@ import logging
 from datetime import date
 
 import bot.db as db
+from bot.direction_math import is_stop_triggered, pnl_pct, stop_trigger_price
 from execution.broker_interface import OrderSide, OrderStatus
 from monitoring.logger import EventType, emit_event
 
@@ -18,31 +19,59 @@ class Portfolio:
             risk_cfg = settings.risk
         self._risk = risk_cfg
         self._opened_today = 0
+        self._opened_short_today = 0
 
     def get_cash(self) -> float:
         return self.broker.get_cash()
 
     def can_open_new_position(self) -> bool:
-        if len(self.broker.get_positions()) >= self._risk.max_positions:
+        long_count = sum(1 for p in self.broker.get_positions() if p.get("qty", 0) >= 0)
+        if long_count >= self._risk.max_positions:
             return False
         if self._opened_today >= self._risk.max_positions_per_day:
             return False
         return True
 
+    def can_open_new_short_position(self) -> bool:
+        short_count = sum(1 for p in self.broker.get_positions() if p.get("qty", 0) < 0)
+        if short_count >= self._risk.max_short_positions:
+            return False
+        if self._opened_short_today >= self._risk.max_short_positions_per_day:
+            return False
+        return True
+
     def reset_daily_counter(self) -> None:
         self._opened_today = 0
+        self._opened_short_today = 0
 
     def open_position(self, ticker: str, position_pct: float, signal_id: int | None,
                       rationale: str, entry_price: float,
                       signal_source: str = "congressional",
-                      initial_stop_pct: float | None = None) -> bool:
+                      initial_stop_pct: float | None = None,
+                      direction: str = "long") -> bool:
         """Returns True if position was successfully opened."""
-        position_pct = min(position_pct, self._risk.max_position_pct)
-        stop_pct_used = (
-            initial_stop_pct if initial_stop_pct is not None else self._risk.trailing_stop_pct
-        )
+        is_short = direction == "short"
 
-        # Pre-flight duplicate check before committing real capital
+        if is_short:
+            position_pct = min(position_pct, self._risk.max_short_position_pct)
+            stop_pct_used = (
+                initial_stop_pct if initial_stop_pct is not None
+                else self._risk.short_trailing_stop_pct
+            )
+            if not self.broker.shorting_enabled():
+                log.warning("open_position: account does not support shorting — skipping %s", ticker)
+                return False
+            if not self.broker.is_shortable(ticker):
+                log.warning("open_position: %s is not shortable (HTB or restricted) — skipping", ticker)
+                return False
+        else:
+            position_pct = min(position_pct, self._risk.max_position_pct)
+            stop_pct_used = (
+                initial_stop_pct if initial_stop_pct is not None else self._risk.trailing_stop_pct
+            )
+
+        # Pre-flight duplicate check before committing real capital — ticker-unique
+        # regardless of direction: a name can never be simultaneously long and short.
         if db.position_exists(ticker):
             log.warning("open_position: %s already in DB — skipping duplicate open", ticker)
             return False
@@ -52,7 +81,8 @@ class Portfolio:
         nav = self.get_cash() + sum(p["qty"] * p["current_price"] for p in positions_now)
         shares = (nav * position_pct / 100) / entry_price
 
-        order = self.broker.place_order(ticker=ticker, side="buy", qty=shares)
+        order_side = "sell" if is_short else "buy"
+        order = self.broker.place_order(ticker=ticker, side=order_side, qty=shares)
         if order.status == OrderStatus.REJECTED:
             log.warning("Order rejected for %s: %s", ticker, order.reject_reason)
             return False
@@ -68,7 +98,7 @@ class Portfolio:
             if cancelled:
                 emit_event(
                     log, EventType.ORDER_REJECTED,
-                    f"{ticker} buy order {order.order_id} did not confirm FILLED "
+                    f"{ticker} {order_side} order {order.order_id} did not confirm FILLED "
                     f"(status={order.status.value}) — cancelled, position not opened",
                     data={"ticker": ticker, "order_id": order.order_id, "status": order.status.value},
                     level=logging.ERROR,
@@ -84,7 +114,7 @@ class Portfolio:
                 # only looks at broker *positions*, not outstanding *orders*).
                 emit_event(
                     log, EventType.ORDER_REJECTED,
-                    f"{ticker} buy order {order.order_id} did not confirm FILLED "
+                    f"{ticker} {order_side} order {order.order_id} did not confirm FILLED "
                     f"(status={order.status.value}) — cancel FAILED, order may still "
                     f"be resting at the broker — check manually",
                     data={
@@ -120,6 +150,7 @@ class Portfolio:
                 signal_source=signal_source,
                 entry_commission=entry_commission,
                 stop_pct=stop_pct_used,
+                direction=direction,
             )
         except Exception:
             log.critical(
@@ -129,13 +160,17 @@ class Portfolio:
             )
             raise
 
-        self._opened_today += 1
+        if is_short:
+            self._opened_short_today += 1
+        else:
+            self._opened_today += 1
 
         # Register a resting stop order at the initial trailing-stop level so that
         # overnight / between-poll gaps are covered. The polled enforce_stop_losses()
         # acts as backstop and updates (trails) the stop upward as the peak rises.
-        stop_price = actual_entry_price * (1 - stop_pct_used / 100)
-        initial_stop_id = self._place_stop_with_retry(ticker, actual_shares, stop_price)
+        stop_price = stop_trigger_price(direction, actual_entry_price, stop_pct_used)
+        stop_side = "buy" if is_short else "sell"
+        initial_stop_id = self._place_stop_with_retry(ticker, actual_shares, stop_price, side=stop_side)
         if initial_stop_id is None:
             # Placement failed — the position is open with zero resting stop.
             # enforce_stop_losses() polling is the backstop, but it's not
@@ -153,15 +188,16 @@ class Portfolio:
 
     def close_position(self, ticker: str, shares: float, exit_price: float,
                        exit_reason: str, signal_id: int | None, entry_price: float,
-                       entry_date: str, signal_source: str = "congressional") -> bool:
+                       entry_date: str, signal_source: str = "congressional",
+                       direction: str = "long") -> bool:
         """Returns True if the position was booked closed, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
-        order = self._place_sell_with_retry(ticker, shares)
+        order = self._place_closing_order_with_retry(ticker, shares, direction)
         _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
         if order.status in _NON_FILL:
             reason = order.reject_reason or order.status.value
             emit_event(
                 log, EventType.ORDER_REJECTED,
-                f"Sell for {ticker} {order.status.value} after retries ({reason}) — "
+                f"Close for {ticker} {order.status.value} after retries ({reason}) — "
                 "position left intact for next reconcile/poll",
                 data={"ticker": ticker, "reason": reason, "status": order.status.value},
                 level=logging.ERROR,
@@ -185,13 +221,14 @@ class Portfolio:
             signal_id=signal_id,
             signal_source=signal_source,
             exit_commission=exit_commission,
+            direction=direction,
         )
         return True
 
     def _book_closed_position(self, ticker: str, entry_price: float, exit_price: float,
                               shares: float, entry_date: str, exit_reason: str,
                               signal_id: int | None, signal_source: str,
-                              exit_commission: float) -> None:
+                              exit_commission: float, direction: str = "long") -> None:
         """Shared booking logic: write the closed_positions row, delete the open
         position, and cancel any resting stop. Used both for a freshly-placed
         sell (close_position) and for a fill discovered after the fact via
@@ -213,13 +250,14 @@ class Portfolio:
             signal_source=signal_source,
             costs=exit_commission,
             entry_commission=entry_commission,
+            direction=direction,
         )
         db.delete_position(ticker)
         if hasattr(self.broker, "cancel_stop_order"):
             self.broker.cancel_stop_order(ticker)
 
     def _place_stop_with_retry(self, ticker: str, qty: float, stop_price: float,
-                               max_retries: int = 3) -> str | None:
+                               max_retries: int = 3, side: str = "sell") -> str | None:
         """Alpaca's wash-trade check can reject a stop placed immediately after
         its opposite-side buy fills (it lags our own fill confirmation) —
         code 40310000, "opposite side market/stop order exists". Retry with
@@ -229,7 +267,7 @@ class Portfolio:
         stop_id = None
         for attempt in range(max_retries):
             stop_id = self.broker.place_stop_order(
-                ticker=ticker, qty=qty, stop_price=stop_price
+                ticker=ticker, qty=qty, stop_price=stop_price, side=side
             )
             if stop_id is not None:
                 return stop_id
@@ -240,32 +278,36 @@ class Portfolio:
                 time.sleep(delay)
         return stop_id
 
-    def _place_sell_with_retry(self, ticker: str, qty: float, max_retries: int = 3):
+    def _place_closing_order_with_retry(self, ticker: str, qty: float, direction: str,
+                                        max_retries: int = 3):
+        """Places the order that CLOSES a position: sell (long) or buy-to-cover (short)."""
         import time
+        close_side = "sell" if direction == "long" else "buy"
         order = None
         for attempt in range(max_retries):
-            order = self.broker.place_order(ticker=ticker, side="sell", qty=qty)
+            order = self.broker.place_order(ticker=ticker, side=close_side, qty=qty)
             if order.status != OrderStatus.REJECTED:
                 return order
             if attempt < max_retries - 1:
                 delay = 1.0 * (attempt + 1)
-                log.warning("Sell rejected for %s (attempt %d/%d): %s — retrying in %.0fs",
-                            ticker, attempt + 1, max_retries, order.reject_reason, delay)
+                log.warning("%s rejected for %s (attempt %d/%d): %s — retrying in %.0fs",
+                            close_side, ticker, attempt + 1, max_retries, order.reject_reason, delay)
                 time.sleep(delay)
         return order
 
     def reduce_position(self, ticker: str, shares: float, exit_price: float,
                         signal_id: int | None, entry_price: float, entry_date: str,
-                        signal_source: str = "congressional") -> bool:
+                        signal_source: str = "congressional",
+                        direction: str = "long") -> bool:
         """Returns True if the partial close was booked, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
         sell_qty = shares / 2
-        order = self._place_sell_with_retry(ticker, sell_qty)
+        order = self._place_closing_order_with_retry(ticker, sell_qty, direction)
         _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
         if order.status in _NON_FILL:
             reason = order.reject_reason or order.status.value
             emit_event(
                 log, EventType.ORDER_REJECTED,
-                f"Reduce sell for {ticker} {order.status.value} after retries ({reason}) — "
+                f"Reduce for {ticker} {order.status.value} after retries ({reason}) — "
                 "shares left unchanged",
                 data={"ticker": ticker, "reason": reason, "status": order.status.value},
                 level=logging.ERROR,
@@ -297,6 +339,7 @@ class Portfolio:
             signal_source=signal_source,
             costs=exit_commission,
             entry_commission=entry_commission,
+            direction=direction,
         )
         db.update_position_shares(ticker, shares - actual_filled)
         # Cancel the stale full-qty stop; the next enforce_stop_losses poll re-places
@@ -305,17 +348,20 @@ class Portfolio:
             self.broker.cancel_stop_order(ticker)
         return True
 
-    def _find_matching_fill(self, ticker: str):
-        """Look for a filled sell order for `ticker` in the broker's order history.
+    def _find_matching_fill(self, ticker: str, direction: str = "long"):
+        """Look for a filled closing order for `ticker` in the broker's order history.
+
+        A long's closing fill is a SELL; a short's is a BUY (buy-to-cover).
 
         Used by reconcile_with_broker to distinguish a ghost position whose
         resting stop (or other order) actually filled server-side from one
         that vanished with no record at all. Returns the matching Order, or
-        None if get_order_history() is unavailable or has no filled sell for
+        None if get_order_history() is unavailable or has no matching fill for
         this ticker.
         """
         if not hasattr(self.broker, "get_order_history"):
             return None
+        expected_side = OrderSide.SELL if direction == "long" else OrderSide.BUY
         try:
             history = self.broker.get_order_history()
         except Exception as exc:
@@ -324,7 +370,7 @@ class Portfolio:
         for order in history:
             if (
                 order.ticker == ticker
-                and order.side == OrderSide.SELL
+                and order.side == expected_side
                 and order.status == OrderStatus.FILLED
             ):
                 return order
@@ -360,7 +406,8 @@ class Portfolio:
 
         for ticker in ghost:
             meta = db_meta_by_ticker.get(ticker, {})
-            fill = self._find_matching_fill(ticker)
+            direction = meta.get("direction", "long")
+            fill = self._find_matching_fill(ticker, direction)
             if fill is not None:
                 # The position didn't vanish — a resting order (e.g. a GTC stop)
                 # filled server-side. Book the real outcome instead of discarding it.
@@ -380,6 +427,7 @@ class Portfolio:
                     signal_id=meta.get("signal_id"),
                     signal_source=meta.get("signal_source", "congressional"),
                     exit_commission=exit_commission,
+                    direction=direction,
                 )
             else:
                 log.warning(
@@ -399,23 +447,43 @@ class Portfolio:
 
         for ticker in untracked:
             if getattr(self._risk, "auto_flatten_untracked", False):
-                # Aggressive mode: close the position immediately via market sell
+                # Aggressive mode: close the position immediately via market sell.
+                # Only supports closing a LONG (positive qty) this way — a short's
+                # close is a buy-to-cover, which this mode doesn't implement.
                 broker_qty = next(
                     (p["qty"] for p in broker_pos_list if p["ticker"] == ticker), 0.0
                 )
-                log.warning(
-                    "RECONCILIATION: %s at broker but not in SQLite — auto-flattening "
-                    "(auto_flatten_untracked=True), qty=%.4f",
-                    ticker, broker_qty,
-                )
                 if broker_qty > 0:
+                    log.warning(
+                        "RECONCILIATION: %s at broker but not in SQLite — auto-flattening "
+                        "(auto_flatten_untracked=True), qty=%.4f",
+                        ticker, broker_qty,
+                    )
                     self.broker.place_order(ticker=ticker, side="sell", qty=broker_qty)
-                emit_event(
-                    log, EventType.DEAD_FEED,
-                    f"RECONCILIATION: untracked position {ticker} auto-flattened "
-                    f"(qty={broker_qty:.4f})",
-                    alert=True,
-                )
+                    emit_event(
+                        log, EventType.DEAD_FEED,
+                        f"RECONCILIATION: untracked position {ticker} auto-flattened "
+                        f"(qty={broker_qty:.4f})",
+                        alert=True,
+                    )
+                else:
+                    # Do not claim "auto-flattened" when nothing was actually closed —
+                    # an untracked SHORT is left fully open here, uncapped downside.
+                    log.critical(
+                        "RECONCILIATION: %s at broker but not in SQLite — untracked SHORT "
+                        "(qty=%.4f); auto_flatten_untracked has no buy-to-cover path. "
+                        "NOT flattened — manual review required.",
+                        ticker, broker_qty,
+                    )
+                    emit_event(
+                        log, EventType.DEAD_FEED,
+                        f"RECONCILIATION: untracked SHORT position {ticker} "
+                        f"(qty={broker_qty:.4f}) left OPEN — auto_flatten_untracked only "
+                        "closes longs. Manual review required.",
+                        data={"ticker": ticker, "qty": broker_qty},
+                        level=logging.CRITICAL,
+                        alert=True,
+                    )
             else:
                 # Safe mode (default): alert loudly so a human can investigate
                 log.critical(
@@ -450,6 +518,30 @@ class Portfolio:
             ticker = pos["ticker"]
             meta = open_positions.get(ticker, {})
             source = meta.get("signal_source", "congressional")
+            direction = meta.get("direction", "long")
+
+            # Self-check for the sign-convention assumption this feature relies
+            # on (Alpaca returns negative qty for a short position) — never
+            # live-verified against a real account per
+            # docs/superpowers/specs/2026-07-17-short-selling-design.md
+            # Component 4. Alerts loudly instead of silently trusting it if a
+            # tracked position's DB direction and the broker's qty sign ever
+            # disagree; proceeds using the DB-recorded direction either way.
+            # Only meaningful for a ticker we actually have DB metadata for —
+            # an untracked broker position is reconcile_with_broker's concern.
+            if meta:
+                broker_is_short = pos.get("qty", 0) < 0
+                if (direction == "short") != broker_is_short:
+                    emit_event(
+                        log, EventType.DEAD_FEED,
+                        f"Direction mismatch for {ticker}: DB direction={direction!r} but "
+                        f"broker qty={pos.get('qty')} implies "
+                        f"{'short' if broker_is_short else 'long'} — sign-convention or "
+                        "data-integrity issue. Proceeding with the DB-recorded direction.",
+                        data={"ticker": ticker, "db_direction": direction, "broker_qty": pos.get("qty")},
+                        level=logging.CRITICAL,
+                        alert=True,
+                    )
 
             # Scope filter FIRST: a hedge-only call must not touch long stops (and
             # vice versa), so each position's resting stop uses its own call's pct.
@@ -470,13 +562,20 @@ class Portfolio:
             )
 
             current = pos["current_price"]
-            stored_peak = meta.get("peak_price")
-            peak = stored_peak if stored_peak is not None else pos["avg_entry_price"]
-            db.update_position_peak(ticker, current)
+            stored_extreme = meta.get("peak_price")
+            extreme = stored_extreme if stored_extreme is not None else pos["avg_entry_price"]
+            db.update_position_extreme(ticker, current, direction)
 
-            # Trail the resting stop upward (only-up). Cancel the old stop before
-            # placing the new one so brokers (Alpaca) don't accumulate duplicates.
-            new_stop = current * (1 - pct / 100)
+            # Resting broker stop order trails the LIVE current price (only
+            # moves in the risk-reducing direction — see is_improvement below),
+            # NOT the stored extreme. This preserves the original long-side
+            # trailing behavior byte-for-byte. Do NOT change this to use
+            # `extreme` — that was tried in an earlier draft of this task and
+            # broke test_enforce_stop_losses_trails_stop_upward. Cancel the
+            # old stop before placing the new one so brokers (Alpaca) don't
+            # accumulate duplicates.
+            new_stop = stop_trigger_price(direction, current, pct)
+            stop_side = "buy" if direction == "short" else "sell"
             existing_stop = 0.0
             existing_stop_id: str | None = None
             try:
@@ -492,11 +591,23 @@ class Portfolio:
                                 existing_stop_id = _resting[2]
             except Exception:
                 pass
-            if new_stop > existing_stop:
+            # "Better than existing" means tighter, in the direction that
+            # reduces risk: higher for a long's stop, lower for a short's.
+            # The short branch needs an explicit existing_stop==0.0 check
+            # (unlike the long branch, where new_stop > 0.0 already handles
+            # "no resting stop yet" naturally) because a short's stop price
+            # is always positive too, so new_stop < 0.0 would never be true —
+            # without this check, a short's FIRST-EVER resting stop would
+            # never get placed, leaving it with zero broker-side protection.
+            is_improvement = (
+                new_stop > existing_stop if direction == "long" else
+                (existing_stop == 0.0 or new_stop < existing_stop)
+            )
+            if is_improvement:
                 # Place the new stop BEFORE cancelling the old one so the
                 # position always has a resting stop (no gap between cancel and place).
                 new_stop_id = self.broker.place_stop_order(
-                    ticker=ticker, qty=pos["qty"], stop_price=new_stop
+                    ticker=ticker, qty=pos["qty"], stop_price=new_stop, side=stop_side
                 )
                 if new_stop_id is not None:
                     # Cancel the OLD stop by its specific id, never by ticker —
@@ -521,23 +632,28 @@ class Portfolio:
                         alert=True,
                     )
 
-            # A non-positive peak (e.g. an explicitly-stored 0.0) can't be used
-            # as a meaningful denominator — skip the stop-loss distance check
-            # for this poll rather than dividing by zero (same guard style as
-            # enforce_take_profits' `if entry <= 0: continue`).
-            if peak <= 0:
+            # A non-positive extreme (e.g. an explicitly-stored 0.0) can't be
+            # used as a meaningful denominator — skip the stop-loss distance
+            # check for this poll rather than dividing by zero (same guard
+            # style as enforce_take_profits' `if entry <= 0: continue`).
+            if extreme <= 0:
                 continue
-            drop_from_peak = (peak - current) / peak * 100
-            if drop_from_peak >= pct:
+            # This is a SEPARATE value from new_stop above — new_stop is the
+            # resting broker order (trails current price); this is the actual
+            # close-trigger threshold (off the stored peak/trough extreme).
+            # Do not conflate the two.
+            stop_price = stop_trigger_price(direction, extreme, pct)
+            if is_stop_triggered(direction, current, stop_price):
                 if self.close_position(
                     ticker=ticker,
-                    shares=pos["qty"],
+                    shares=abs(pos["qty"]),
                     exit_price=current,
                     exit_reason="stop_loss",
                     signal_id=meta.get("signal_id"),
                     entry_price=meta.get("entry_price") or pos["avg_entry_price"],
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=meta.get("signal_source", "congressional"),
+                    direction=direction,
                 ):
                     closed.append(ticker)
         return closed
@@ -559,6 +675,7 @@ class Portfolio:
                 continue
             meta = open_positions.get(ticker, {})
             source = meta.get("signal_source", "congressional")
+            direction = meta.get("direction", "long")
 
             if source_exclude is not None and source == source_exclude:
                 continue
@@ -568,31 +685,33 @@ class Portfolio:
             current = pos["current_price"]
             if entry <= 0:
                 continue
-            gain_pct = (current - entry) / entry * 100
+            gain_pct = pnl_pct(direction, entry, current)
 
             if gain_pct >= he_pct:
                 # Hard exit: full close
                 if self.close_position(
                     ticker=ticker,
-                    shares=pos["qty"],
+                    shares=abs(pos["qty"]),
                     exit_price=current,
                     exit_reason="hard_exit",
                     signal_id=meta.get("signal_id"),
                     entry_price=entry,
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=source,
+                    direction=direction,
                 ):
                     reduced.append(ticker)
             elif gain_pct >= tp_pct and not meta.get("take_profit_taken", 0):
                 # Partial reduce: sell 50%, mark flag so we don't reduce again
                 if self.reduce_position(
                     ticker=ticker,
-                    shares=pos["qty"],
+                    shares=abs(pos["qty"]),
                     exit_price=current,
                     signal_id=meta.get("signal_id"),
                     entry_price=entry,
                     entry_date=meta.get("entry_date") or date.today().isoformat(),
                     signal_source=source,
+                    direction=direction,
                 ):
                     db.mark_take_profit_taken(ticker)
                     reduced.append(ticker)

@@ -228,6 +228,14 @@
 > sweep: corrected a stale `ALERT_WEBHOOK_URL` claim in `docs/guardrails/PROJECT.md`, added
 > `docs/RUNBOOK.md#after-a-reboot`, documented the 4 new alert types. Test count: **985**
 > (unchanged — fixes and docs, not new features).
+> 2026-07-17 (short-selling capability): real short-selling support added behind
+> `Settings.strategy.enable_short_selling` (default `False`, zero live behavior change).
+> Five recorded open questions must be revisited before ever turning it on: regime-aware
+> short sizing, hedge-mechanism overlap, aggregate exposure cap, short borrow fees not
+> modeled in the AI's cost hurdle, and `SimulatedBroker` cannot execute a short order at
+> all (short-selling is Alpaca-only). See
+> `docs/superpowers/specs/2026-07-17-short-selling-design.md` for the full design and these
+> questions. Test count: **1045** (full suite green, zero known failures).
 > 2026-07-20 (watchdog/dead-man's-switch supervision closed out, not fixed): live-health
 > check found both LaunchDaemons (and their gui-domain LaunchAgent counterparts, an
 > undocumented leftover duplicate from the 07-17 migration that was never cleaned up) had
@@ -255,6 +263,13 @@
 > materially new information** — see `docs/RUNBOOK.md#after-a-reboot` for the full
 > investigation detail. Main bot process itself unaffected throughout, confirmed healthy and
 > on current commit.
+> 2026-07-20 (holistic branch review + remediation): first whole-diff review of the completed
+> short-selling branch found and fixed 5 issues (sector-cap netting masked short exposure,
+> short candidates never persisted a `fundamental_signals` row, a misleading reconcile alert,
+> `RiskManager`'s per-position cap not short-aware, and the never-live-verified NAV
+> sign-convention assumption converted to a runtime self-check) — none flag-off-behavior-
+> changing. See `docs/CLAUDE-REFERENCE.md#history` for detail. Test count: **1055** (full
+> suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

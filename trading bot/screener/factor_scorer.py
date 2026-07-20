@@ -640,3 +640,86 @@ def run_factor_screen(
             research=research_map.get(t),
         ))
     return candidates
+
+
+def run_factor_screen_short(
+    tickers: list[str],
+    short_top_n: int = 12,
+    research_workers: int = 5,
+    regime_label: str | None = None,
+    prefetched: dict | None = None,
+) -> list[FactorCandidate]:
+    """Screen the universe and return the BOTTOM short_top_n factor candidates.
+
+    Bearish mirror of run_factor_screen(): same composite score, same factor
+    model — takes the worst-ranked names instead of the best. Only used when
+    Settings.strategy.enable_short_selling is True.
+    """
+    if not tickers:
+        return []
+
+    if prefetched is not None:
+        infos = prefetched["infos"]
+        momentum = prefetched["momentum"]
+        price_factors = prefetched.get("price_factors", {})
+        xbrl = prefetched.get("xbrl", {})
+        log.info(
+            "Using pre-fetched screener data from %s (%d tickers)",
+            prefetched.get("timestamp", "?"), prefetched.get("ticker_count", 0),
+        )
+    else:
+        infos = _fetch_all_infos(tickers)
+        momentum = _fetch_momentum_batch(tickers)
+        price_factors = _fetch_price_factors_batch(tickers)
+        xbrl = _fetch_xbrl_safe(tickers)
+
+    if momentum and all(v == (None, None, None, None) for v in momentum.values()):
+        log.error(
+            "Momentum batch fetch returned (None, None, None, None) for all %d tickers — "
+            "momentum_score will be zero for every candidate. Check yfinance connectivity.",
+            len(tickers),
+        )
+
+    df = _build_factor_df(infos, momentum, price_factors, xbrl=xbrl)
+    if df.empty:
+        return []
+
+    scored = _compute_composite(df, regime_label=regime_label)
+    if scored.empty:
+        return []
+
+    bottom = scored.nsmallest(short_top_n, "composite_score")
+
+    research_map: dict[str, ResearchReport | None] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=research_workers) as pool:
+        futures = {
+            str(ticker_idx): pool.submit(
+                _gather_research_with_momentum,
+                str(ticker_idx),
+                momentum.get(str(ticker_idx), (None, None))[0],
+                momentum.get(str(ticker_idx), (None, None))[1],
+            )
+            for ticker_idx in bottom.index
+        }
+    for t, fut in futures.items():
+        try:
+            _, report = fut.result()
+            research_map[t] = report
+        except Exception as exc:
+            log.warning("research failed for %s: %s", t, exc)
+            research_map[t] = None
+
+    candidates: list[FactorCandidate] = []
+    for ticker_idx, row in bottom.iterrows():
+        t = str(ticker_idx)
+        candidates.append(FactorCandidate(
+            ticker=t,
+            composite_score=int(row["composite_score"]),
+            value_score=int(row["value_score"]),
+            momentum_score=int(row["momentum_score"]),
+            quality_score=int(row["quality_score"]),
+            low_vol_score=int(row["low_vol_score"]),
+            reversal_score=int(row["reversal_score"]),
+            research=research_map.get(t),
+        ))
+    return candidates

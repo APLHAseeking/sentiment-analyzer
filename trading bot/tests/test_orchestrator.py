@@ -345,10 +345,12 @@ def test_run_exit_review_pre_fetches_research_in_batch(mocker, orch):
         {
             "ticker": "AAPL", "entry_price": 100.0, "entry_date": "2026-04-01",
             "shares": 10.0, "signal_id": 1, "signal_source": "congressional",
+            "direction": "long",
         },
         {
             "ticker": "MSFT", "entry_price": 200.0, "entry_date": "2026-04-01",
             "shares": 5.0, "signal_id": 2, "signal_source": "congressional",
+            "direction": "long",
         },
     ])
     batch_spy = mocker.patch(
@@ -393,6 +395,53 @@ def test_run_exit_review_excludes_hedge_positions_against_real_rows(mocker, orch
 
     reviewed_tickers = [call.args[0] for call in review_spy.call_args_list]
     assert reviewed_tickers == ["AAPL"]
+
+
+def test_exit_review_routes_short_position_to_short_exit_gate(mocker, orch, db):
+    """A short position must be reviewed by review_short_exit (bearish P&L
+    framing), never review_exit (long-only framing) — Task 10b."""
+    from bot.ai_analyst import ExitDecision
+
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test",
+                        direction="short")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=200.0))
+    short_exit_mock = mocker.patch(
+        "orchestration.main_loop.review_short_exit",
+        return_value=ExitDecision(action="hold", rationale="still bearish"),
+    )
+    long_exit_mock = mocker.patch("orchestration.main_loop.review_exit")
+
+    orch.run_exit_review()
+
+    short_exit_mock.assert_called_once()
+    long_exit_mock.assert_not_called()
+
+
+def test_exit_review_closes_short_with_direction(mocker, orch, db):
+    """When review_short_exit says exit, close_position must be called with
+    direction='short' so the closing order buys-to-cover instead of sending
+    a sell against a short that doesn't exist as a long — Task 10b."""
+    from bot.ai_analyst import ExitDecision
+
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test",
+                        direction="short")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=200.0))
+    mocker.patch(
+        "orchestration.main_loop.review_short_exit",
+        return_value=ExitDecision(action="exit", rationale="covered"),
+    )
+    orch._portfolio.close_position.return_value = True
+
+    orch.run_exit_review()
+
+    kwargs = orch._portfolio.close_position.call_args[1]
+    assert kwargs["direction"] == "short"
 
 
 def _make_yf_ticker_mock(price: float = 100.0, history_rows: int = 20):
@@ -984,6 +1033,25 @@ def test_close_all_positions_does_not_log_force_closed_when_sell_fails(mocker, o
     assert "Force-closed" not in caplog.text
 
 
+def test_close_all_positions_covers_short_with_direction(mocker, orch, db):
+    """A short position force-closed by the deleverage circuit breaker must
+    be closed with direction='short' (buy-to-cover), not the silently
+    defaulted direction='long' (which would send a sell against a short) —
+    second instance of the Task 10b direction-blind-close bug, this time in
+    _close_all_positions."""
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test",
+                        direction="short")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=230.0))
+    orch._portfolio.close_position.return_value = True
+
+    orch._close_all_positions(reason="deleverage")
+
+    kwargs = orch._portfolio.close_position.call_args[1]
+    assert kwargs["direction"] == "short"
+
+
 def test_intraday_check_deleverage_excludes_hedges(mocker, orch):
     from risk.risk_manager import RiskState
     orch._risk = mocker.MagicMock()
@@ -1335,6 +1403,7 @@ def test_run_exit_review_reduce_marks_take_profit_taken(mocker, orch):
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
         "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
         "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+        "direction": "long",
     }])
     mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
     mocker.patch("orchestration.main_loop.yf.Ticker",
@@ -1360,6 +1429,7 @@ def test_run_exit_review_reduce_does_not_mark_take_profit_when_sell_fails(mocker
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
         "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
         "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+        "direction": "long",
     }])
     mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
     mocker.patch("orchestration.main_loop.yf.Ticker",
@@ -1384,6 +1454,7 @@ def test_run_exit_review_exit_does_not_log_closed_when_sell_fails(mocker, orch, 
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
         "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
         "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+        "direction": "long",
     }])
     mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
     mocker.patch("orchestration.main_loop.yf.Ticker",
@@ -2304,3 +2375,193 @@ def test_start_catch_up_after_close_does_not_open_positions(mocker, orch):
     mock_prefetch.assert_called_once()  # prefetch has no market-hours guard
     orch._portfolio.reconcile_with_broker.assert_not_called()
     orch._portfolio.enforce_stop_losses.assert_not_called()
+
+
+def test_short_phase_skipped_when_flag_off(mocker, orch):
+    """enable_short_selling=False (the default) must not call
+    run_factor_screen_short at all — Phase 1.5 stays entirely inert until the
+    flag is flipped on, so the long-only bot's behavior is unchanged."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, strategy=dataclasses.replace(orch._cfg.strategy, enable_short_selling=False)
+    )
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    short_screen_mock = mocker.patch(
+        "orchestration.main_loop.run_factor_screen_short", return_value=[]
+    )
+
+    orch.run_morning_pipeline()
+
+    short_screen_mock.assert_not_called()
+
+
+def test_short_phase_runs_when_flag_on(mocker, orch):
+    """enable_short_selling=True must reach Phase 1.5 and call
+    run_factor_screen_short exactly once, with short_top_n sourced from
+    UniverseConfig.screener_short_top_n (proves the config value is wired
+    through, not hardcoded)."""
+    import dataclasses
+    orch._cfg = dataclasses.replace(
+        orch._cfg, strategy=dataclasses.replace(orch._cfg.strategy, enable_short_selling=True)
+    )
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    short_screen_mock = mocker.patch(
+        "orchestration.main_loop.run_factor_screen_short", return_value=[]
+    )
+
+    orch.run_morning_pipeline()
+
+    short_screen_mock.assert_called_once()
+    call_kwargs = short_screen_mock.call_args[1]
+    assert call_kwargs["short_top_n"] == orch._cfg.universe.screener_short_top_n
+
+
+def test_process_fundamental_short_candidate_opens_short_position(mocker, orch):
+    """Direct invocation of _process_fundamental_short_candidate: a "sell"
+    EntryScore that clears the risk veto must open a short position with
+    direction="short" and the short-specific stop/signal_source, and return True."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_short",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=3.0,
+                     rationale="overvalued", entry="sell", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=50.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    orch._portfolio.open_position.return_value = True
+
+    candidate = FactorCandidate(
+        ticker="XYZ", composite_score=10, value_score=5,
+        momentum_score=3, quality_score=4, research=None,
+    )
+    result = orch._process_fundamental_short_candidate(candidate, {})
+
+    assert result is True
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    assert call_kwargs["ticker"] == "XYZ"
+    assert call_kwargs["entry_price"] == 50.0
+    assert call_kwargs["direction"] == "short"
+    assert call_kwargs["signal_source"] == "fundamental"
+    assert call_kwargs["initial_stop_pct"] == orch._cfg.risk.short_trailing_stop_pct
+
+
+def test_process_fundamental_short_candidate_returns_false_on_risk_veto(mocker, orch):
+    """A risk veto (allowed=False) must block the short: open_position is never
+    called and the method returns False."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_short",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=3.0,
+                     rationale="overvalued", entry="sell", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=50.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=False, reason="sector cap exceeded", size_multiplier=0.0,
+    )
+
+    candidate = FactorCandidate(
+        ticker="XYZ", composite_score=10, value_score=5,
+        momentum_score=3, quality_score=4, research=None,
+    )
+    result = orch._process_fundamental_short_candidate(candidate, {})
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
+
+
+def test_process_fundamental_short_candidate_persists_signal_with_short_direction(mocker, orch):
+    """Opening a short must also record a fundamental_signals row (parity with
+    _process_fundamental_candidate's long-side insert_fundamental_signal call),
+    tagged direction="short" — regression for the 2026-07-20 holistic branch
+    review finding that the short path silently skipped this, leaving no
+    signal history for run_bot.py --backtest / PerformanceTracker."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_short",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=3.0,
+                     rationale="overvalued", entry="sell", risk_flags=(),
+                     expected_return_pct=6.0,
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=50.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    orch._portfolio.open_position.return_value = True
+    signal_spy = mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)
+
+    candidate = FactorCandidate(
+        ticker="XYZ", composite_score=10, value_score=5,
+        momentum_score=3, quality_score=4, research=None,
+    )
+    result = orch._process_fundamental_short_candidate(candidate, {})
+
+    assert result is True
+    signal_spy.assert_called_once()
+    call_kwargs = signal_spy.call_args[1]
+    assert call_kwargs["ticker"] == "XYZ"
+    assert call_kwargs["direction"] == "short"
+    assert call_kwargs["signal_source"] == "fundamental"
+    assert call_kwargs["expected_return_pct"] == 6.0
+
+
+def test_sector_allocation_seed_counts_short_as_gross_exposure(mocker, orch):
+    """Sector-allocation seeding (feeds RiskManager.validate_order's
+    max_sector_pct check) must sum GROSS exposure per sector — a short's
+    negative qty must not net against a same-sector long and mask real
+    concentration. Regression for the 2026-07-20 holistic branch review
+    finding: main_loop.py's sector_allocation seed assumed qty is always
+    positive (pre-existing code, untouched by any single short-selling task,
+    so no per-task review caught it)."""
+    from screener.factor_scorer import FactorCandidate
+
+    broker = MagicMock()
+    broker.get_cash.return_value = 8_500.0
+    broker.get_positions.return_value = [
+        {"ticker": "AAPL", "qty": 10.0, "current_price": 100.0, "avg_entry_price": 100.0},
+        {"ticker": "TSLA", "qty": -10.0, "current_price": 50.0, "avg_entry_price": 50.0},
+    ]
+    orch._broker = broker
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
+        FactorCandidate(ticker="MSFT", composite_score=80, value_score=25,
+                         momentum_score=28, quality_score=27, research=None),
+    ])
+    candidate_spy = mocker.patch.object(orch, "_process_fundamental_candidate", return_value=False)
+
+    orch.run_morning_pipeline()
+
+    candidate_spy.assert_called_once()
+    _, sector_allocation, _ = candidate_spy.call_args[0]
+    # NAV = cash + (10*100 + (-10)*50) = 8500 + 500 = 9000.
+    # Gross Technology exposure = (1000 + 500) / 9000 * 100, NOT the netted
+    # (1000 - 500) / 9000 * 100.
+    assert sector_allocation["Technology"] == pytest.approx(1500 / 9000 * 100)
