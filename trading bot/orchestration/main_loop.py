@@ -1633,14 +1633,16 @@ class RegimeAwareOrchestrator:
                     price = 0.0
                 if not price:
                     continue
-                # close_position() returns False on a no-fill sell and already
-                # alerts internally — a deleverage force-close that silently fails
-                # must not be logged as if risk exposure was actually reduced.
+                direction = pos["direction"]
+                # close_position() returns False on a no-fill sell/buy-to-cover and
+                # already alerts internally — a deleverage force-close that silently
+                # fails must not be logged as if risk exposure was actually reduced.
                 closed = self._portfolio.close_position(
                     pos["ticker"], pos["shares"], exit_price=price,
                     exit_reason=reason, signal_id=pos["signal_id"],
                     entry_price=pos["entry_price"], entry_date=pos["entry_date"],
                     signal_source=pos["signal_source"],
+                    direction=direction,
                 )
                 if closed:
                     log.info("Force-closed %s: %s", pos["ticker"], reason)

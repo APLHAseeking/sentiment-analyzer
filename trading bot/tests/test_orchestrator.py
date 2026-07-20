@@ -1033,6 +1033,25 @@ def test_close_all_positions_does_not_log_force_closed_when_sell_fails(mocker, o
     assert "Force-closed" not in caplog.text
 
 
+def test_close_all_positions_covers_short_with_direction(mocker, orch, db):
+    """A short position force-closed by the deleverage circuit breaker must
+    be closed with direction='short' (buy-to-cover), not the silently
+    defaulted direction='long' (which would send a sell against a short) —
+    second instance of the Task 10b direction-blind-close bug, this time in
+    _close_all_positions."""
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test",
+                        direction="short")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=230.0))
+    orch._portfolio.close_position.return_value = True
+
+    orch._close_all_positions(reason="deleverage")
+
+    kwargs = orch._portfolio.close_position.call_args[1]
+    assert kwargs["direction"] == "short"
+
+
 def test_intraday_check_deleverage_excludes_hedges(mocker, orch):
     from risk.risk_manager import RiskState
     orch._risk = mocker.MagicMock()
