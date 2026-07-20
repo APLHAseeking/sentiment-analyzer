@@ -345,10 +345,12 @@ def test_run_exit_review_pre_fetches_research_in_batch(mocker, orch):
         {
             "ticker": "AAPL", "entry_price": 100.0, "entry_date": "2026-04-01",
             "shares": 10.0, "signal_id": 1, "signal_source": "congressional",
+            "direction": "long",
         },
         {
             "ticker": "MSFT", "entry_price": 200.0, "entry_date": "2026-04-01",
             "shares": 5.0, "signal_id": 2, "signal_source": "congressional",
+            "direction": "long",
         },
     ])
     batch_spy = mocker.patch(
@@ -393,6 +395,53 @@ def test_run_exit_review_excludes_hedge_positions_against_real_rows(mocker, orch
 
     reviewed_tickers = [call.args[0] for call in review_spy.call_args_list]
     assert reviewed_tickers == ["AAPL"]
+
+
+def test_exit_review_routes_short_position_to_short_exit_gate(mocker, orch, db):
+    """A short position must be reviewed by review_short_exit (bearish P&L
+    framing), never review_exit (long-only framing) — Task 10b."""
+    from bot.ai_analyst import ExitDecision
+
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test",
+                        direction="short")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=200.0))
+    short_exit_mock = mocker.patch(
+        "orchestration.main_loop.review_short_exit",
+        return_value=ExitDecision(action="hold", rationale="still bearish"),
+    )
+    long_exit_mock = mocker.patch("orchestration.main_loop.review_exit")
+
+    orch.run_exit_review()
+
+    short_exit_mock.assert_called_once()
+    long_exit_mock.assert_not_called()
+
+
+def test_exit_review_closes_short_with_direction(mocker, orch, db):
+    """When review_short_exit says exit, close_position must be called with
+    direction='short' so the closing order buys-to-cover instead of sending
+    a sell against a short that doesn't exist as a long — Task 10b."""
+    from bot.ai_analyst import ExitDecision
+
+    db.insert_position("TSLA", 250.0, 5.0, 4.0, "2026-07-14", None, "Test",
+                        direction="short")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=200.0))
+    mocker.patch(
+        "orchestration.main_loop.review_short_exit",
+        return_value=ExitDecision(action="exit", rationale="covered"),
+    )
+    orch._portfolio.close_position.return_value = True
+
+    orch.run_exit_review()
+
+    kwargs = orch._portfolio.close_position.call_args[1]
+    assert kwargs["direction"] == "short"
 
 
 def _make_yf_ticker_mock(price: float = 100.0, history_rows: int = 20):
@@ -1335,6 +1384,7 @@ def test_run_exit_review_reduce_marks_take_profit_taken(mocker, orch):
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
         "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
         "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+        "direction": "long",
     }])
     mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
     mocker.patch("orchestration.main_loop.yf.Ticker",
@@ -1360,6 +1410,7 @@ def test_run_exit_review_reduce_does_not_mark_take_profit_when_sell_fails(mocker
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
         "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
         "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+        "direction": "long",
     }])
     mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
     mocker.patch("orchestration.main_loop.yf.Ticker",
@@ -1384,6 +1435,7 @@ def test_run_exit_review_exit_does_not_log_closed_when_sell_fails(mocker, orch, 
     mocker.patch("orchestration.main_loop.get_open_positions", return_value=[{
         "ticker": "AAPL", "shares": 10.0, "entry_price": 100.0,
         "entry_date": "2026-05-01", "signal_id": 1, "signal_source": "fundamental",
+        "direction": "long",
     }])
     mocker.patch("orchestration.main_loop.gather_research_batch", return_value={})
     mocker.patch("orchestration.main_loop.yf.Ticker",

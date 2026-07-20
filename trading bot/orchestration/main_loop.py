@@ -51,7 +51,7 @@ from bot.insider_signal import filter_insider_disclosures, get_insider_cluster_c
 from bot.ai_analyst import (
     score_entry_with_debate, review_exit, EntryScore, score_technical,
     score_entry_short,
-    review_short_exit,  # not yet called here — wired into run_exit_review by Task 10b
+    review_short_exit,
 )
 from bot.db import (
     get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken,
@@ -1546,8 +1546,13 @@ class RegimeAwareOrchestrator:
                     current_price = pos["entry_price"]
                 days_held = (date.today() - date.fromisoformat(pos["entry_date"])).days
                 research = research_map.get(pos["ticker"])
-                decision = review_exit(pos["ticker"], pos["entry_price"],
-                                       current_price, days_held, research=research)
+                direction = pos["direction"]
+                if direction == "short":
+                    decision = review_short_exit(pos["ticker"], pos["entry_price"],
+                                                 current_price, days_held, research=research)
+                else:
+                    decision = review_exit(pos["ticker"], pos["entry_price"],
+                                           current_price, days_held, research=research)
                 if decision.action == "exit":
                     # close_position() returns False on a no-fill sell and already
                     # alerts internally — only log success if it actually filled.
@@ -1555,6 +1560,7 @@ class RegimeAwareOrchestrator:
                         pos["ticker"], pos["shares"], exit_price=current_price,
                         exit_reason="ai_exit", signal_id=pos["signal_id"] or 0,
                         entry_price=pos["entry_price"], entry_date=pos["entry_date"],
+                        direction=direction,
                     )
                     if closed:
                         log.info("Closed %s: %s", pos["ticker"], decision.rationale)
@@ -1565,7 +1571,7 @@ class RegimeAwareOrchestrator:
                     reduced = self._portfolio.reduce_position(
                         pos["ticker"], pos["shares"], exit_price=current_price,
                         signal_id=pos["signal_id"] or 0, entry_price=pos["entry_price"],
-                        entry_date=pos["entry_date"],
+                        entry_date=pos["entry_date"], direction=direction,
                     )
                     if reduced:
                         mark_take_profit_taken(pos["ticker"])
