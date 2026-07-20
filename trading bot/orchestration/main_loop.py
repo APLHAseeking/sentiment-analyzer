@@ -50,7 +50,8 @@ from bot.insider import run_insider_scraper
 from bot.insider_signal import filter_insider_disclosures, get_insider_cluster_count
 from bot.ai_analyst import (
     score_entry_with_debate, review_exit, EntryScore, score_technical,
-    score_entry_short, review_short_exit,
+    score_entry_short,
+    review_short_exit,  # not yet called here — wired into run_exit_review by Task 10b
 )
 from bot.db import (
     get_open_positions, insert_signal, log_regime, get_nav_history, mark_take_profit_taken,

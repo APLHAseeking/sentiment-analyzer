@@ -2343,3 +2343,76 @@ def test_short_phase_runs_when_flag_on(mocker, orch):
     short_screen_mock.assert_called_once()
     call_kwargs = short_screen_mock.call_args[1]
     assert call_kwargs["short_top_n"] == orch._cfg.universe.screener_short_top_n
+
+
+def test_process_fundamental_short_candidate_opens_short_position(mocker, orch):
+    """Direct invocation of _process_fundamental_short_candidate: a "sell"
+    EntryScore that clears the risk veto must open a short position with
+    direction="short" and the short-specific stop/signal_source, and return True."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_short",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=3.0,
+                     rationale="overvalued", entry="sell", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=50.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    orch._portfolio.open_position.return_value = True
+
+    candidate = FactorCandidate(
+        ticker="XYZ", composite_score=10, value_score=5,
+        momentum_score=3, quality_score=4, research=None,
+    )
+    result = orch._process_fundamental_short_candidate(candidate, {})
+
+    assert result is True
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    assert call_kwargs["ticker"] == "XYZ"
+    assert call_kwargs["entry_price"] == 50.0
+    assert call_kwargs["direction"] == "short"
+    assert call_kwargs["signal_source"] == "fundamental"
+    assert call_kwargs["initial_stop_pct"] == orch._cfg.risk.short_trailing_stop_pct
+
+
+def test_process_fundamental_short_candidate_returns_false_on_risk_veto(mocker, orch):
+    """A risk veto (allowed=False) must block the short: open_position is never
+    called and the method returns False."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker",
+                 return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_short",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=3.0,
+                     rationale="overvalued", entry="sell", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=50.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=False, reason="sector cap exceeded", size_multiplier=0.0,
+    )
+
+    candidate = FactorCandidate(
+        ticker="XYZ", composite_score=10, value_score=5,
+        momentum_score=3, quality_score=4, research=None,
+    )
+    result = orch._process_fundamental_short_candidate(candidate, {})
+
+    assert result is False
+    orch._portfolio.open_position.assert_not_called()
