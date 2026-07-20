@@ -1958,6 +1958,17 @@ zero behavior change to the running bot until the flag is flipped."
 
 ## Task 10b: Orchestration — `run_exit_review` must route shorts to the short AI gate
 
+> **Second gap found in this same review, fixed in commit `6bb12f9`.** The sweep for
+> this task's own fix didn't check every call site: `_close_all_positions` (the
+> deleverage circuit breaker's force-close-everything path, called from both
+> `run_intraday_check` and `run_eod` on a breached risk state) also called
+> `close_position()` with no `direction` kwarg, silently defaulting to `"long"`. A
+> short force-closed during deleveraging would have gotten a **sell** order instead
+> of a buy-to-cover — increasing risk exposure at the exact moment the circuit
+> breaker exists to cut it. Fixed the same way: read `pos["direction"]` (always
+> present, same reasoning as below) and pass it through. Regression test proven
+> red/green.
+
 **Files:**
 - Modify: `trading bot/orchestration/main_loop.py`
 - Test: `trading bot/tests/test_orchestrator.py`
