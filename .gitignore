@@ -55,3 +55,8 @@ trading bot/regime_model.joblib
 trading bot/dashboard_state.json
 trading bot/bot_status.json
 trading bot/watchdog_restart_history.json
+
+# Local-only scratch, not repo source (see docs/guardrails/PROJECT.md#data-not-in-this-repo
+# for the established convention: large personal data files live outside the repo)
+Thesis STOXX, and time series (1).xlsx
+mattpocock-skills/
