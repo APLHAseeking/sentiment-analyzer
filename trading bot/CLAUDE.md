@@ -227,7 +227,8 @@
 > `Settings.strategy.enable_short_selling` (default `False`, zero live behavior change).
 > Five recorded open questions must be revisited before ever turning it on: regime-aware
 > short sizing, hedge-mechanism overlap, aggregate exposure cap, short borrow fees not
-> modeled in SimulatedBroker, and SimulatedBroker cannot execute a short order at all. See
+> modeled in the AI's cost hurdle, and `SimulatedBroker` cannot execute a short order at
+> all (short-selling is Alpaca-only). See
 > `docs/superpowers/specs/2026-07-17-short-selling-design.md` for the full design and these
 > questions. Test count: **1045** (full suite green, zero known failures).
 
