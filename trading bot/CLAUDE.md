@@ -223,6 +223,13 @@
 > sweep: corrected a stale `ALERT_WEBHOOK_URL` claim in `docs/guardrails/PROJECT.md`, added
 > `docs/RUNBOOK.md#after-a-reboot`, documented the 4 new alert types. Test count: **985**
 > (unchanged — fixes and docs, not new features).
+> 2026-07-17 (short-selling capability): real short-selling support added behind
+> `Settings.strategy.enable_short_selling` (default `False`, zero live behavior change).
+> Five recorded open questions must be revisited before ever turning it on: regime-aware
+> short sizing, hedge-mechanism overlap, aggregate exposure cap, short borrow fees not
+> modeled in SimulatedBroker, and SimulatedBroker cannot execute a short order at all. See
+> `docs/superpowers/specs/2026-07-17-short-selling-design.md` for the full design and these
+> questions. Test count: **1045** (full suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 
