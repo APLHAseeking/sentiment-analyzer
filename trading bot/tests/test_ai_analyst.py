@@ -1007,3 +1007,37 @@ def test_parse_technical_conviction_rounds_float_up():
     payload = _technical_payload(conviction=7.9)
     score = parse_technical_response(payload, last_close=100.0)
     assert score.conviction == 8
+
+
+# ============================================================
+# TASK 9: short-side entry/exit scoring (bearish mirror)
+# ============================================================
+
+from bot.ai_analyst import score_entry_short, review_short_exit, EntryScore, ExitDecision
+
+
+def test_score_entry_short_parses_response(monkeypatch):
+    monkeypatch.setattr(
+        "bot.ai_analyst._llm_call",
+        lambda *a, **k: '{"conviction": 8, "position_pct": 4.0, "rationale": "overvalued", '
+                        '"entry": "sell", "risk_flags": [], "expected_return_pct": -8.0}',
+    )
+    score = score_entry_short(sector="Technology", estimated_cost_pct=0.4,
+                              factor_score=15, ticker="XYZ")
+    assert isinstance(score, EntryScore)
+    assert score.entry == "sell"
+    assert score.expected_return_pct == -8.0
+
+
+def test_review_short_exit_pnl_is_inverted(monkeypatch):
+    captured = {}
+
+    def fake_llm_call(system_text, prompt, max_tokens=256, **kwargs):
+        captured["prompt"] = prompt
+        return '{"action": "hold", "rationale": "still bearish"}'
+
+    monkeypatch.setattr("bot.ai_analyst._llm_call", fake_llm_call)
+    decision = review_short_exit(ticker="XYZ", entry_price=100.0, current_price=90.0, days_held=10)
+    assert isinstance(decision, ExitDecision)
+    # Short profits when price FALLS — entry 100 -> current 90 must show as +10%, not -10%.
+    assert "+10.0%" in captured["prompt"]
