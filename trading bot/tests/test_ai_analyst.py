@@ -1041,3 +1041,17 @@ def test_review_short_exit_pnl_is_inverted(monkeypatch):
     assert isinstance(decision, ExitDecision)
     # Short profits when price FALLS — entry 100 -> current 90 must show as +10%, not -10%.
     assert "+10.0%" in captured["prompt"]
+
+
+def test_short_entry_system_inverts_research_adjustments():
+    from bot.ai_analyst import _build_short_entry_system
+    system_text = _build_short_entry_system()
+    # Must NOT tell the model to increase conviction on squeeze risk against
+    # the short, or on a fundamentally strong company that contradicts the
+    # short thesis — these are the exact long-side rules, unchanged, that
+    # would be actively dangerous if reused verbatim for a short.
+    assert "SHORT SQUEEZE potential" not in system_text
+    assert "Financially healthy, undervalued, positive momentum: conviction +1" not in system_text
+    # Must contain correctly-inverted guidance instead.
+    assert "squeeze" in system_text.lower()  # still warns about squeeze risk, just correctly (as a risk, not a bonus)
+    assert "conviction -2" in system_text  # somewhere penalizes a healthy/undervalued/uptrending company
