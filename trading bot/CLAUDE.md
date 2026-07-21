@@ -7,6 +7,8 @@
 > end of this banner and `docs/RUNBOOK.md#after-a-reboot` for the full story. Both scripts
 > are manual-only (`python -m monitoring.watchdog` / `monitoring.dead_mans_switch`); the main
 > bot itself is unaffected and still needs to be checked manually, same as before.
+> **2026-07-21: a missed scheduler job now fires the Slack alert webhook** (was log-only) —
+> narrows this gap, does not close it: you get told, nothing auto-restarts.
 > Phase 0 gate: **BLOCKED ON DATA** — real point-in-time data not yet acquired; all historical
 > performance numbers are look-ahead biased until then. See `docs/PHASE0_FINDINGS.md` for gate
 > decision rules and required datasets.
@@ -270,6 +272,13 @@
 > sign-convention assumption converted to a runtime self-check) — none flag-off-behavior-
 > changing. See `docs/CLAUDE-REFERENCE.md#history` for detail. Test count: **1055** (full
 > suite green, zero known failures).
+> 2026-07-20/21: live P&L reviewed at user's request — no closed trades yet, unrealized
+> +$445.22 on $37.2k deployed; bot ≈-2.75% vs. SPY -0.75% since 07-07 inception (too early to
+> call an edge). Found `max_positions` (20/20) was binding while only ~39% of NAV was
+> deployed — raised to 30, and `per_trade_risk_pct` 0.15→0.20, plus fixed an independent bug
+> where the backtest simulator's own `max_positions` default was decoupled from live config.
+> Also wired missed-scheduler-job alerting (see banner top). See `docs/CLAUDE-REFERENCE.md
+> #history` for full detail. Test count: **1057** (full suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

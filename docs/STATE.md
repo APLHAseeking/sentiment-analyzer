@@ -8,76 +8,37 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-**2026-07-17, post-reboot session — bot restarted and healthy, but the reboot-survival
-watchdog/dead-man's-switch work from earlier today turned out NOT to work, root cause found,
-fix NOT found, session paused here at the user's choice (not urgent — see below).**
-
-What actually happened on the reboot test: `bot_status.json`/`ps aux` showed the bot dead —
-neither LaunchDaemon had actually restarted it (both fired via `RunAtLoad`, both crashed
-instantly). Manually ran `python3 -m monitoring.watchdog`, which worked fine and restarted
-the bot (PID 4434, commit `b4e3a29` = current `HEAD`, confirmed via `ps aux`/`bot_status.json`
-— this part is genuinely fine right now). Also found and removed a real hazard: the OLD,
-supposedly-closed-permanently `KeepAlive` LaunchAgent from 2026-07-10 was still on disk and
-had been spawning `run_bot.py` directly every ~30s since boot — a real risk of a second
-process fighting the first over `trading.db`. Unloaded via `launchctl bootout` (plist file
-itself still on disk, user hasn't said delete or keep).
-
-**The watchdog/dead-man's-switch daemons themselves are still broken** — see `## Failed
-attempts` for the full ladder. Root cause via `log show`: `posix_spawn(...), error 0x1 -
-Operation not permitted`, identically for python3 directly, a zsh wrapper, an su wrapper,
-under BOTH `system` (LaunchDaemon) and `gui` (LaunchAgent) domains. `sfltool dumpbtm` shows
-every one of these unsigned/"legacy" launchd items filed under a top-level "Unknown
-Developer" Background Task Management record that reads `disabled` even when the individual
-item shows `enabled` — and the user confirmed System Settings > Login Items & Extensions has
-no addable/toggleable entry for it. This looks like a stuck/broken BTM database, not a real
-policy choice. One untried lever remains: `sudo sfltool resetbtm` (resets EVERY app's
-background-item approvals machine-wide, not just this project — bigger blast radius, needs
-explicit buy-in). User chose to stop here for today rather than run it — **not urgent**: the
-bot itself doesn't need the watchdog to keep trading right now, it only means a future
-crash/reboot needs a manual restart again until this is revisited.
-
-Currently on disk: both plists exist as **LaunchAgents** at
-`~/Library/LaunchAgents/com.thomasvromen.tradingbot-{watchdog,deadmansswitch}.plist`
-(reverted from the LaunchDaemon/system-domain form, per the failed-attempts ladder) —
-loaded but non-functional (same `exit(78)`). The OLD `system`-domain LaunchDaemon plists
-are also still on disk at `/Library/LaunchDaemons/` (su-wrapper version, also non-functional,
-bootout'd from launchd). None of this is actively harmful — just dead weight until the
-`resetbtm` decision is made.
-
-**Resolved 2026-07-20** (full trading-bot review session): the second, separate
-`trading bot/docs/STATE.md` flagged below has been merged into this file and deleted — its
-short-selling-branch content is folded into `## Done`/`## Open items` below, and the full
-merge/review detail lives in `trading bot/docs/BOT_REVIEW_2026-07-20.md`.
-
-Earlier the same day: implemented the user-approved "widen screener review" design (top-N
-12→30 via new `UniverseConfig.screener_top_n`, daily cap 3→5) — commit `7a185ce`. Found the
-bot wedged 3 separate times that day; root-caused to real macOS sleep events (not a code
-bug — see Done). Also found and fixed a real, severe latent bug (`sqlite3.Row` has no
-`.get()`, 5 call sites, only reachable once real positions exist) that crashed the
-catch-up pipeline and would have crashed the deleverage circuit-breaker's force-close
-path — commit `e7b15fa`. Bot now runs `nohup caffeinate -i -s python3 run_bot.py` instead
-of bare `nohup python3`.
+**2026-07-21 session complete, user closing out.** Live paper bot reviewed end-to-end at
+user's request (trade history/P&L, benchmark vs SPY, position-limit review), two
+capital-deployment fixes shipped, a live overnight scheduler-wedge found, and a targeted
+alert-only mitigation shipped for it (full narrative: `trading bot/docs/CLAUDE-REFERENCE.md
+#history`, 2026-07-20/21 entry). Bot restarted twice this session to load changes in
+sequence; final state verified: PID 54604, commit `cb88ce5` (= current HEAD), scheduler
+started clean, nothing mid-job at either restart. `--test-alerts` fired successfully
+(live network call, not mocked) — **user still needs to confirm it actually landed in
+Slack**, that's the one unverified step.
 
 ## Next
-- **Watchdog/dead-man's-switch auto-restart is non-functional** (see `## Now` and
-  `## Failed attempts`) — next session's first move if picking this back up: get the user's
-  go-ahead for `sudo sfltool resetbtm` (resets ALL apps' background-item approvals on this
-  Mac, not just this project — say that plainly before running it), then re-deploy either
-  plist form (LaunchAgent, currently on disk at `~/Library/LaunchAgents/`, is simplest to
-  test since no sudo needed to load it) and confirm a real `RunAtLoad` cycle actually logs
-  a clean run (not just `runs` incrementing — check `last exit code` is NOT `78`). Not
-  urgent: the bot runs fine without it, this only matters for the next unattended
-  crash/reboot.
+- **Confirm the `--test-alerts` message actually arrived in Slack** (fired 2026-07-21, see
+  `## Now`) — closes the loop on the job-missed-alert fix below; if it didn't arrive, the
+  webhook URL/channel needs checking before trusting the new alert for real.
+- Watchdog/dead-man's-switch auto-restart remains non-functional and **abandoned by
+  deliberate decision** (2026-07-20, reconfirmed 2026-07-21) — `sudo sfltool resetbtm` is
+  still the only untried lever (resets ALL apps' background-item approvals on this Mac, not
+  just this project) and still needs the user's explicit go-ahead before anyone runs it. Not
+  urgent: the new missed-job Slack alert (2026-07-21) means a wedge now gets noticed instead
+  of silently sitting until a manual check — it does NOT auto-recover, still needs a manual
+  restart every time.
 - Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's `russell1000_constituent`
   endpoint (existence unconfirmed), wire up if it works. 4 free/no-signup alternates tried
   across sessions (iShares, FTSE Russell, stockanalysis.com, SlickCharts) — none viable.
 - requirements.txt pinning/lockfile: still not started.
-- Remaining sleep-wedge hardening (Power Nap disabled, watchdog now bounds any recurrence to
-  ~15-30 min either way — see `## Open items` for current status): if wedges somehow still
-  recur, next step is user's call between `sudo pmset -a disablesleep 1` (same laptop, real
-  battery/heat tradeoff) or migrating off the laptop
-  entirely (Oracle Cloud Always Free / a small VPS / a home always-on device) — see
-  `docs/RUNBOOK.md#sleep-wedges` for the full writeup. Not actioned without the user choosing.
+- Remaining sleep-wedge hardening (Power Nap disabled 2026-07-17; root cause of wedges is
+  confirmed real macOS sleep events, not a code bug): if wedges keep recurring despite that,
+  next step is user's call between `sudo pmset -a disablesleep 1` (same laptop, real
+  battery/heat tradeoff) or migrating off the laptop entirely (Oracle Cloud Always Free / a
+  small VPS / a home always-on device) — see `docs/RUNBOOK.md#sleep-wedges` for the full
+  writeup. Not actioned without the user choosing.
 
 ## Constraints
 - User 2026-07-17 (this review thread): report findings for sign-off first, no fixes applied
@@ -92,6 +53,9 @@ of bare `nohup python3`.
 - Original task: keep test suite green; follow repo CLAUDE.md/CODE.md conventions; log changes in docs/CLAUDE-REFERENCE.md#history
 - Repo: tests offline; temperature=0 on LLM calls; no new deps/frameworks without flagging
 - Global: never git push unless asked; commit per meaningful unit
+- User 2026-07-21: on the scheduler-wedge reliability gap, only a lower-risk mitigation (no
+  system-wide daemon/permission changes) — explicitly declined re-attempting
+  `sudo sfltool resetbtm`/watchdog redeploy again this session.
 
 ## Decisions
 - DECISION: SUE PIT backtest ran 2026-07-14, gate failed (t<2 and IR<0.5 at both 20d/60d, plus a 60d stability sign-flip) — sub-weight stays 0.15 in `_MOMENTUM_WEIGHTS`. Not revisiting without a genuinely new argument (EDGE_BACKLOG.md).
@@ -104,19 +68,32 @@ of bare `nohup python3`.
 - DECISION (2026-07-17): sleep mitigation — disable Power Nap only (`sudo pmset -a powernap 0`), not full `disablesleep` or a laptop migration. Targeted at the specific `pmset -g log` symptom observed (`Sleep Service Back to Sleep` cycling, `powernap=1` on both Battery/AC); the heavier options remain documented in `docs/RUNBOOK.md#sleep-wedges` if this proves insufficient. Not urgent now that the watchdog bounds downtime regardless.
 - DECISION (2026-07-17): watchdog moved from a LaunchAgent to a LaunchDaemon (`UserName` key) to close "reboot/logout with nobody logged in" — chosen over auto-login, which FileVault (confirmed on via `fdesetup status`) disables outright. Residual, deliberately left open: a truly cold boot from fully powered off still needs a human to enter the FileVault pre-boot password — no launchd domain runs before that, software cannot skip it.
 - DECISION (2026-07-17): answer to "will it ever happen again without intervention?" is honest, not absolute — closed 4 specific gaps (reboot-without-login via the LaunchDaemon above, a bug in the watchdog itself via cross-checked alerting, an unbounded restart-crash-loop via a circuit breaker, a stuck-but-logging blind spot via a hard ceiling) but explicitly did NOT claim zero remaining gaps. Cold-boot-from-off (FileVault) and "a new, not-yet-found bug in the watchdog's own code" both remain genuinely possible; the honest framing was itself something the user asked for and got, not a hedge to walk back later.
+- DECISION (2026-07-21): after last night's 2 missed jobs went uncaught (watchdog off since 2026-07-20), chose alert-only mitigation (`_on_job_missed` now calls `fire_alert()`, matching `_on_job_error`) over re-attempting `sudo sfltool resetbtm`/watchdog redeploy — user's explicit choice, lower blast radius, no system-wide permission changes. Narrows the detection gap, does not close the auto-recovery gap: a wedge still needs a manual restart.
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
-- Test command: cd "trading bot" && pytest — 975 tests green as of 2026-07-17 (freshly re-run), 0 known failures
+- Test command: cd "trading bot" && pytest — 1057 tests green as of 2026-07-21 (freshly re-run), 0 known failures
 - Branch: feature/profitable-strategies-lowvol-residmom-insider; 45+ commits ahead of origin, not pushed
 - SUE PIT backtest modules: screener/xbrl_pit_sue.py (companyfacts fetch/cache, PIT quarterly EPS, PIT SUE), backtesting/pit_constituents.py (PIT S&P 500 membership), backtesting/backtest_sue_pit.py (drift/HAC/gate). Report: trading bot/docs/SUE_PIT_BACKTEST_2026-07-14.md. Cache dir trading bot/pit_cache/ (gitignored).
-- Bot process: check via `ps aux | grep run_bot.py`; started via `nohup caffeinate -i -s python3 run_bot.py > bot.log 2>&1 &` from inside "trading bot/" (caffeinate wrapper added 2026-07-15, see RUNBOOK.md#sleep-wedges; note `python`, not `python3`, does not exist in this shell — use python3). Dead-man's-switch: `launchctl list | grep tradingbot`.
+- Bot process: check via `ps aux | grep run_bot.py`; started via `nohup caffeinate -i -s /opt/homebrew/bin/python3 run_bot.py > bot.log 2>&1 &` from inside "trading bot/" (caffeinate wrapper added 2026-07-15, see RUNBOOK.md#sleep-wedges; use the absolute python3 path, confirm with `which python3` first — a bare `"python3"` caused a real outage under a minimal-PATH launchd context, 2026-07-17). Dead-man's-switch: `launchctl list | grep tradingbot`. As of 2026-07-21: PID 54604, commit `cb88ce5`.
 - Live health check command sequence: bot process alive + its start time vs latest commit timestamps (stale-process-running-old-code is a recurring real failure mode, caught 3x this session) + `sqlite3 trading.db "SELECT * FROM job_runs ORDER BY rowid DESC LIMIT 3;"` + `ls RISK_LOCKOUT` (should not exist) + `launchctl list | grep tradingbot`.
 - docs/guardrails/MIGRATION-LOG.md has PRE-EXISTING uncommitted changes (not this task's, predates this session) — do not commit blindly.
 
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-20/21 (live P&L review + capital-deployment fix + reliability mitigation): reviewed
+  live paper P&L (no closed trades yet, unrealized +$445.22 on $37.2k deployed; bot ≈-2.75%
+  vs. SPY -0.75% since 07-07 inception — too early to call an edge). Fixed `max_positions`
+  (20→30) and `per_trade_risk_pct` (0.15→0.20) after finding the bot hit the 20-position cap
+  while only ~39% of NAV was deployed (well under the 80% `max_invested_pct` ceiling) — count,
+  not capital, was binding. Also fixed an independent bug found while re-verifying: the
+  backtest simulator's own `max_positions` default was decoupled from live config. Found the
+  bot silently missed 2 scheduled jobs overnight (scheduler-wedge pattern, watchdog off since
+  2026-07-20 so nothing caught it) and fixed the detection gap (not the wedge itself): missed
+  jobs now fire the Slack alert webhook. RESULT: 1057 passed, 0 failed. Commits `a115f21`,
+  `0396daa`, `cb88ce5`. Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history`
+  (2026-07-20/21 entry) and `trading bot/CLAUDE.md`'s status banner.
 - 2026-07-17 (strategy/profitability review + full remediation, this session): full
   trading-logic review (not reliability/uptime) + all findings fixed same session. RESULT:
   972 passed, 0 failed. Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history`

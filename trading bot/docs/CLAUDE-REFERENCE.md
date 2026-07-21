@@ -934,3 +934,40 @@ closed market.
 > existing, and none can exist with the flag off). 10 new regression tests, one per fix (two
 > for #4 and #5 each — cap-exceeded/cap-respected, mismatch-fires/no-false-positive). Test
 > count: **1055 passed** (was 1045; +10, zero regressions, zero failures).
+> 2026-07-20/21 (live P&L review + capital-deployment fix + reliability mitigation): reviewed
+> the live paper account's trade history at the user's request. No closed trades exist yet —
+> the sole `closed_positions` row (`ZERO`, entry $0, exit_reason `test`) predates the 07-06
+> live launch and is leftover test data, not a real trade (flagged, not deleted). All P&L is
+> unrealized: 20 open positions, +$445.22 on $37,207.64 deployed (+1.20%). Portfolio vs. SPY
+> since inception (2026-07-07, $100k): bot ≈ -2.75%, SPY -0.75% — bot trailing by ~2pts; too
+> early (13 days, 0 closed trades) to call it an edge either way. Found the bot was hitting
+> `max_positions` (20/20) while only ~39% of NAV was deployed — well under `max_invested_pct`
+> (80%) — so the position **count**, not capital, was the binding constraint. Fix: raised
+> `max_positions` 20→30 and `per_trade_risk_pct` 0.15→0.20 (`system/config.py`) — kept below
+> 0.30 because that collided with the separate `_CONGRESSIONAL_MAX_PCT=3.0` cap on
+> congressional-sourced signals in 2 test fixtures (recalibrated their ATR/mock inputs to
+> realistic values below the cap; no assertions weakened). Also found and fixed a real,
+> independent bug while re-verifying: `backtesting/simulation.py`'s `simulate_portfolio()` had
+> its own hardcoded `max_positions=20` default, completely decoupled from
+> `system.config.RiskConfig` — a backtest run would have silently ignored the config change
+> (unlike `per_trade_risk_pct`/`max_position_pct`, which already correctly fell back to live
+> `_settings`). Threaded `max_positions` through the same optional-override pattern at all 3
+> `simulate_portfolio()` call sites (`run_strategy_backtest.py`, `walk_forward.py` ×2). Ran a
+> live-monitoring check the same session and found the bot had silently missed 2 scheduled
+> jobs overnight (`run_intraday_check` 20:00, `run_eod` 22:30 CEST, 2026-07-20) — zero
+> `job_runs` row for either, zero alert, matches this project's long-documented scheduler-wedge
+> pattern (likely a sleep event; `pmset`: 148 sleep/wakes since boot). The watchdog that used
+> to auto-recover from this was turned off 2026-07-20 (see the entry above), so nothing caught
+> it until a manual check the next morning. User explicitly chose NOT to re-attempt
+> `sudo sfltool resetbtm`/launchd this session (lower-risk option instead) — so fixed only the
+> narrower gap: `_on_job_missed` (`orchestration/main_loop.py`) now calls `fire_alert()`,
+> mirroring `_on_job_error`'s already-working pattern, so a missed job posts to the configured
+> Slack webhook (`ALERT_WEBHOOK_URL`) instead of only logging a WARNING line nobody was
+> reading. This is alert-only — nothing auto-restarts; a wedge still needs a manual restart.
+> Concurrently, the user (separately) found and fixed a real live bug: `gpt-5.4` rejects the
+> legacy `max_tokens` param 100% of the time (confirmed in 07-20/21 logs, every OpenAI call ate
+> a guaranteed 400 before succeeding on retry) — now sends `max_completion_tokens` directly,
+> dead retry path removed (`bot/ai_analyst.py`, commit `d5a7a6b`). Bot restarted twice this
+> session to load these changes in sequence; final restart confirmed on commit `cb88ce5`
+> (PID 54604), scheduler started clean, nothing mid-job at restart time either time. Test
+> count: **1057 passed** (was 1056 at session start; +1, the new job-missed-alert test).
