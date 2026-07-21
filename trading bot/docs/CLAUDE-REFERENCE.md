@@ -971,3 +971,24 @@ closed market.
 > session to load these changes in sequence; final restart confirmed on commit `cb88ce5`
 > (PID 54604), scheduler started clean, nothing mid-job at restart time either time. Test
 > count: **1057 passed** (was 1056 at session start; +1, the new job-missed-alert test).
+> 2026-07-21 (two ORDER_REJECTED bugs found and fixed, live-reproduced): user reported a batch
+> of Slack `ORDER_REJECTED` alerts from the prior evening's `enforce_stop_losses()` poll
+> (T, VICI, VZ, PSQ, RWM, SH); `bot.log`'s history of the actual Alpaca error text was already
+> gone (no rotation — every restart truncates it), but the identical alert class fired again
+> live the same day, giving real evidence. Two distinct root causes, not one: (A) trailing-stop
+> qty ratchet — `bot/portfolio.py`'s trail-up always requested the position's full CURRENT qty
+> for the new stop before cancelling the old one (by design, to avoid a stop-free gap), but if
+> the live qty had grown past what the still-resting old stop already reserved (confirmed via
+> Alpaca's own error JSON: HIG `requested: 11.79, available: 1.79, held_for_orders: 10`), the
+> new order could never get enough "available" qty — a permanent per-ticker failure loop, since
+> the old stop is GTC/never expires and is only ever cancelled AFTER a successful new
+> placement, which can now never happen. Fixed: on a placement failure with a known old stop
+> id, cancel it and retry once (frees the held qty); if the retry also fails, re-place a stop
+> at the OLD price so the position is never left fully naked, and alert either way. (B) initial
+> stop wash-trade rejections (`EXE`/`APA`/`ADBE`, 3 of 5 new entries the same day) — the
+> existing 3x/~3s retry (added 2026-07-14 for this exact Alpaca fill-state-propagation lag) is
+> proving insufficient in practice; widened `_place_stop_with_retry` to 5 attempts / ~20s total
+> (2+4+6+8s). 2 new regression tests for (A), proven red against the pre-fix code then green;
+> 1 existing test for (B) updated to the new retry count (intended change, not a weakened
+> assertion). Test count: **1058 passed** (was 1057; +1 net — one old test replaced by two new
+> ones for (A), one existing test's call-count updated for (B)).

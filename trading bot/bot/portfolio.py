@@ -257,12 +257,15 @@ class Portfolio:
             self.broker.cancel_stop_order(ticker)
 
     def _place_stop_with_retry(self, ticker: str, qty: float, stop_price: float,
-                               max_retries: int = 3, side: str = "sell") -> str | None:
+                               max_retries: int = 5, side: str = "sell") -> str | None:
         """Alpaca's wash-trade check can reject a stop placed immediately after
         its opposite-side buy fills (it lags our own fill confirmation) —
         code 40310000, "opposite side market/stop order exists". Retry with
         backoff before surfacing the no-resting-stop alert; a real rejection
-        (e.g. bad price) fails the same way each attempt and still alerts."""
+        (e.g. bad price) fails the same way each attempt and still alerts.
+        3 attempts / ~3s total (1+2) proved insufficient live (still rejecting
+        on ~60% of new entries as of 2026-07-21) — widened to 5 attempts /
+        ~20s total (2+4+6+8) to give the lag more room to clear."""
         import time
         stop_id = None
         for attempt in range(max_retries):
@@ -272,7 +275,7 @@ class Portfolio:
             if stop_id is not None:
                 return stop_id
             if attempt < max_retries - 1:
-                delay = 1.0 * (attempt + 1)
+                delay = 2.0 * (attempt + 1)
                 log.warning("Stop placement failed for %s (attempt %d/%d) — retrying in %.0fs",
                             ticker, attempt + 1, max_retries, delay)
                 time.sleep(delay)
@@ -620,9 +623,37 @@ class Portfolio:
                     # entirely rather than sweeping the ticker.
                     if existing_stop_id is not None and hasattr(self.broker, "cancel_stop_order"):
                         self.broker.cancel_stop_order(ticker, order_id=existing_stop_id)
+                elif existing_stop_id is not None and hasattr(self.broker, "cancel_stop_order"):
+                    # Placement failed WHILE an old stop is still resting. The
+                    # common cause here isn't a bad price -- it's Alpaca's own
+                    # per-order qty hold: the old stop already reserves some or
+                    # all of the position's current shares (e.g. the position
+                    # grew since that stop was placed), so a same-qty new order
+                    # can never get enough "available" qty while both rest at
+                    # once (40310000, "insufficient qty available for order").
+                    # Free the old stop's qty and retry once; if the retry also
+                    # fails, put a stop back at the OLD price so the position is
+                    # never left fully naked, and alert either way.
+                    self.broker.cancel_stop_order(ticker, order_id=existing_stop_id)
+                    retry_stop_id = self.broker.place_stop_order(
+                        ticker=ticker, qty=pos["qty"], stop_price=new_stop, side=stop_side
+                    )
+                    if retry_stop_id is None:
+                        self.broker.place_stop_order(
+                            ticker=ticker, qty=pos["qty"], stop_price=existing_stop, side=stop_side
+                        )
+                        emit_event(
+                            log, EventType.ORDER_REJECTED,
+                            f"Failed to place trailing stop for {ticker} at ${new_stop:.2f} "
+                            f"even after freeing the old stop's qty — restored old stop at "
+                            f"${existing_stop:.2f}",
+                            data={"ticker": ticker, "attempted_stop_price": new_stop},
+                            level=logging.ERROR,
+                            alert=True,
+                        )
                 else:
-                    # Placement failed — keep the old stop resting rather than
-                    # cancelling it and leaving the position with zero stops.
+                    # Placement failed and there was no known old stop to free
+                    # qty from (e.g. a bad price) — nothing more to try here.
                     emit_event(
                         log, EventType.ORDER_REJECTED,
                         f"Failed to place trailing stop for {ticker} at ${new_stop:.2f} — "

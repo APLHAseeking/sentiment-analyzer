@@ -8,15 +8,25 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-**2026-07-21 session complete, user closing out.** Live paper bot reviewed end-to-end at
+**2026-07-21, new sub-session on top of the "session complete" close-out below.** User
+reported a `[WATCHDOG_RESTART]` + `[STARTUP]` Slack pair, confirmed live-verified healthy
+(manual watchdog run, not automated — daemon still off per the 2026-07-20 decision); then a
+batch of `ORDER_REJECTED` alerts from the prior evening. Root-caused and fixed two distinct
+bugs live-reproduced the same day: (A) trailing-stop qty ratchet (`bot/portfolio.py`
+`enforce_stop_losses`) — permanent per-ticker failure once live qty grows past what the old
+resting stop reserved; (B) initial-stop wash-trade retry (`_place_stop_with_retry`) widened
+3x/~3s -> 5x/~20s, still firing on ~60% of new entries. 2 new regression tests for (A) proven
+red->green against the pre-fix code; 1 existing test updated for (B)'s new retry count. Full
+suite: 1058 passed (was 1057). Not yet committed. Full narrative:
+`trading bot/docs/CLAUDE-REFERENCE.md#history`, 2026-07-21 (second) entry.
+
+Prior close-out (2026-07-20/21, first pass): Live paper bot reviewed end-to-end at
 user's request (trade history/P&L, benchmark vs SPY, position-limit review), two
 capital-deployment fixes shipped, a live overnight scheduler-wedge found, and a targeted
-alert-only mitigation shipped for it (full narrative: `trading bot/docs/CLAUDE-REFERENCE.md
-#history`, 2026-07-20/21 entry). Bot restarted twice this session to load changes in
-sequence; final state verified: PID 54604, commit `cb88ce5` (= current HEAD), scheduler
-started clean, nothing mid-job at either restart. `--test-alerts` fired successfully
-(live network call, not mocked) — **user still needs to confirm it actually landed in
-Slack**, that's the one unverified step.
+alert-only mitigation shipped for it. Bot restarted twice that session to load changes in
+sequence; final state verified: PID 54604, commit `cb88ce5` (now behind HEAD by a docs-only
+commit, harmless). `--test-alerts` fired successfully (live network call, not mocked) and
+**confirmed landed in Slack** this session (that was the one unverified step, now closed).
 
 ## Next
 - **Confirm the `--test-alerts` message actually arrived in Slack** (fired 2026-07-21, see
@@ -72,7 +82,7 @@ Slack**, that's the one unverified step.
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
-- Test command: cd "trading bot" && pytest — 1057 tests green as of 2026-07-21 (freshly re-run), 0 known failures
+- Test command: cd "trading bot" && pytest — 1058 tests green as of 2026-07-21 (freshly re-run), 0 known failures
 - Branch: feature/profitable-strategies-lowvol-residmom-insider; 45+ commits ahead of origin, not pushed
 - SUE PIT backtest modules: screener/xbrl_pit_sue.py (companyfacts fetch/cache, PIT quarterly EPS, PIT SUE), backtesting/pit_constituents.py (PIT S&P 500 membership), backtesting/backtest_sue_pit.py (drift/HAC/gate). Report: trading bot/docs/SUE_PIT_BACKTEST_2026-07-14.md. Cache dir trading bot/pit_cache/ (gitignored).
 - Bot process: check via `ps aux | grep run_bot.py`; started via `nohup caffeinate -i -s /opt/homebrew/bin/python3 run_bot.py > bot.log 2>&1 &` from inside "trading bot/" (caffeinate wrapper added 2026-07-15, see RUNBOOK.md#sleep-wedges; use the absolute python3 path, confirm with `which python3` first — a bare `"python3"` caused a real outage under a minimal-PATH launchd context, 2026-07-17). Dead-man's-switch: `launchctl list | grep tradingbot`. As of 2026-07-21: PID 54604, commit `cb88ce5`.

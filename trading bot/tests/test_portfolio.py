@@ -633,7 +633,7 @@ def test_open_position_alerts_when_initial_stop_placement_fails(mock_broker, db,
     result = portfolio.open_position("AAPL", 5.0, None, "test", 100.0)
 
     assert result is True
-    assert mock_broker.place_stop_order.call_count == 3
+    assert mock_broker.place_stop_order.call_count == 5
     mock_fire_alert.assert_called_once()
 
 
@@ -952,10 +952,18 @@ def test_enforce_stop_losses_places_new_stop_before_cancelling_old(mock_broker, 
     assert call_order == ["place", "cancel"]
 
 
-def test_enforce_stop_losses_keeps_old_stop_when_new_placement_fails(mock_broker, db, mocker):
-    """place_stop_order returns None on failure. If the new (higher) stop fails
-    to place, the old resting stop must NOT be cancelled — otherwise the
-    position is left with zero resting stops. An alert must fire instead."""
+def test_enforce_stop_losses_frees_old_stop_qty_and_retries_on_placement_failure(
+    mock_broker, db, mocker,
+):
+    """Alpaca can reject the new stop with 40310000 "insufficient qty available"
+    when the OLD resting stop already reserves shares the new (full-qty) order
+    also needs — e.g. the position grew since the old stop was placed. Freeing
+    the old stop's qty and retrying once must let the new stop through, with
+    no alert (this is the actual Bug-A fix: previously this ticker's trailing
+    stop would fail this way forever, since the old stop was only ever
+    cancelled AFTER a successful new placement — see
+    test_enforce_stop_losses_restores_old_stop_when_retry_also_fails for the
+    exhausted-retry path)."""
     from system.config import RiskConfig
     mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
 
@@ -966,14 +974,40 @@ def test_enforce_stop_losses_keeps_old_stop_when_new_placement_fails(mock_broker
     }]
     db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
 
-    # Simulate broker-side placement failure.
+    # First attempt fails (old stop still holds the qty); retry after freeing it succeeds.
+    mock_broker.place_stop_order.side_effect = [None, "new-stop-id-retry"]
+
+    portfolio.enforce_stop_losses(stop_loss_pct=15.0)
+
+    assert mock_broker.place_stop_order.call_count == 2
+    mock_broker.cancel_stop_order.assert_called_once_with("AAPL", order_id="old-stop-id")
+    mock_fire_alert.assert_not_called()
+
+
+def test_enforce_stop_losses_restores_old_stop_when_retry_also_fails(mock_broker, db, mocker):
+    """If freeing the old stop's qty and retrying STILL fails (a genuine
+    rejection, not just the qty conflict), a stop must be re-placed at the old
+    price so the position is never left fully naked, and an alert must fire."""
+    from system.config import RiskConfig
+    mock_fire_alert = mocker.patch("monitoring.logger.fire_alert")
+
+    portfolio = Portfolio(broker=mock_broker, risk_cfg=RiskConfig(trailing_stop_pct=15.0))
+    mock_broker.get_stop_orders.return_value = {"AAPL": (90.0, 10.0, "old-stop-id")}
+    mock_broker.get_positions.return_value = [{
+        "ticker": "AAPL", "qty": 10.0, "current_price": 120.0, "avg_entry_price": 100.0,
+    }]
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+
+    # Every attempt fails.
     mock_broker.place_stop_order.return_value = None
 
     portfolio.enforce_stop_losses(stop_loss_pct=15.0)
 
-    mock_broker.place_stop_order.assert_called_once()
-    # The old stop must survive — cancel_stop_order must NOT be called.
-    mock_broker.cancel_stop_order.assert_not_called()
+    # Initial attempt, retry after freeing qty, and the old-price restore attempt.
+    assert mock_broker.place_stop_order.call_count == 3
+    restore_call = mock_broker.place_stop_order.call_args_list[2]
+    assert restore_call.kwargs["stop_price"] == pytest.approx(90.0)
+    mock_broker.cancel_stop_order.assert_called_once_with("AAPL", order_id="old-stop-id")
     mock_fire_alert.assert_called_once()
 
 

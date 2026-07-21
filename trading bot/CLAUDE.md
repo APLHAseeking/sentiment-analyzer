@@ -9,6 +9,10 @@
 > bot itself is unaffected and still needs to be checked manually, same as before.
 > **2026-07-21: a missed scheduler job now fires the Slack alert webhook** (was log-only) —
 > narrows this gap, does not close it: you get told, nothing auto-restarts.
+> **2026-07-21: fixed a permanent per-ticker trailing-stop failure loop** (qty grows past what
+> the old resting stop reserved -> new stop can never get enough "available" qty from Alpaca)
+> and widened the initial-stop wash-trade retry (3x/~3s -> 5x/~20s, still firing on ~60% of new
+> entries). See the dated entry at the end of this banner.
 > Phase 0 gate: **BLOCKED ON DATA** — real point-in-time data not yet acquired; all historical
 > performance numbers are look-ahead biased until then. See `docs/PHASE0_FINDINGS.md` for gate
 > decision rules and required datasets.
@@ -279,6 +283,12 @@
 > where the backtest simulator's own `max_positions` default was decoupled from live config.
 > Also wired missed-scheduler-job alerting (see banner top). See `docs/CLAUDE-REFERENCE.md
 > #history` for full detail. Test count: **1057** (full suite green, zero known failures).
+> 2026-07-21 (two ORDER_REJECTED bugs found and fixed, live-reproduced): a batch of Slack
+> alerts from the prior evening's trailing-stop poll led to finding (A) a permanent per-ticker
+> stop-update failure once a position's live qty grows past what its still-resting old stop
+> reserved, and (B) initial-stop wash-trade rejections still occurring despite the existing
+> 3x retry. Both fixed; see `docs/CLAUDE-REFERENCE.md#history` for full detail. Test count:
+> **1058** (full suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 
