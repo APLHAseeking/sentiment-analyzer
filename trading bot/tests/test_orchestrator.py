@@ -2292,6 +2292,33 @@ def test_start_schedules_second_daily_pipeline_run(mocker, orch):
     assert (orch.run_morning_pipeline, 18, 0) in scheduled
 
 
+def test_start_wires_job_missed_to_alert(mocker, orch):
+    """A missed scheduler job must fire the alert webhook, not just log a
+    WARNING that only shows up if someone happens to read bot.log — this is
+    exactly what let two real missed jobs (run_intraday_check, run_eod,
+    2026-07-20 night) go unnoticed with no auto-recovery watchdog running."""
+    from apscheduler.events import EVENT_JOB_MISSED
+
+    mock_scheduler_cls = mocker.patch("orchestration.main_loop.BlockingScheduler")
+    mock_scheduler = mock_scheduler_cls.return_value
+    mocker.patch("orchestration.main_loop.job_ran_today", return_value=True)
+    mock_fire_alert = mocker.patch("monitoring.alerts.fire_alert")
+
+    orch.start()
+
+    listeners = {call.args[1]: call.args[0] for call in mock_scheduler.add_listener.call_args_list}
+    on_missed = listeners[EVENT_JOB_MISSED]
+
+    fake_event = MagicMock(job_id="run_eod", scheduled_run_time="2026-07-20 22:30:00+02:00")
+    on_missed(fake_event)
+
+    mock_fire_alert.assert_called_once()
+    event_name, message, data = mock_fire_alert.call_args[0]
+    assert event_name == "job_missed"
+    assert "run_eod" in message
+    assert data["job_id"] == "run_eod"
+
+
 def test_start_catches_up_pipeline_when_missed_today(mocker, orch):
     """The in-memory scheduler drops today's already-passed cron windows on
     every process restart. If today's first window (14:00) has passed and no

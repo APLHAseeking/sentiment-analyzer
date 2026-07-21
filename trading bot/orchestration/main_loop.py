@@ -1739,8 +1739,14 @@ class RegimeAwareOrchestrator:
                 pass
 
         def _on_job_missed(event) -> None:
-            log.warning("Scheduler job missed: %s (scheduled=%s)", event.job_id,
-                        event.scheduled_run_time)
+            msg = (f"Scheduler job '{event.job_id}' missed its scheduled run "
+                   f"(scheduled={event.scheduled_run_time})")
+            log.warning(msg)
+            try:
+                fire_alert("job_missed", msg, {"job_id": event.job_id,
+                                                "scheduled_run_time": str(event.scheduled_run_time)})
+            except Exception:
+                pass
 
         scheduler.add_listener(_on_job_error, EVENT_JOB_ERROR)
         scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
