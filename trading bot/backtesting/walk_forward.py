@@ -155,6 +155,7 @@ def run_walk_forward(
     from system.config import settings as _settings
     _risk_budget = _settings.sizing.per_trade_risk_pct
     _pos_ceiling = _settings.risk.max_position_pct
+    _pos_count_cap = _settings.risk.max_positions
 
     scenarios = stress_scenarios if stress_scenarios is not None else []
     if scenarios:
@@ -255,6 +256,7 @@ def run_walk_forward(
             slippage_bps=backtest_cfg.slippage_bps,
             commission_pct=backtest_cfg.commission_pct,
             fill_delay_bars=1,
+            max_positions=_pos_count_cap,
         )
 
         eq = equity_series(sim)
@@ -326,6 +328,7 @@ def run_walk_forward(
                     slippage_bps=s_slip,
                     commission_pct=backtest_cfg.commission_pct,
                     fill_delay_bars=s_delay,
+                    max_positions=_pos_count_cap,
                 )
                 s_eq = equity_series(s_sim)
                 s_tr = trade_returns(s_sim)

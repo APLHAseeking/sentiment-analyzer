@@ -149,6 +149,7 @@ def run_pit_backtest(
     spy_prices: pd.Series | None = None,
     per_trade_risk_pct: float | None = None,
     max_position_pct: float | None = None,
+    max_positions: int | None = None,
 ) -> dict:
     """Run a full PIT backtest across the given rebalance dates.
 
@@ -176,6 +177,7 @@ def run_pit_backtest(
     """
     risk_budget = per_trade_risk_pct if per_trade_risk_pct is not None else _settings.sizing.per_trade_risk_pct
     pos_ceiling = max_position_pct if max_position_pct is not None else _settings.risk.max_position_pct
+    pos_count_cap = max_positions if max_positions is not None else _settings.risk.max_positions
     all_signals: list[dict] = []
     all_prices: dict[str, pd.Series] = {}
     windows: list[dict] = []
@@ -282,6 +284,7 @@ def run_pit_backtest(
         initial_cash=initial_cash,
         slippage_bps=slippage_bps,
         commission_pct=commission_pct,
+        max_positions=pos_count_cap,
         fill_delay_bars=1,
         forced_closes=forced_closes,
     )
