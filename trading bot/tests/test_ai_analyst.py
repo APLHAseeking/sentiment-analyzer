@@ -709,7 +709,8 @@ def test_llm_call_uses_openai_when_provider_is_openai(mocker):
     assert call_kwargs["model"] == "gpt-5.4"
     assert call_kwargs["temperature"] == 0
     assert call_kwargs["seed"] == 0
-    assert call_kwargs["max_tokens"] == 256
+    assert call_kwargs["max_completion_tokens"] == 256
+    assert "max_tokens" not in call_kwargs
     assert call_kwargs["messages"] == [
         {"role": "system", "content": "system prompt"},
         {"role": "user", "content": "user prompt"},
@@ -842,40 +843,29 @@ def test_llm_call_openai_retries_without_temperature_seed_on_bad_request(mocker)
     assert "seed" not in second_kwargs
 
 
-def test_llm_call_openai_retries_with_max_completion_tokens_on_bad_request(mocker):
-    """gpt-5.4 rejects 'max_tokens' (not temperature/seed) with a 400 asking for
-    'max_completion_tokens' instead — must swap the token param, not drop
-    temperature/seed (that was the original bug: the retry re-sent max_tokens
-    and failed identically)."""
+def test_llm_call_openai_sends_max_completion_tokens_directly_no_retry(mocker):
+    """gpt-5.4 always rejects 'max_tokens' with a 400 asking for
+    'max_completion_tokens' instead (confirmed live: every single call hit this
+    and retried, 2026-07-20/21 logs) — send the param it actually wants on the
+    first call instead of eating a guaranteed-fail request every time."""
     import dataclasses
     from system.config import settings as real_settings
     mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="openai"))
 
-    bad_request_err = _openai.BadRequestError(
-        "Unsupported parameter: 'max_tokens' is not supported with this model. "
-        "Use 'max_completion_tokens' instead.",
-        response=MagicMock(status_code=400, headers={}),
-        body={},
-    )
     mock_client = MagicMock()
-    mock_client.chat.completions.create.side_effect = [
-        bad_request_err, _make_openai_resp("worked with max_completion_tokens"),
-    ]
+    mock_client.chat.completions.create.return_value = _make_openai_resp("worked first try")
     mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
 
     from bot.ai_analyst import _llm_call
     result = _llm_call("system prompt", "user prompt", max_tokens=256)
 
-    assert result == "worked with max_completion_tokens"
-    assert mock_client.chat.completions.create.call_count == 2
-    first_kwargs = mock_client.chat.completions.create.call_args_list[0][1]
-    second_kwargs = mock_client.chat.completions.create.call_args_list[1][1]
-    assert first_kwargs["max_tokens"] == 256
-    assert "max_completion_tokens" not in first_kwargs
-    assert second_kwargs["max_completion_tokens"] == 256
-    assert "max_tokens" not in second_kwargs
-    assert second_kwargs["temperature"] == 0
-    assert second_kwargs["seed"] == 0
+    assert result == "worked first try"
+    assert mock_client.chat.completions.create.call_count == 1
+    call_kwargs = mock_client.chat.completions.create.call_args[1]
+    assert call_kwargs["max_completion_tokens"] == 256
+    assert "max_tokens" not in call_kwargs
+    assert call_kwargs["temperature"] == 0
+    assert call_kwargs["seed"] == 0
 
 
 # ============================================================

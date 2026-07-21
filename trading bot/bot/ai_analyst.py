@@ -546,7 +546,7 @@ def _llm_call(
         try:
             resp = client.chat.completions.create(
                 model="gpt-5.4",
-                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
                 temperature=0,
                 seed=0,
                 messages=openai_messages,
@@ -555,28 +555,15 @@ def _llm_call(
             err_str = str(exc).lower()
             if "unsupported parameter" not in err_str:
                 raise
-            if "max_tokens" in err_str:
-                log.warning(
-                    "OpenAI model rejected 'max_tokens' (%s) — retrying with "
-                    "max_completion_tokens", exc,
-                )
-                resp = client.chat.completions.create(
-                    model="gpt-5.4",
-                    max_completion_tokens=max_tokens,
-                    temperature=0,
-                    seed=0,
-                    messages=openai_messages,
-                )
-            else:
-                log.warning(
-                    "OpenAI model rejected temperature/seed (%s) — retrying without "
-                    "them; determinism cannot be fully enforced for this model", exc,
-                )
-                resp = client.chat.completions.create(
-                    model="gpt-5.4",
-                    max_tokens=max_tokens,
-                    messages=openai_messages,
-                )
+            log.warning(
+                "OpenAI model rejected temperature/seed (%s) — retrying without "
+                "them; determinism cannot be fully enforced for this model", exc,
+            )
+            resp = client.chat.completions.create(
+                model="gpt-5.4",
+                max_completion_tokens=max_tokens,
+                messages=openai_messages,
+            )
         content = resp.choices[0].message.content
         if content is None:
             raise ValueError(
