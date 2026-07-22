@@ -8,39 +8,23 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-**2026-07-21, new sub-session on top of the "session complete" close-out below.** User
-reported a `[WATCHDOG_RESTART]` + `[STARTUP]` Slack pair, confirmed live-verified healthy
-(manual watchdog run, not automated — daemon still off per the 2026-07-20 decision); then a
-batch of `ORDER_REJECTED` alerts from the prior evening. Root-caused and fixed two distinct
-bugs live-reproduced the same day: (A) trailing-stop qty ratchet (`bot/portfolio.py`
-`enforce_stop_losses`) — permanent per-ticker failure once live qty grows past what the old
-resting stop reserved; (B) initial-stop wash-trade retry (`_place_stop_with_retry`) widened
-3x/~3s -> 5x/~20s, still firing on ~60% of new entries. 2 new regression tests for (A) proven
-red->green against the pre-fix code; 1 existing test updated for (B)'s new retry count. Full
-suite: 1058 passed (was 1057). Committed (`b06b9ee`), not pushed. **2026-07-22: deployed** —
-also found the scheduler wedged again independently (bot.log silent ~14.5h, a 07-22 13:00 job
-missed too; root cause not investigated, matches the long-documented sleep-event pattern, not
-this fix) — restarting to deploy doubled as the wedge recovery. Killed PID 54604/54606, restarted
-via the documented `nohup caffeinate -i -s ... run_bot.py` command; new PID 79823, `bot_status.json`
-commit `b06b9ee` = HEAD, scheduler fresh, universe/regime/risk state reloaded clean. Both fixes are
-now live but **not yet behaviorally proven** — unit tests pass against a mocked broker, but neither
-bug's real-Alpaca-timing assumption has been observed live yet (needs (A) a trailing-stop update on
-a position whose qty has grown past its old stop, or (B) a same-day entry racing the wash-trade
-check, to actually recur). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history`,
-2026-07-21 (second) entry.
-
-Prior close-out (2026-07-20/21, first pass): Live paper bot reviewed end-to-end at
-user's request (trade history/P&L, benchmark vs SPY, position-limit review), two
-capital-deployment fixes shipped, a live overnight scheduler-wedge found, and a targeted
-alert-only mitigation shipped for it. Bot restarted twice that session to load changes in
-sequence; final state verified: PID 54604, commit `cb88ce5` (now behind HEAD by a docs-only
-commit, harmless). `--test-alerts` fired successfully (live network call, not mocked) and
-**confirmed landed in Slack** this session (that was the one unverified step, now closed).
+**2026-07-22: session closed by user, idle.** Bot live, healthy, on current HEAD (`b06b9ee`),
+scheduler fresh since the 13:05 restart. Nothing in progress. Next session: check `## Next`
+below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge.
 
 ## Next
-- **Confirm the `--test-alerts` message actually arrived in Slack** (fired 2026-07-21, see
-  `## Now`) — closes the loop on the job-missed-alert fix below; if it didn't arrive, the
-  webhook URL/channel needs checking before trusting the new alert for real.
+- **Live-verify the two 2026-07-21 `ORDER_REJECTED` fixes** (`bot/portfolio.py`, commit
+  `b06b9ee` — see Done below) — neither has been behaviorally proven against real Alpaca yet,
+  only against a mocked broker. Watch for: (A) a trailing-stop update recurring on a position
+  whose qty grew past its old stop (previously stuck: HIG/LVS/VZ) — should now succeed instead
+  of repeating `ORDER_REJECTED`; (B) a same-day new entry hitting the wash-trade race — should
+  now clear within the widened 5x/~20s retry instead of failing outright.
+- **Investigate the 07-21/22 scheduler wedge root cause** — bot.log went silent ~14.5h
+  (2026-07-21 22:30:01 to the 2026-07-22 13:05 restart), missing at least the 07-22 13:00
+  `run_screener_prefetch` job. Not investigated this session (restart to deploy the fix above
+  doubled as the recovery) — matches the long-documented sleep-event wedge pattern, but not
+  confirmed via `pmset -g log` this time. Watchdog is off (see below), so nothing will catch a
+  recurrence automatically.
 - Watchdog/dead-man's-switch auto-restart remains non-functional and **abandoned by
   deliberate decision** (2026-07-20, reconfirmed 2026-07-21) — `sudo sfltool resetbtm` is
   still the only untried lever (resets ALL apps' background-item approvals on this Mac, not
@@ -101,6 +85,14 @@ commit, harmless). `--test-alerts` fired successfully (live network call, not mo
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-21/22 (two ORDER_REJECTED bugs fixed + deployed): user-reported Slack alerts led to
+  finding and fixing (A) a permanent trailing-stop qty ratchet and (B) an under-retried
+  wash-trade race, both in `bot/portfolio.py`. RESULT: 1058 passed (was 1057), 2 new tests
+  proven red→green, 1 existing test updated for an intended retry-count change. Committed
+  `b06b9ee` + `b42d580` (docs), not pushed. Deployed via bot restart 2026-07-22 13:05 (new PID
+  79823, `bot_status.json` commit = HEAD); not yet behaviorally proven live — see `## Next`.
+  Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-21, second entry) and
+  `trading bot/CLAUDE.md`'s status banner.
 - 2026-07-20/21 (live P&L review + capital-deployment fix + reliability mitigation): reviewed
   live paper P&L (no closed trades yet, unrealized +$445.22 on $37.2k deployed; bot ≈-2.75%
   vs. SPY -0.75% since 07-07 inception — too early to call an edge). Fixed `max_positions`
