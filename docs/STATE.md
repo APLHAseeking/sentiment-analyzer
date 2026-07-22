@@ -17,8 +17,17 @@ bugs live-reproduced the same day: (A) trailing-stop qty ratchet (`bot/portfolio
 resting stop reserved; (B) initial-stop wash-trade retry (`_place_stop_with_retry`) widened
 3x/~3s -> 5x/~20s, still firing on ~60% of new entries. 2 new regression tests for (A) proven
 red->green against the pre-fix code; 1 existing test updated for (B)'s new retry count. Full
-suite: 1058 passed (was 1057). Not yet committed. Full narrative:
-`trading bot/docs/CLAUDE-REFERENCE.md#history`, 2026-07-21 (second) entry.
+suite: 1058 passed (was 1057). Committed (`b06b9ee`), not pushed. **2026-07-22: deployed** —
+also found the scheduler wedged again independently (bot.log silent ~14.5h, a 07-22 13:00 job
+missed too; root cause not investigated, matches the long-documented sleep-event pattern, not
+this fix) — restarting to deploy doubled as the wedge recovery. Killed PID 54604/54606, restarted
+via the documented `nohup caffeinate -i -s ... run_bot.py` command; new PID 79823, `bot_status.json`
+commit `b06b9ee` = HEAD, scheduler fresh, universe/regime/risk state reloaded clean. Both fixes are
+now live but **not yet behaviorally proven** — unit tests pass against a mocked broker, but neither
+bug's real-Alpaca-timing assumption has been observed live yet (needs (A) a trailing-stop update on
+a position whose qty has grown past its old stop, or (B) a same-day entry racing the wash-trade
+check, to actually recur). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history`,
+2026-07-21 (second) entry.
 
 Prior close-out (2026-07-20/21, first pass): Live paper bot reviewed end-to-end at
 user's request (trade history/P&L, benchmark vs SPY, position-limit review), two
