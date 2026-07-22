@@ -74,9 +74,15 @@ def test_congressional_phase_receives_fundamental_ticker_set(mocker, orch):
     """A ticker present in both the fundamental screener's candidates and the
     qualified congressional disclosures must reach _process_signal with that
     overlap available, so it can resolve signal_type="both" even when Phase 1
-    attempted (and vetoed) it rather than opening a position."""
+    attempted (and vetoed) it rather than opening a position. Requires
+    congressional.enabled=True — the signal is disabled by default (see
+    test_congressional_phase_skipped_when_flag_off)."""
+    import dataclasses
     from screener.factor_scorer import FactorCandidate
 
+    orch._cfg = dataclasses.replace(
+        orch._cfg, congressional=dataclasses.replace(orch._cfg.congressional, enabled=True)
+    )
     orch._broker = _mock_broker(cash=100_000, position_value=0)
     mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
         FactorCandidate(ticker="AAPL", composite_score=80, value_score=25,
@@ -95,6 +101,64 @@ def test_congressional_phase_receives_fundamental_ticker_set(mocker, orch):
     signal_spy.assert_called_once()
     _, kwargs = signal_spy.call_args
     assert "AAPL" in kwargs["fundamental_tickers"]
+
+
+def test_congressional_phase_skipped_when_flag_off(mocker, orch):
+    """Settings.congressional.enabled=False (the default) must skip Phase 2
+    entirely AND force congress_tickers empty, so a qualified disclosure
+    neither opens a pure-congressional position nor boosts a fundamental
+    candidate's signal_type to "both" — a real-data backtest found a
+    significantly negative excess return for this signal (see
+    docs/CONGRESSIONAL_EDGE.md)."""
+    from screener.factor_scorer import FactorCandidate
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
+        FactorCandidate(ticker="AAPL", composite_score=80, value_score=25,
+                         momentum_score=28, quality_score=27, research=None),
+    ])
+    mocker.patch("orchestration.main_loop.filter_disclosures", return_value=[
+        {"id": "d1", "politician": "J", "ticker": "AAPL",
+         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+         "amount_range": "$50,001 - $100,000"},
+    ])
+    fundamental_spy = mocker.patch.object(orch, "_process_fundamental_candidate", return_value=False)
+    signal_spy = mocker.patch.object(orch, "_process_signal")
+
+    orch.run_morning_pipeline()
+
+    signal_spy.assert_not_called()
+    fundamental_spy.assert_called_once()
+    assert fundamental_spy.call_args[0][2] == set()  # congress_tickers forced empty
+
+
+def test_congressional_phase_runs_when_flag_on(mocker, orch):
+    """Settings.congressional.enabled=True must reach Phase 2 (_process_signal
+    called for the qualified disclosure) and populate congress_tickers so
+    Phase 1's "both"-type conviction boost is available too."""
+    import dataclasses
+    from screener.factor_scorer import FactorCandidate
+
+    orch._cfg = dataclasses.replace(
+        orch._cfg, congressional=dataclasses.replace(orch._cfg.congressional, enabled=True)
+    )
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
+        FactorCandidate(ticker="AAPL", composite_score=80, value_score=25,
+                         momentum_score=28, quality_score=27, research=None),
+    ])
+    mocker.patch("orchestration.main_loop.filter_disclosures", return_value=[
+        {"id": "d1", "politician": "J", "ticker": "AAPL",
+         "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+         "amount_range": "$50,001 - $100,000"},
+    ])
+    fundamental_spy = mocker.patch.object(orch, "_process_fundamental_candidate", return_value=False)
+    signal_spy = mocker.patch.object(orch, "_process_signal", return_value=False)
+
+    orch.run_morning_pipeline()
+
+    signal_spy.assert_called_once()
+    assert fundamental_spy.call_args[0][2] == {"AAPL"}  # congress_tickers populated
 
 
 def test_insider_phase_reaches_process_with_fundamental_ticker_set(mocker, orch):

@@ -992,3 +992,25 @@ closed market.
 > 1 existing test for (B) updated to the new retry count (intended change, not a weakened
 > assertion). Test count: **1058 passed** (was 1057; +1 net — one old test replaced by two new
 > ones for (A), one existing test's call-count updated for (B)).
+> 2026-07-22 (congressional signal disabled — item 1 of 6 from `docs/BOT_REVIEW_2026-07-20.md`):
+> unlike insider signals (`InsiderConfig.enabled`), the congressional signal had no on/off
+> switch — `run_scraper()` and the Phase 2 entry block in `orchestration/main_loop.py` ran
+> unconditionally, gated only by size/frequency caps (`_CONGRESSIONAL_MAX_PCT`/
+> `_CONGRESSIONAL_MAX_PER_DAY`). User decision: fully disable, given the 2026-07-17 real-data
+> finding (excess return -0.636% at 1mo, t=-2.57; -2.538% at 3mo, t=-4.93) satisfies
+> `docs/CONGRESSIONAL_EDGE.md`'s own pre-written decision rule ("Incremental alpha < 0 after
+> costs → Drop congressional layer"). Added `CongressionalConfig(enabled: bool = False)` to
+> `system/config.py`, mirroring `InsiderConfig`'s shape. In `main_loop.py`: `congress_tickers`
+> (feeds Phase 1's "both"-signal-type conviction boost) is now forced to an empty set when the
+> flag is off, and the Phase 2 congressional-entry loop is wrapped in the same `if enabled:`
+> gate `InsiderConfig` already uses for Phase 2.5 — both effects needed gating, not just one,
+> since a partial disable (Phase 2 only) would have left the Phase 1 conviction boost live.
+> `run_scraper()` itself stays unconditional — disclosures keep getting persisted for possible
+> future re-evaluation, only their use as a trading signal is gated. One pre-existing test
+> (`test_congressional_phase_receives_fundamental_ticker_set`) assumed Phase 2 ran by default;
+> updated to explicitly opt in via `dataclasses.replace`, matching the existing
+> `enable_short_selling` on/off test pattern — not a weakened assertion, its premise changed.
+> Two new orchestrator tests added (flag off: Phase 2 skipped AND `congress_tickers` empty;
+> flag on: Phase 2 runs AND `congress_tickers` populated), plus a config default-value test.
+> `docs/CONGRESSIONAL_EDGE.md` updated with a "Decision (2026-07-22)" section recording the
+> outcome against its own pre-written rule. Test count: **1061 passed** (was 1058; +3 new).

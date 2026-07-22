@@ -541,7 +541,9 @@ class RegimeAwareOrchestrator:
                 alert=True,
             )
             qualified = []
-        congress_tickers: set[str] = {disc["ticker"] for disc in qualified}
+        congress_tickers: set[str] = (
+            {disc["ticker"] for disc in qualified} if self._cfg.congressional.enabled else set()
+        )
 
         if not _at_capacity:
             # --- Regime state as gate -----------------------------------
@@ -654,29 +656,35 @@ class RegimeAwareOrchestrator:
             # full conviction credit, and no congressional cap here too — Phase 1
             # may have attempted it and been vetoed rather than opened, so this
             # is re-resolved per-ticker rather than assumed already handled.
+            # Gated off by default (see Settings.congressional.enabled) — a
+            # real-cached-data backtest found a significantly negative excess
+            # return; disabling this phase and forcing congress_tickers empty
+            # above (so Phase 1's "both"-type conviction boost also no-ops) is
+            # the full disable, per docs/CONGRESSIONAL_EDGE.md's own decision rule.
             fundamental_tickers = frozenset(c.ticker for c in candidates)
-            congressional_opened = 0
-            for disc in qualified:
-                if not self._portfolio.can_open_new_position():
-                    log.info("Position limit reached — stopping Phase 2")
-                    break
-                if congressional_opened >= _CONGRESSIONAL_MAX_PER_DAY:
-                    log.info(
-                        "Congressional daily limit (%d) reached — skipping remaining",
-                        _CONGRESSIONAL_MAX_PER_DAY,
-                    )
-                    break
-                if disc["ticker"] in all_open_tickers:
-                    continue
-                try:
-                    opened = self._process_signal(
-                        disc, sector_allocation, fundamental_tickers=fundamental_tickers
-                    )
-                    if opened:
-                        all_open_tickers.add(disc["ticker"])
-                        congressional_opened += 1
-                except Exception:
-                    log.exception("Failed processing %s — skipping", disc.get("ticker", "?"))
+            if self._cfg.congressional.enabled:
+                congressional_opened = 0
+                for disc in qualified:
+                    if not self._portfolio.can_open_new_position():
+                        log.info("Position limit reached — stopping Phase 2")
+                        break
+                    if congressional_opened >= _CONGRESSIONAL_MAX_PER_DAY:
+                        log.info(
+                            "Congressional daily limit (%d) reached — skipping remaining",
+                            _CONGRESSIONAL_MAX_PER_DAY,
+                        )
+                        break
+                    if disc["ticker"] in all_open_tickers:
+                        continue
+                    try:
+                        opened = self._process_signal(
+                            disc, sector_allocation, fundamental_tickers=fundamental_tickers
+                        )
+                        if opened:
+                            all_open_tickers.add(disc["ticker"])
+                            congressional_opened += 1
+                    except Exception:
+                        log.exception("Failed processing %s — skipping", disc.get("ticker", "?"))
 
             # ── Phase 2.5: Insider (SEC Form 4) signals (supplementary) ──────────
             # Open-market insider buys, capped at settings.insider.max_pct per

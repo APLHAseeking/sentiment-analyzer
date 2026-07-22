@@ -326,6 +326,19 @@ class DashboardConfig:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class CongressionalConfig:
+    """Congressional-disclosure (Capitol Trades) supplementary signal source.
+
+    Disabled by default: a real-cached-data backtest found a significantly
+    negative excess return at both 1mo and 3mo horizons (see
+    docs/CONGRESSIONAL_EDGE.md's pre-written decision rule and
+    docs/CLAUDE-REFERENCE.md#history's 2026-07-17 entry). Scraping itself is
+    NOT gated by this flag — disclosures keep getting persisted for future
+    re-evaluation; only their use as a trading signal is gated."""
+    enabled: bool = False
+
+
+@dataclass(frozen=True)
 class InsiderConfig:
     """Corporate-insider (SEC Form 4 open-market buys) supplementary signal source.
 
@@ -357,6 +370,7 @@ class Settings:
 
     credentials: Credentials = field(default_factory=Credentials)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
+    congressional: CongressionalConfig = field(default_factory=CongressionalConfig)
     insider: InsiderConfig = field(default_factory=InsiderConfig)
     market_data: MarketDataConfig = field(default_factory=MarketDataConfig)
     features: FeatureConfig = field(default_factory=FeatureConfig)

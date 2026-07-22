@@ -160,6 +160,12 @@ def test_short_selling_disabled_by_default():
     assert Settings().strategy.enable_short_selling is False
 
 
+def test_congressional_signal_disabled_by_default():
+    """Real-cached-data backtest found a significantly negative excess return
+    (docs/CONGRESSIONAL_EDGE.md) — disabled per that doc's own decision rule."""
+    assert Settings().congressional.enabled is False
+
+
 def test_short_risk_caps_tighter_than_long():
     s = Settings()
     assert s.risk.max_short_position_pct == 4.0

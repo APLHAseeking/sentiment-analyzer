@@ -2,8 +2,12 @@
 
 ## Status
 
-Analysis harness implemented in `backtesting/analyze_congressional_edge.py`.
-**Real data required to evaluate edge** — see `docs/PIT_DATA_REQUIREMENTS.md`.
+Analysis harness implemented in `backtesting/analyze_congressional_edge.py`. The
+synthetic-data preliminary findings below predate a real-cached-data test run
+2026-07-17 (not through this harness — against the live bot's actual scraped
+disclosure history) that found a significantly negative excess return; see
+"## Decision (2026-07-22)" below for the outcome. `docs/PIT_DATA_REQUIREMENTS.md`
+still applies if this signal is ever re-evaluated on a longer real PIT history.
 
 Run the demonstration (offline, synthetic data):
 
@@ -86,6 +90,19 @@ decision rules:
 | Lag≤7 dominates (highest Sharpe increment) | Set `max_lag_days = 7` in `UniverseConfig` |
 | Lag≤14 dominates | Set `max_lag_days = 14` |
 | t-stat of alpha increment < 2.0 over the full sample | Do not rely on signal; conduct walk-forward before trusting it |
+
+### Decision (2026-07-22)
+
+The 2026-07-17 real-cached-data test (see `docs/CLAUDE-REFERENCE.md#history`) found
+excess return of **-0.636% at 1mo (t=-2.57)** and **-2.538% at 3mo (t=-4.93)** —
+negative and statistically significant at both horizons, satisfying the first
+decision rule above ("Incremental alpha < 0 after costs → Drop congressional
+layer") on its own. **Signal disabled**: `Settings.congressional.enabled` added
+(default `False`) in `system/config.py`, gating both the Phase 2 congressional-entry
+logic and the Phase 1 "both"-signal-type conviction boost in
+`orchestration/main_loop.py` — see that file's history entry for the same date.
+Scraping itself is unaffected and keeps running (data collection, not signal use),
+in case a longer history or different filtering approach is worth revisiting later.
 
 ### Current known data limitations
 

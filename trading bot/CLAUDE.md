@@ -289,6 +289,15 @@
 > reserved, and (B) initial-stop wash-trade rejections still occurring despite the existing
 > 3x retry. Both fixed; see `docs/CLAUDE-REFERENCE.md#history` for full detail. Test count:
 > **1058** (full suite green, zero known failures).
+> 2026-07-22 (congressional signal disabled): the first of six open items from
+> `docs/BOT_REVIEW_2026-07-20.md` — added `Settings.congressional.enabled` (default `False`,
+> mirrors `InsiderConfig`'s pattern), gating both the Phase 2 congressional-entry logic and
+> the Phase 1 "both"-signal-type conviction boost in `orchestration/main_loop.py`. Per-user
+> decision, backed by the pre-written rule in `docs/CONGRESSIONAL_EDGE.md` (the 2026-07-17
+> real-data test found a significantly negative excess return at both 1mo/3mo horizons).
+> Scraping stays unconditional — only the signal's use in trading decisions is gated. See
+> `docs/CLAUDE-REFERENCE.md#history` for full detail. Test count: **1061** (full suite green,
+> zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 
