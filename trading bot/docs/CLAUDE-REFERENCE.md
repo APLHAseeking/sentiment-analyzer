@@ -1039,3 +1039,29 @@ closed market.
 > regardless of the gate's correctness); caught by the red/green proof discipline, fixed by
 > mocking a non-empty candidate list, then proven red against the pre-fix line and green
 > after. Test count: **1062 passed** (was 1061; +1 new).
+> 2026-07-22 (short-selling prep, item 2b of 6: regime-aware short sizing): the design spec's
+> 1st open question. `_process_fundamental_short_candidate` (`orchestration/main_loop.py`)
+> sized shorts as `min(score.position_pct, max_short_position_pct)` — the LLM's suggested
+> size, capped, with zero regime input at all (comment: "deliberately simpler than the long
+> path's ATR/regime/correlation/portfolio-vol gate stack, per the design spec's scope" — an
+> intentional v1 simplification, not an oversight). `regime/allocation_engine.py`'s
+> `AllocationEngine.compute()` had no `direction` parameter, so even a direct call would have
+> applied the long-tuned `regime_size_multiplier` table (0.3x in crash) — the opposite of the
+> spec's stated intent ("shorts arguably should size up in bearish/crash regimes and down in
+> bullish ones"). Added `direction: str = "long"` to `compute()`; when `"short"`, it now reads
+> a new `AllocationConfig.short_regime_size_multiplier` table (crash/deep-bear=1.0,
+> bear=0.75, neutral=0.5, euphoria=0.5, bull/melt-up=0.3 — inverse-shaped vs. the long table)
+> and caps against `RiskConfig.max_short_position_pct` instead of `max_position_pct`. Wired
+> into `_process_fundamental_short_candidate`: when `self._regime_state` is set, calls
+> `self._alloc.compute(ticker, score.position_pct, self._regime_state, direction="short")`
+> and rejects (SIGNAL_REJECTED) if the regime-scaled size drops below the economic-size floor,
+> mirroring the long paths' existing pattern exactly; falls back to the raw LLM size when no
+> regime state exists yet (same fallback the long paths use). These multiplier values are an
+> explicitly-flagged principled default, not a backtested calibration — Phase 0's PIT-data
+> gate blocks any real short-side backtest today (`docs/PHASE0_FINDINGS.md`), so there is no
+> data to calibrate against yet; revisit once that gate clears. 5 new tests
+> (`tests/test_allocation_seasonality.py` x3 — inverse-table selection, short-specific cap,
+> unchanged default-long behavior; `tests/test_config.py` x1 — default table shape;
+> `tests/test_orchestrator.py` x1 — crash sizes a short short-candidate larger than bull,
+> proven red against the pre-fix code then green). Test count: **1067 passed** (was 1062;
+> +5 new).

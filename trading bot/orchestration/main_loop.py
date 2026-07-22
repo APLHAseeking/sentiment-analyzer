@@ -1340,12 +1340,28 @@ class RegimeAwareOrchestrator:
                        alert=True)
             return False
 
-        # Short sizing: the LLM's position_pct, capped by the short-specific
+        # Short sizing: the LLM's position_pct, regime-scaled via AllocationEngine
+        # (direction="short" — inverse tilt vs. longs, see AllocationConfig.
+        # short_regime_size_multiplier), then capped by the short-specific
         # RiskConfig limit (Portfolio.open_position enforces the hard cap again
-        # as a backstop) — deliberately simpler than the long path's ATR/regime/
-        # correlation/portfolio-vol gate stack, per
-        # docs/superpowers/specs/2026-07-17-short-selling-design.md's scope.
-        final_pct = min(score.position_pct, self._cfg.risk.max_short_position_pct)
+        # as a backstop) — simpler than the long path's ATR/correlation/
+        # portfolio-vol gate stack, per
+        # docs/superpowers/specs/2026-07-17-short-selling-design.md's scope,
+        # but no longer bypasses regime awareness entirely (open question 1).
+        if self._regime_state is not None:
+            alloc_decision = self._alloc.compute(
+                ticker, score.position_pct, self._regime_state, direction="short"
+            )
+            base_pct = alloc_decision.final_position_pct
+            if base_pct < _MIN_ECONOMIC_POSITION_PCT:
+                emit_event(
+                    log, EventType.SIGNAL_REJECTED,
+                    f"short {ticker} blocked by regime ({alloc_decision.rationale})",
+                )
+                return False
+        else:
+            base_pct = score.position_pct
+        final_pct = min(base_pct, self._cfg.risk.max_short_position_pct)
 
         _positions_now = self._broker.get_positions()
         # NAV stays signed (net equity: a short's negative qty correctly reduces

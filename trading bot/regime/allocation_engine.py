@@ -59,8 +59,14 @@ class AllocationEngine:
         ai_position_pct: float,
         regime_state: RegimeState,
         date: datetime | None = None,
+        direction: str = "long",
     ) -> AllocationDecision:
         """Apply regime scaling to the AI-recommended position size.
+
+        direction="short" uses AllocationConfig.short_regime_size_multiplier
+        (an inverse tilt vs. the long table — a short thesis is strongest in
+        an already-bearish regime) and caps against RiskConfig.
+        max_short_position_pct instead of max_position_pct.
 
         Returns AllocationDecision with final_position_pct = 0 if the
         regime confidence is too low or the regime blocks new entries.
@@ -70,7 +76,11 @@ class AllocationEngine:
         is_stable = regime_state.is_stable
 
         # --- Regime multiplier -------------------------------------------
-        regime_mult = self._alloc_cfg.regime_size_multiplier.get(label, 1.0)
+        regime_table = (
+            self._alloc_cfg.short_regime_size_multiplier if direction == "short"
+            else self._alloc_cfg.regime_size_multiplier
+        )
+        regime_mult = regime_table.get(label, 1.0)
 
         # --- Confidence gate + multiplier --------------------------------
         if confidence < self._alloc_cfg.min_confidence_to_trade:
@@ -96,8 +106,12 @@ class AllocationEngine:
         seasonal = self._seasonality_mult(date)
 
         # --- Final size (capped at risk config max) ----------------------
+        max_pct = (
+            self._risk_cfg.max_short_position_pct if direction == "short"
+            else self._risk_cfg.max_position_pct
+        )
         final = ai_position_pct * regime_mult * conf_mult * stab_mult * seasonal
-        final = min(final, self._risk_cfg.max_position_pct)
+        final = min(final, max_pct)
         final = max(final, 0.0)
 
         rationale = (

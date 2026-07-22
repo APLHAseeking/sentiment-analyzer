@@ -85,6 +85,15 @@ below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-22 (fix-plan Step 2b of 5, regime-aware short sizing): the short candidate path
+  bypassed `AllocationEngine` entirely (zero regime scaling, by original v1 design-doc scope).
+  Added `AllocationConfig.short_regime_size_multiplier` (inverse tilt vs. the long table —
+  shorts size up in crash/bear, down in bull/melt-up) and a `direction` param to
+  `AllocationEngine.compute()`; wired into the short path. Explicitly flagged as a principled
+  default, not backtested (Phase 0 gate blocks real short-side backtesting). RESULT: 1067
+  passed (was 1062), 5 new tests, key one proven red→green. Second of the 5 short-selling
+  prerequisite fixes (design spec's open question 1). Full narrative:
+  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-22, third entry).
 - 2026-07-22 (fix-plan Step 2a of 5, aggregate gross exposure cap fixed): `max_invested_pct`
   (80%) summed **signed** qty at all 5 call sites in `orchestration/main_loop.py` — a short's
   negative qty subtracted instead of adding, so a mixed long+short book could sit at 100%+

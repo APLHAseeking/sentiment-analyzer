@@ -2585,6 +2585,56 @@ def test_process_fundamental_short_candidate_opens_short_position(mocker, orch):
     assert call_kwargs["initial_stop_pct"] == orch._cfg.risk.short_trailing_stop_pct
 
 
+def test_process_fundamental_short_candidate_uses_regime_aware_sizing(mocker, orch):
+    """A crash regime (short multiplier 1.0) must size a short short candidate
+    larger than the identical candidate would get in a bull regime (short
+    multiplier 0.3) — proves AllocationEngine.compute(direction="short") is
+    actually wired in, not bypassed as it was before this fix. Compares
+    relative sizing rather than an exact value since the real seasonality
+    overlay depends on the current calendar month either way."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+    from regime.hmm_engine import RegimeState
+
+    def _make_regime(label):
+        state = MagicMock(spec=RegimeState)
+        state.regime_label = label
+        state.confidence = 1.0
+        state.is_stable = True
+        return state
+
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.score_entry_short",
+                 return_value=EntryScore(
+                     conviction=8, position_pct=3.0,
+                     rationale="overvalued", entry="sell", risk_flags=(),
+                 ))
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=50.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    orch._portfolio.open_position.return_value = True
+    candidate = FactorCandidate(
+        ticker="XYZ", composite_score=10, value_score=5,
+        momentum_score=3, quality_score=4, research=None,
+    )
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    orch._regime_state = _make_regime("crash")
+    orch._process_fundamental_short_candidate(candidate, {})
+    crash_pct = orch._portfolio.open_position.call_args[1]["position_pct"]
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    orch._regime_state = _make_regime("bull")
+    orch._process_fundamental_short_candidate(candidate, {})
+    bull_pct = orch._portfolio.open_position.call_args[1]["position_pct"]
+
+    assert crash_pct > bull_pct
+
+
 def test_process_fundamental_short_candidate_returns_false_on_risk_veto(mocker, orch):
     """A risk veto (allowed=False) must block the short: open_position is never
     called and the method returns False."""

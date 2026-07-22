@@ -21,6 +21,9 @@ def _make_regime(label="bull", confidence=0.80, is_stable=True):
 def _make_engine(enable_seasonality=True, active=1.10, inactive=0.90):
     cfg = MagicMock()
     cfg.allocation.regime_size_multiplier = {"bull": 1.0, "neutral": 0.7, "bear": 0.5}
+    cfg.allocation.short_regime_size_multiplier = {
+        "bull": 0.3, "neutral": 0.5, "bear": 0.75, "crash": 1.0,
+    }
     cfg.allocation.min_confidence_to_trade = 0.40
     cfg.allocation.confidence_scale = False
     cfg.allocation.instability_penalty = 0.5
@@ -28,6 +31,7 @@ def _make_engine(enable_seasonality=True, active=1.10, inactive=0.90):
     cfg.allocation.halloween_mult_active = active
     cfg.allocation.halloween_mult_inactive = inactive
     cfg.risk.max_position_pct = 8.0
+    cfg.risk.max_short_position_pct = 4.0
     return AllocationEngine(cfg)
 
 
@@ -118,3 +122,43 @@ def test_zero_decision_has_seasonal_multiplier_one():
     decision = engine.compute("AAPL", 5.0, regime, date=date)
     assert decision.final_position_pct == pytest.approx(0.0)
     assert decision.seasonal_multiplier == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# direction="short" — inverse regime tilt (short-selling design spec Q1)
+# ---------------------------------------------------------------------------
+
+def test_compute_short_direction_uses_inverse_regime_table():
+    """A "crash" regime must size a short UP (1.0x) even though the same
+    regime sizes a long DOWN (0.3x per regime_size_multiplier) — the short
+    thesis is strongest exactly where the long multiplier is most defensive."""
+    engine = _make_engine()
+    engine._alloc_cfg.regime_size_multiplier["crash"] = 0.3
+    regime = _make_regime(label="crash", confidence=1.0, is_stable=True)
+
+    long_decision = engine.compute("AAPL", 4.0, regime, direction="long")
+    short_decision = engine.compute("AAPL", 4.0, regime, direction="short")
+
+    assert long_decision.regime_multiplier == pytest.approx(0.3)
+    assert short_decision.regime_multiplier == pytest.approx(1.0)
+    assert short_decision.final_position_pct > long_decision.final_position_pct
+
+
+def test_compute_short_direction_capped_by_short_max_position_pct():
+    """direction="short" must cap against max_short_position_pct (4.0), not
+    the long max_position_pct (8.0), even when the regime multiplier alone
+    would allow a larger size."""
+    engine = _make_engine()
+    regime = _make_regime(label="crash", confidence=1.0, is_stable=True)  # short mult=1.0
+
+    decision = engine.compute("AAPL", 8.0, regime, direction="short")
+
+    assert decision.final_position_pct == pytest.approx(4.0)  # capped, not 8.0
+
+
+def test_compute_default_direction_is_long():
+    """Omitting direction must behave exactly as before (long table + long cap)."""
+    engine = _make_engine()
+    regime = _make_regime(label="bull", confidence=1.0, is_stable=True)
+    decision = engine.compute("AAPL", 5.0, regime)
+    assert decision.regime_multiplier == pytest.approx(1.0)  # long "bull" mult

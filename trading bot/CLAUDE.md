@@ -309,6 +309,17 @@
 > instant it's ever flipped on. New regression test proven red (against the pre-fix line)
 > then green. See `docs/CLAUDE-REFERENCE.md#history` for full detail. Test count: **1062**
 > (full suite green, zero known failures).
+> 2026-07-22 (short-selling prep, item 2b of 6: regime-aware short sizing): the short
+> candidate path (`_process_fundamental_short_candidate`) previously bypassed
+> `AllocationEngine` entirely — no regime scaling of any kind, by original design-doc scope.
+> Added `AllocationConfig.short_regime_size_multiplier` (an inverse tilt vs. the long table —
+> shorts size up in crash/bear, down in bull/melt-up) and a `direction` param to
+> `AllocationEngine.compute()` that selects the right multiplier table and risk cap
+> (`max_short_position_pct` vs `max_position_pct`). Wired into the short candidate path the
+> same way the long paths already use it. These multipliers are a principled default, not
+> backtested — Phase 0's data gate blocks any real short-side backtest today. New tests
+> proven red (crash and bull sized identically pre-fix) then green. Test count: **1067** (full
+> suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

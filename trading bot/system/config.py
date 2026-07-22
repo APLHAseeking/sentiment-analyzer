@@ -134,6 +134,21 @@ class AllocationConfig:
         "euphoria":  0.75,   # reduce slightly — overheating risk
         "melt-up":   0.5,
     })
+    # Inverse tilt for shorts vs. the long table above — a short thesis is
+    # strongest when the regime is already bearish, and going against a bull/
+    # melt-up trend is the riskiest place to hold one. Resolves the short-selling
+    # design spec's open question 1 (docs/superpowers/specs/2026-07-17-short-selling-design.md).
+    # These are a principled default, not backtested/calibrated — Phase 0's PIT
+    # data gate blocks any real short-side backtest today (docs/PHASE0_FINDINGS.md).
+    short_regime_size_multiplier: dict[str, float] = field(default_factory=lambda: {
+        "crash":     1.0,    # full size — bearish thesis strongest here
+        "deep-bear": 1.0,
+        "bear":      0.75,
+        "neutral":   0.5,
+        "bull":      0.3,    # small — fighting the trend
+        "euphoria":  0.5,    # late-cycle, plausible reversal setup — moderate
+        "melt-up":   0.3,    # small — fighting the trend
+    })
     # Additional scaling by regime confidence (linear interpolation)
     min_confidence_to_trade: float = 0.40  # below this, skip new entries
     confidence_scale: bool = True          # scale size by confidence linearly

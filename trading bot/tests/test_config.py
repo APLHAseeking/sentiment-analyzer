@@ -68,6 +68,18 @@ def test_regime_size_multiplier_keys_match_label_maps():
         # (We allow missing keys; the engine falls back to 1.0)
 
 
+def test_short_regime_size_multiplier_is_inverse_tilt_of_long():
+    """Short-selling design spec Q1: shorts should size UP where longs size
+    DOWN (bearish regimes) and DOWN where longs size UP (bullish regimes)."""
+    cfg = Settings()
+    long_mult = cfg.allocation.regime_size_multiplier
+    short_mult = cfg.allocation.short_regime_size_multiplier
+    for label in ("crash", "deep-bear", "bull", "melt-up"):
+        assert label in short_mult, f"Missing short multiplier for {label}"
+    assert short_mult["crash"] > long_mult["crash"]
+    assert short_mult["bull"] < long_mult["bull"]
+
+
 def test_credentials_loads_from_env(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     creds = Credentials()
