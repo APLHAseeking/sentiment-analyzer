@@ -48,6 +48,38 @@ def test_compute_hedge_plan_returns_empty_when_not_hedge_regime():
     assert result == []
 
 
+def test_compute_hedge_plan_reduces_alloc_by_existing_short_pct():
+    """An existing 10% of NAV in per-stock shorts must reduce the regime's
+    30% inverse-allocation cap to 20% before sizing hedge ETFs — the two
+    mechanisms (per-stock shorts, broad ETF hedge) shouldn't double-hedge
+    the same bearish thesis (design spec's open question 2)."""
+    e = _engine()
+    result = e.compute_hedge_plan(_regime("bear"), [], {}, 100_000, existing_short_pct=10.0)
+    assert len(result) == 5
+    for order in result:
+        assert order.position_pct == pytest.approx(4.0)  # min(20/5, 15)
+
+
+def test_compute_hedge_plan_existing_short_fully_covers_regime_cap():
+    """Existing short exposure at or above the regime's inverse-allocation cap
+    must skip opening any new ETF hedge entirely, not just shrink it to zero
+    per-ETF (which would still attempt orders below the economic floor)."""
+    e = _engine()
+    result = e.compute_hedge_plan(_regime("bear"), [], {}, 100_000, existing_short_pct=30.0)
+    assert result == []
+
+
+def test_compute_hedge_plan_existing_short_pct_defaults_to_zero():
+    """Omitting existing_short_pct must behave exactly as before (unchanged
+    default hedge sizing) — proves the new parameter is additive, not a
+    behavior change for existing call sites that don't pass it."""
+    e = _engine()
+    result = e.compute_hedge_plan(_regime("bear"), [], {}, 100_000)
+    assert len(result) == 5
+    for order in result:
+        assert order.position_pct == pytest.approx(6.0)  # min(30/5, 15), unchanged
+
+
 def test_compute_hedge_plan_excludes_already_open_hedge_tickers():
     e = _engine()
     open_positions = [{"ticker": "SH", "signal_source": "hedge"}]

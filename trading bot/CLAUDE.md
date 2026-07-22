@@ -320,6 +320,14 @@
 > backtested — Phase 0's data gate blocks any real short-side backtest today. New tests
 > proven red (crash and bull sized identically pre-fix) then green. Test count: **1067** (full
 > suite green, zero known failures).
+> 2026-07-22 (short-selling prep, item 2c of 6: hedge-mechanism overlap): `hedge/hedge_engine.py`
+> had zero awareness of open per-stock shorts — a short and the broad inverse-ETF hedge could
+> double-count the same bearish thesis. `compute_hedge_plan()` now takes `existing_short_pct`
+> (total open short notional as % of NAV) and subtracts it from the regime's inverse-allocation
+> cap before sizing ETFs (floored at 0; returns `[]` outright if shorts already cover the cap).
+> `_run_hedge_pass` computes this from the same broker-positions × DB-direction cross-reference
+> already used for sector allocation. New tests proven red (old code ignored the reduction)
+> then green. Test count: **1071** (full suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

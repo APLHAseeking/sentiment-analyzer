@@ -85,6 +85,14 @@ below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-22 (fix-plan Step 2c of 5, hedge-mechanism overlap): `hedge/hedge_engine.py` had no
+  awareness of open per-stock shorts — a short and the broad inverse-ETF hedge could
+  double-count the same bearish thesis. Added `existing_short_pct` param to
+  `compute_hedge_plan()`, subtracted from the regime's inverse-allocation cap before sizing
+  ETFs (floored at 0). `_run_hedge_pass` computes it from the existing broker/DB
+  cross-reference loop. RESULT: 1071 passed (was 1067), 4 new tests, 3 proven red→green.
+  Third of the 5 short-selling prerequisite fixes (design spec's open question 2). Full
+  narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-22, fourth entry).
 - 2026-07-22 (fix-plan Step 2b of 5, regime-aware short sizing): the short candidate path
   bypassed `AllocationEngine` entirely (zero regime scaling, by original v1 design-doc scope).
   Added `AllocationConfig.short_regime_size_multiplier` (inverse tilt vs. the long table —

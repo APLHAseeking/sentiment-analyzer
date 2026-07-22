@@ -994,6 +994,39 @@ def test_hedge_pass_computes_sector_allocation_against_real_position_rows(mocker
     assert sector_allocation["Technology"] == pytest.approx(1000.0 / 91_000.0 * 100)
 
 
+def test_hedge_pass_computes_existing_short_pct_against_real_position_rows(mocker, orch, db):
+    """_run_hedge_pass must sum existing per-stock short notional (by DB
+    direction) as % of NAV and pass it to compute_hedge_plan, so the broad
+    ETF hedge doesn't double-count bearish exposure already covered by open
+    per-stock shorts (short-selling design spec's open question 2)."""
+    from risk.risk_manager import RiskVeto
+    from hedge.hedge_engine import HedgeOrder
+
+    db.insert_position("TSLA", 100.0, -10, 5.0, "2026-01-01", 1, "r",
+                        signal_source="fundamental", direction="short")
+    mocker.patch("orchestration.main_loop.get_open_positions", side_effect=db.get_open_positions)
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+
+    broker = mocker.MagicMock()
+    broker.get_cash.return_value = 100_000.0
+    broker.get_positions.return_value = [{"ticker": "TSLA", "qty": -10, "current_price": 100.0}]
+    orch._broker = broker
+
+    plan_spy = mocker.patch.object(
+        orch._hedge_engine, "compute_hedge_plan",
+        return_value=[HedgeOrder(ticker="SH", position_pct=10.0, rationale="bear regime")],
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                  return_value=_make_yf_ticker_mock(price=20.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+
+    orch._run_hedge_pass()
+
+    # NAV = cash 100k + qty(-10)*price(100) = 99,000 (signed, correct net equity)
+    # existing short notional = abs(-10)*100 = 1,000 -> pct = 1000/99000*100
+    assert plan_spy.call_args[1]["existing_short_pct"] == pytest.approx(1000.0 / 99_000.0 * 100)
+
+
 def test_hedge_pass_applies_size_multiplier(mocker, orch):
     """veto.size_multiplier must scale the hedge position pct."""
     from risk.risk_manager import RiskVeto

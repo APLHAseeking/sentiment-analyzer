@@ -39,12 +39,21 @@ class HedgeEngine:
         open_positions_meta: list[dict],
         sector_allocation: dict[str, float],
         nav: float,
+        existing_short_pct: float = 0.0,
     ) -> list[HedgeOrder]:
         """Return orders for inverse ETF positions to open.
 
         Already-open hedges and ETFs that conflict with current long
         sector exposure are excluded. Equal-weights eligible ETFs up to
         the regime's allocation cap and the per-ETF size cap.
+
+        existing_short_pct: total open per-stock short notional as % of NAV
+        (short-selling design spec's open question 2 — a per-stock short and
+        this broad inverse-ETF hedge both express the same bearish thesis, so
+        without this the two mechanisms could double-count bearish exposure).
+        Reduces the regime's inverse-allocation cap by this amount (floored
+        at 0) before sizing hedge ETFs, treating existing shorts as exposure
+        already hedged rather than sizing the ETF hedge independently.
         """
         _ = nav  # reserved for future minimum-dollar position guard
         if not self._risk_cfg.enable_inverse_hedging:
@@ -53,6 +62,15 @@ class HedgeEngine:
             return []
 
         max_alloc = self._hedge_cfg.max_inverse_pct_by_regime[regime_state.regime_label]
+        max_alloc = max(max_alloc - existing_short_pct, 0.0)
+        if max_alloc <= 0:
+            log.info(
+                "HedgeEngine: existing short exposure (%.1f%%) already covers the "
+                "regime's inverse-allocation cap — no new ETF hedge needed",
+                existing_short_pct,
+            )
+            return []
+
         already_open = {
             p["ticker"] for p in open_positions_meta
             if p.get("signal_source") == "hedge"

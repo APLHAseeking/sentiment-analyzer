@@ -1448,11 +1448,18 @@ class RegimeAwareOrchestrator:
             # meta must be a real dict in both branches for .get() to be safe.
             open_positions_meta = [dict(p) for p in get_open_positions()]
             sector_allocation: dict[str, float] = {}
+            existing_short_usd = 0.0
             if positions and nav > 0:
                 for pos in positions:
                     meta = next(
                         (m for m in open_positions_meta if m["ticker"] == pos["ticker"]), {}
                     )
+                    # Existing per-stock shorts already express a bearish thesis —
+                    # counted here so compute_hedge_plan can avoid double-hedging
+                    # (design spec's open question 2). Hedge ETFs themselves are
+                    # bought long (direction="long"), so they're naturally excluded.
+                    if meta.get("direction") == "short":
+                        existing_short_usd += abs(pos["qty"]) * pos["current_price"]
                     if meta.get("signal_source") == "hedge":
                         continue
                     sector = get_sector_for_ticker(pos["ticker"])
@@ -1460,12 +1467,14 @@ class RegimeAwareOrchestrator:
                     # same-sector long and mask true sector concentration.
                     pv = abs(pos["qty"]) * pos["current_price"]
                     sector_allocation[sector] = sector_allocation.get(sector, 0.0) + pv / nav * 100
+            existing_short_pct = (existing_short_usd / nav * 100) if nav > 0 else 0.0
 
             orders = self._hedge_engine.compute_hedge_plan(
                 self._regime_state,
                 open_positions_meta,
                 sector_allocation,
                 nav,
+                existing_short_pct=existing_short_pct,
             )
             if not orders:
                 log.info("Hedge pass: no eligible ETFs for regime %s",

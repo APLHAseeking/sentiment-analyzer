@@ -1065,3 +1065,21 @@ closed market.
 > `tests/test_orchestrator.py` x1 — crash sizes a short short-candidate larger than bull,
 > proven red against the pre-fix code then green). Test count: **1067 passed** (was 1062;
 > +5 new).
+> 2026-07-22 (short-selling prep, item 2c of 6: hedge-mechanism overlap): the design spec's
+> 2nd open question. `hedge/hedge_engine.py`'s `compute_hedge_plan()` sized the broad
+> inverse-ETF hedge purely off the regime's `max_inverse_pct_by_regime` cap — zero awareness
+> of open per-stock short positions, even though both mechanisms express the same bearish
+> thesis and could double-count exposure. Added `existing_short_pct: float = 0.0` param;
+> `max_alloc = max(max_alloc - existing_short_pct, 0.0)`, and returns `[]` outright (with a
+> log line) rather than attempting near-zero per-ETF orders when existing shorts already
+> cover the regime's cap. `orchestration/main_loop.py`'s `_run_hedge_pass` computes
+> `existing_short_pct` in the same broker-positions-cross-referenced-with-DB-`direction` loop
+> already building `sector_allocation` — a short's negative qty is summed via `abs()` (gross,
+> matching the existing sector/invested-pct precedent) and expressed as % of NAV; hedge ETF
+> positions are naturally excluded since they're bought long (`direction="long"`) even though
+> they're inverse instruments. 4 new tests (`tests/test_hedge_engine.py` x3 — reduces alloc
+> correctly, returns `[]` when fully covered, unchanged when the param is omitted;
+> `tests/test_orchestrator.py` x1 — real DB position row, direction="short", correct % of
+> NAV computed and passed through). 3 of the 4 proven red (old code ignored the reduction)
+> then green; the 4th (default-zero) is itself the no-behavior-change regression guard. Test
+> count: **1071 passed** (was 1067; +4 new).
