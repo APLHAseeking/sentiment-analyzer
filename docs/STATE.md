@@ -85,6 +85,16 @@ below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-22 (fix-plan Step 1 of 5, congressional signal disabled): separate thread from the
+  live-process-health work below — executing the approved plan at
+  `trading bot/docs/BOT_REVIEW_2026-07-20.md`'s 6 open items. Added
+  `Settings.congressional.enabled` (default False), gating both the Phase 2 entry logic and
+  the Phase 1 "both"-type conviction boost in `orchestration/main_loop.py`, per the user's
+  decision and `docs/CONGRESSIONAL_EDGE.md`'s own pre-written negative-alpha rule. RESULT: 1061
+  passed (was 1058), 3 new tests. Committed `58921bf`, not pushed. Remaining plan steps: 2
+  (short-selling, 5 sub-fixes), 3 (Phase 0 PIT data free-tier), 4 (Russell 1000 doc closeout),
+  5 (LLM model/prompt review — instrumentation only). Full narrative:
+  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-22 entry).
 - 2026-07-21/22 (two ORDER_REJECTED bugs fixed + deployed): user-reported Slack alerts led to
   finding and fixing (A) a permanent trailing-stop qty ratchet and (B) an under-retried
   wash-trade race, both in `bot/portfolio.py`. RESULT: 1058 passed (was 1057), 2 new tests
