@@ -85,6 +85,16 @@ below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-22 (fix-plan Step 2a of 5, aggregate gross exposure cap fixed): `max_invested_pct`
+  (80%) summed **signed** qty at all 5 call sites in `orchestration/main_loop.py` — a short's
+  negative qty subtracted instead of adding, so a mixed long+short book could sit at 100%+
+  gross exposure while reading as comfortably under cap. Fixed to a separate gross (`abs(qty)`)
+  sum for the cap-check ratio; NAV stays signed (correct net-equity accounting). Dormant today
+  (shorting still off) but a real gap for the moment it's ever enabled — first of the 5
+  short-selling prerequisite fixes (design spec's open question 3). RESULT: 1062 passed (was
+  1061), 1 new test (caught its own vacuous-assertion bug via the red/green proof, fixed
+  before landing). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-22,
+  second entry).
 - 2026-07-22 (fix-plan Step 1 of 5, congressional signal disabled): separate thread from the
   live-process-health work below — executing the approved plan at
   `trading bot/docs/BOT_REVIEW_2026-07-20.md`'s 6 open items. Added

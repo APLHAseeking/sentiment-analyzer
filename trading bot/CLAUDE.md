@@ -298,6 +298,17 @@
 > Scraping stays unconditional — only the signal's use in trading decisions is gated. See
 > `docs/CLAUDE-REFERENCE.md#history` for full detail. Test count: **1061** (full suite green,
 > zero known failures).
+> 2026-07-22 (short-selling prep, item 2a of 6: aggregate gross exposure cap fixed): the
+> `max_invested_pct` (80%) capacity check summed **signed** qty at all 5 call sites in
+> `orchestration/main_loop.py` — a short's negative qty subtracted from computed invested%
+> instead of adding to it, so a mixed long+short book could sit at 100%+ gross exposure while
+> reading as comfortably under cap. Fixed: each site now computes a separate gross-exposure
+> sum (`abs(qty)`) for the cap-check ratio while NAV itself stays signed (correct net-equity
+> accounting) — same reasoning already applied to the sector-concentration check. Dormant bug
+> today (`enable_short_selling` still `False`), but a real gap that would have applied the
+> instant it's ever flipped on. New regression test proven red (against the pre-fix line)
+> then green. See `docs/CLAUDE-REFERENCE.md#history` for full detail. Test count: **1062**
+> (full suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

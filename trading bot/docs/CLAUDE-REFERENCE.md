@@ -1014,3 +1014,28 @@ closed market.
 > flag on: Phase 2 runs AND `congress_tickers` populated), plus a config default-value test.
 > `docs/CONGRESSIONAL_EDGE.md` updated with a "Decision (2026-07-22)" section recording the
 > outcome against its own pre-written rule. Test count: **1061 passed** (was 1058; +3 new).
+> 2026-07-22 (short-selling prep, item 2a of 6 from `docs/BOT_REVIEW_2026-07-20.md`: aggregate
+> gross/net exposure cap): the design spec's 3rd open question — per-position caps were already
+> direction-aware and the sector-concentration cap was already fixed to use gross (`abs(qty)`)
+> exposure (2026-07-20 short-selling review), but the one remaining aggregate check —
+> `RiskConfig.max_invested_pct` (80%) — was not. All 5 call sites in
+> `orchestration/main_loop.py` (`run_morning_pipeline`'s top-level `_at_capacity` gate, plus
+> `_process_signal`/`_process_insider_signal`/`_process_fundamental_candidate`/
+> `_process_fundamental_short_candidate`'s per-order veto checks) computed
+> `sum(p["qty"] * p["current_price"] for p in positions)` — signed. A short's negative qty
+> subtracted from this sum instead of adding to it, so e.g. a 100%-long+90%-short book (NAV
+> $110k on $100k cash, from a $100k long and a $90k short) would compute ~9% net "invested"
+> against the 80% cap instead of the true ~173% gross exposure — nowhere close to tripping a
+> cap meant to bound total capital at risk. Fixed: each site now computes a separate
+> `_gross_invested_usd`/gross sum using `abs(qty)` for the cap-check ratio; NAV itself is left
+> signed (correct net-equity accounting — a short's mark-to-market liability genuinely does
+> reduce NAV as price rises, unlike the exposure-measurement bug this fixes). Dormant today
+> (`enable_short_selling` still `False`, so no live position can currently be short), but this
+> was a real gap that would have applied from the moment the flag is ever flipped on — fixed
+> as a prerequisite before that, per the user's explicit decision to close all 5 open
+> short-selling design questions before considering activation. One new orchestrator test
+> (`test_invested_pct_gate_uses_gross_not_net_exposure`) — first version was accidentally
+> vacuous (the fixture's default empty `run_factor_screen` mock meant the assertion held
+> regardless of the gate's correctness); caught by the red/green proof discipline, fixed by
+> mocking a non-empty candidate list, then proven red against the pre-fix line and green
+> after. Test count: **1062 passed** (was 1061; +1 new).

@@ -509,13 +509,15 @@ class RegimeAwareOrchestrator:
             log.warning("Portfolio vol gate failed — using mult=1.0: %s", exc)
 
         # --- Invested-pct capacity check --------------------------------
+        # NAV stays signed (net equity); the capacity gate itself is a gross
+        # exposure measure — see the per-candidate veto sites' comment for why.
         _position_list = self._broker.get_positions()
         if _position_list:
             _nav = self._broker.get_cash() + sum(
                 p["qty"] * p["current_price"] for p in _position_list
             )
             _invested_pct = (
-                sum(p["qty"] * p["current_price"] for p in _position_list)
+                sum(abs(p["qty"]) * p["current_price"] for p in _position_list)
                 / _nav * 100 if _nav > 0 else 0.0
             )
         else:
@@ -950,9 +952,15 @@ class RegimeAwareOrchestrator:
             return False
 
         _positions_now = self._broker.get_positions()
+        # NAV stays signed (net equity: a short's negative qty correctly reduces
+        # NAV as the price rises). The invested-% CAP CHECK below is a gross
+        # exposure measure, same reasoning as the sector-allocation abs() above —
+        # a short's negative qty must ADD to gross exposure, not net against a
+        # long and mask a book that's actually 100%+ gross exposed.
         _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
         _nav = self._broker.get_cash() + _invested_usd
-        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
+        _gross_invested_usd = sum(abs(p["qty"]) * p["current_price"] for p in _positions_now)
+        _current_invested_pct = (_gross_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
         position_size_usd = _nav * final_pct / 100
         adv_usd = research.avg_daily_volume_usd if research else None
         veto = self._risk.validate_order(
@@ -1078,9 +1086,15 @@ class RegimeAwareOrchestrator:
             return False
 
         _positions_now = self._broker.get_positions()
+        # NAV stays signed (net equity: a short's negative qty correctly reduces
+        # NAV as the price rises). The invested-% CAP CHECK below is a gross
+        # exposure measure, same reasoning as the sector-allocation abs() above —
+        # a short's negative qty must ADD to gross exposure, not net against a
+        # long and mask a book that's actually 100%+ gross exposed.
         _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
         _nav = self._broker.get_cash() + _invested_usd
-        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
+        _gross_invested_usd = sum(abs(p["qty"]) * p["current_price"] for p in _positions_now)
+        _current_invested_pct = (_gross_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
         position_size_usd = _nav * final_pct / 100
         adv_usd = research.avg_daily_volume_usd if research else None
         veto = self._risk.validate_order(
@@ -1210,9 +1224,15 @@ class RegimeAwareOrchestrator:
             return False
 
         _positions_now = self._broker.get_positions()
+        # NAV stays signed (net equity: a short's negative qty correctly reduces
+        # NAV as the price rises). The invested-% CAP CHECK below is a gross
+        # exposure measure, same reasoning as the sector-allocation abs() above —
+        # a short's negative qty must ADD to gross exposure, not net against a
+        # long and mask a book that's actually 100%+ gross exposed.
         _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
         _nav = self._broker.get_cash() + _invested_usd
-        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
+        _gross_invested_usd = sum(abs(p["qty"]) * p["current_price"] for p in _positions_now)
+        _current_invested_pct = (_gross_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
         position_size_usd = _nav * final_pct / 100
         adv_usd = candidate.research.avg_daily_volume_usd if candidate.research else None
         veto = self._risk.validate_order(
@@ -1328,9 +1348,15 @@ class RegimeAwareOrchestrator:
         final_pct = min(score.position_pct, self._cfg.risk.max_short_position_pct)
 
         _positions_now = self._broker.get_positions()
+        # NAV stays signed (net equity: a short's negative qty correctly reduces
+        # NAV as the price rises). The invested-% CAP CHECK below is a gross
+        # exposure measure, same reasoning as the sector-allocation abs() above —
+        # a short's negative qty must ADD to gross exposure, not net against a
+        # long and mask a book that's actually 100%+ gross exposed.
         _invested_usd = sum(p["qty"] * p["current_price"] for p in _positions_now)
         _nav = self._broker.get_cash() + _invested_usd
-        _current_invested_pct = (_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
+        _gross_invested_usd = sum(abs(p["qty"]) * p["current_price"] for p in _positions_now)
+        _current_invested_pct = (_gross_invested_usd / _nav * 100.0) if _nav > 0 else 0.0
         position_size_usd = _nav * final_pct / 100
         adv_usd = candidate.research.avg_daily_volume_usd if candidate.research else None
         veto = self._risk.validate_order(

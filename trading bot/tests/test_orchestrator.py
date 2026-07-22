@@ -57,6 +57,43 @@ def test_pipeline_skips_entries_when_at_capacity(mocker, orch):
     assert orch._portfolio.enforce_stop_losses.call_count >= 1
 
 
+def test_invested_pct_gate_uses_gross_not_net_exposure(mocker, orch):
+    """A mixed long+short book must be measured by GROSS exposure
+    (abs(qty) summed) against max_invested_pct, not net/signed exposure —
+    a short's negative qty must not net against a long and mask a book that
+    is actually far over the cap. NAV itself stays signed/net (correct
+    equity accounting) — only the cap-check ratio is gross.
+
+    Book: cash=100k, long 100@$1000=$100k, short -90@$1000=-$90k.
+    NAV = 100k + 100k - 90k = $110k. Net exposure ratio ~9% (well under the
+    80% default cap — the pre-fix bug would have let entries through here).
+    Gross exposure ratio ~172.7% (100k+90k)/110k — correctly over the cap.
+    """
+    from screener.factor_scorer import FactorCandidate
+
+    broker = MagicMock()
+    broker.get_cash.return_value = 100_000
+    broker.get_positions.return_value = [
+        {"ticker": "AAPL", "qty": 100, "current_price": 1000.0},
+        {"ticker": "TSLA", "qty": -90, "current_price": 1000.0},
+    ]
+    orch._broker = broker
+    # A non-empty candidate list is required so the assertion below actually
+    # distinguishes gate-open from gate-closed — an empty list (the fixture's
+    # default) would make _process_fundamental_candidate uncalled either way.
+    mocker.patch("orchestration.main_loop.run_factor_screen", return_value=[
+        FactorCandidate(ticker="MSFT", composite_score=80, value_score=25,
+                         momentum_score=28, quality_score=27, research=None),
+    ])
+    process_spy = mocker.patch.object(orch, "_process_signal")
+    fundamental_spy = mocker.patch.object(orch, "_process_fundamental_candidate")
+
+    orch.run_morning_pipeline()
+
+    process_spy.assert_not_called()
+    fundamental_spy.assert_not_called()
+
+
 def test_run_morning_pipeline_passes_configured_screener_top_n(mocker, orch):
     """run_factor_screen's top_n must come from UniverseConfig.screener_top_n,
     not a hardcoded constant — proves the config value is actually wired
