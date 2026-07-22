@@ -328,6 +328,13 @@
 > `_run_hedge_pass` computes this from the same broker-positions × DB-direction cross-reference
 > already used for sector allocation. New tests proven red (old code ignored the reduction)
 > then green. Test count: **1071** (full suite green, zero known failures).
+> 2026-07-22 (short-selling prep, item 2d of 6: short borrow fees): the short-side AI cost
+> hurdle shared `_ESTIMATED_COST_PCT` verbatim with the long side — no borrow-fee term at
+> all. Added `ExecutionConfig.short_borrow_cost_pct` (flat addend, default 0.5), applied only
+> in `_process_fundamental_short_candidate`'s `score_entry_short` call — real per-name borrow
+> rates aren't available via the paper API, so this is an explicitly-flagged conservative
+> approximation, not a precise model. New tests proven red then green. Test count: **1073**
+> (full suite green, zero known failures).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

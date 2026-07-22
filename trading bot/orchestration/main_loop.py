@@ -1317,9 +1317,13 @@ class RegimeAwareOrchestrator:
             log.info("Skipping short %s: upcoming event — %s", ticker, event_reason)
             return False
 
+        # Short-side cost hurdle = the shared round-trip estimate + a flat borrow-fee
+        # addend (ExecutionConfig.short_borrow_cost_pct) — real per-name borrow rates
+        # aren't available via the paper API; see that field's docstring for why this
+        # is a conservative approximation, not a precise model (design spec Q4).
         score: EntryScore = score_entry_short(
             sector=sector,
-            estimated_cost_pct=_ESTIMATED_COST_PCT,
+            estimated_cost_pct=_ESTIMATED_COST_PCT + self._cfg.execution.short_borrow_cost_pct,
             factor_score=candidate.composite_score,
             ticker=ticker,
             research=candidate.research,

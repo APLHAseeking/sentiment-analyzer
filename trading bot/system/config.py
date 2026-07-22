@@ -298,6 +298,13 @@ class ExecutionConfig:
     commission_per_share: float = 0.0    # commission (zero for Alpaca paper)
     initial_simulated_cash: float = 100_000.0
     fill_delay_bars: int = 0             # bars before fill (0 = immediate)
+    # Flat addend to the short-side AI entry hurdle's estimated_cost_pct, on top
+    # of the shared long/short round-trip cost estimate. Real per-name stock-
+    # borrow rates vary widely (near-zero for liquid large caps, materially
+    # higher for hard-to-borrow names) and Alpaca does not expose them via the
+    # paper API — this is a conservative flat approximation, not a real per-name
+    # borrow-fee model. Resolves the short-selling design spec's open question 4.
+    short_borrow_cost_pct: float = 0.5
 
 
 # ---------------------------------------------------------------------------

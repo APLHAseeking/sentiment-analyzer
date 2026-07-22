@@ -2618,6 +2618,42 @@ def test_process_fundamental_short_candidate_opens_short_position(mocker, orch):
     assert call_kwargs["initial_stop_pct"] == orch._cfg.risk.short_trailing_stop_pct
 
 
+def test_short_candidate_cost_hurdle_includes_borrow_fee_addend(mocker, orch):
+    """score_entry_short must receive _ESTIMATED_COST_PCT PLUS
+    ExecutionConfig.short_borrow_cost_pct, not the bare long-side constant —
+    real per-name borrow rates aren't modeled, so this flat addend is the
+    short-selling design spec's resolution of open question 4."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+    from screener.factor_scorer import FactorCandidate
+    from orchestration.main_loop import _ESTIMATED_COST_PCT
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    score_spy = mocker.patch(
+        "orchestration.main_loop.score_entry_short",
+        return_value=EntryScore(
+            conviction=8, position_pct=3.0,
+            rationale="overvalued", entry="sell", risk_flags=(),
+        ),
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=50.0))
+    orch._risk.validate_order.return_value = RiskVeto(allowed=True, reason="OK", size_multiplier=1.0)
+    orch._portfolio.open_position.return_value = True
+    candidate = FactorCandidate(
+        ticker="XYZ", composite_score=10, value_score=5,
+        momentum_score=3, quality_score=4, research=None,
+    )
+
+    orch._process_fundamental_short_candidate(candidate, {})
+
+    expected = _ESTIMATED_COST_PCT + orch._cfg.execution.short_borrow_cost_pct
+    assert score_spy.call_args[1]["estimated_cost_pct"] == pytest.approx(expected)
+    assert expected > _ESTIMATED_COST_PCT  # the addend must actually raise the hurdle
+
+
 def test_process_fundamental_short_candidate_uses_regime_aware_sizing(mocker, orch):
     """A crash regime (short multiplier 1.0) must size a short short candidate
     larger than the identical candidate would get in a bull regime (short

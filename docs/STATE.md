@@ -85,6 +85,14 @@ below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-22 (fix-plan Step 2d of 5, short borrow fees): the short-side AI cost hurdle shared
+  `_ESTIMATED_COST_PCT` verbatim with longs — no borrow-fee term. Added
+  `ExecutionConfig.short_borrow_cost_pct` (flat addend, default 0.5), applied only at the short
+  candidate's `score_entry_short` call. Explicitly flagged as a conservative approximation —
+  real per-name borrow rates aren't available via the paper API. RESULT: 1073 passed (was
+  1071), 2 new tests, proven red→green. Fourth of the 5 short-selling prerequisite fixes
+  (design spec's open question 4). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md
+  #history` (2026-07-22, fifth entry).
 - 2026-07-22 (fix-plan Step 2c of 5, hedge-mechanism overlap): `hedge/hedge_engine.py` had no
   awareness of open per-stock shorts — a short and the broad inverse-ETF hedge could
   double-count the same bearish thesis. Added `existing_short_pct` param to

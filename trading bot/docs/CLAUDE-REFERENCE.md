@@ -1083,3 +1083,18 @@ closed market.
 > NAV computed and passed through). 3 of the 4 proven red (old code ignored the reduction)
 > then green; the 4th (default-zero) is itself the no-behavior-change regression guard. Test
 > count: **1071 passed** (was 1067; +4 new).
+> 2026-07-22 (short-selling prep, item 2d of 6: short borrow fees): the design spec's 4th open
+> question. `_process_fundamental_short_candidate` passed `score_entry_short` the bare
+> `_ESTIMATED_COST_PCT` module constant — identical to every long call site, with no borrow-fee
+> term anywhere despite the spec explicitly flagging that short borrow costs can be materially
+> higher than the ~0.10% long round-trip estimate for some names. Added
+> `ExecutionConfig.short_borrow_cost_pct` (default 0.5, a flat addend) applied only at the
+> short candidate's `score_entry_short` call site:
+> `estimated_cost_pct=_ESTIMATED_COST_PCT + self._cfg.execution.short_borrow_cost_pct`. Real
+> per-name stock-borrow rates vary widely and Alpaca's paper API doesn't expose them, so this
+> is documented explicitly as a conservative flat approximation, not a real per-name model —
+> consistent with this repo's convention of being honest about what's calibrated vs. assumed
+> (e.g. the SUE PIT backtest's honest null result). 2 new tests (`tests/test_orchestrator.py`
+> — the short candidate's cost hurdle equals constant+addend, proven red against the pre-fix
+> line then green; `tests/test_config.py` — default is a positive addend). Test count: **1073
+> passed** (was 1071; +2 new).

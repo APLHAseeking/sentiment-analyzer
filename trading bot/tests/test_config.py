@@ -68,6 +68,12 @@ def test_regime_size_multiplier_keys_match_label_maps():
         # (We allow missing keys; the engine falls back to 1.0)
 
 
+def test_short_borrow_cost_pct_is_positive_addend():
+    """A positive default so the short-side cost hurdle is strictly tighter
+    than the shared long/short round-trip estimate alone (design spec Q4)."""
+    assert Settings().execution.short_borrow_cost_pct > 0
+
+
 def test_short_regime_size_multiplier_is_inverse_tilt_of_long():
     """Short-selling design spec Q1: shorts should size UP where longs size
     DOWN (bearish regimes) and DOWN where longs size UP (bullish regimes)."""
