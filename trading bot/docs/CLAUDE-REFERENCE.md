@@ -1219,3 +1219,62 @@ closed market.
 > session: **1100 passed, 1 deselected** (the deselect is the same pre-existing, unrelated
 > flaky `tests/test_heartbeat.py` test noted in the 2e entry — a concurrent uncommitted
 > session's file, not touched here).
+> 2026-07-23 (scheduler-wedge diagnostics, live restart, disablesleep, one accidental BTM
+> reset — commits `ea82574`, `e10309d`): started from a live `[JOB_MISSED]` Slack alert. Found
+> the fresh 07-22 13:05 restart had wedged again on its own the same day (bot.log silent
+> 13:05:56→17:02:20, ~3h56m, missing the 15:40/15:45/16:00 jobs) — `pmset -g log` showed the
+> bot's own `caffeinate` assertion held continuously through the gap, ruling out system sleep
+> for this occurrence specifically and contradicting the standing sleep-event hypothesis. Added
+> `monitoring/heartbeat.py` (TDD, `tests/test_heartbeat.py`): a daemon thread inside the bot
+> process, no new daemon/launchd/cron/permission surface, that logs a heartbeat and overwrites
+> `bot_threaddump.log` with every thread's stack every 5 min, wired into
+> `orchestration/main_loop.py::start()`, mocked in the `orch`/`orch_fitted` test fixtures (same
+> pattern as `write_status_file`). Full suite 1088 passed at the time.
+>
+> Same day, a second live `[JOB_MISSED]` alert (13:00 `run_screener_prefetch`) exposed a THIRD,
+> larger wedge: bot.log silent 07-22 22:30:01→07-23 14:03:23 (~15.5h). `pmset -g log` this time
+> showed a real 63-minute Clamshell Sleep (11:23:26→12:26:50) that `caffeinate -i -s` cannot
+> prevent (lid-close bypasses it entirely — a different mechanism than the already-fixed Power
+> Nap issue) — but that only explains ~1h of the ~15.5h gap; the remaining ~14h stayed
+> unexplained even after a live `/usr/bin/sample` of the running process showed both threads in
+> ordinary idle-wait states (nothing stuck to catch). Also found: the live process (PID 79823)
+> had never been restarted since 07-22 13:05, so it was still running pre-heartbeat code —
+> `bot_threaddump.log` didn't exist because the fix was never deployed. Restarted (user-approved,
+> confirmed nothing was mid-job first) via the documented `nohup caffeinate -i -s
+> /opt/homebrew/bin/python3 run_bot.py` command; new PID confirmed on a commit with `ea82574` as
+> a verified ancestor, `monitoring.heartbeat` logging live, `bot_threaddump.log` populated with
+> real content — the fix is now actually running, not just committed.
+>
+> User then approved `sudo pmset -a disablesleep 1` (machine-wide, not bot-scoped — closing the
+> lid no longer sleeps anything on this Mac at all, until `disablesleep 0`) to remove Clamshell
+> Sleep as a wedge cause going forward. Confirmed via `pmset -g everything` → `SleepDisabled 1`
+> (note: `pmset -g` alone does not show this key). One real mistake along the way: told the user
+> to prefix the command with `!` to run it in a native Terminal (needed for `sudo`'s password
+> prompt) — `!` is a Claude-Code-chat-only convention; in the user's actual zsh, a leading `!`
+> is history expansion, and `!sudo` re-ran their last `sudo` command (`sfltool resetbtm`) with
+> the intended pmset text appended as garbage arguments. `sfltool` errored on `-a` as an invalid
+> option but still printed `Database reset.` — confirmed via `sfltool dumpbtm` that the
+> system-wide Background Task Management approval database is now empty for both UID -2 and
+> UID 501. No files touched (plists on disk are untouched — enumerated
+> `~/Library/LaunchAgents/`, `/Library/LaunchAgents/`, `/Library/LaunchDaemons/` to confirm),
+> bot itself unaffected (manual `nohup`, not a registered background item), watchdog/dead-man's-
+> switch already inert — but every other app on this Mac with a login/background item (Google
+> Update/Keystone, Microsoft OneDrive/Office/Teams/Defender helpers, Zoom updater, Steam clean,
+> XQuartz) may need re-approval via System Settings → General → Login Items & Extensions as
+> they relaunch; this cannot be scripted, Apple requires human interaction there by design.
+>
+> Attempted to close out the three resulting open items: (1) the two 2026-07-21
+> `ORDER_REJECTED` fixes are still unverified against real Alpaca — grepped `bot.log` since the
+> restart, zero `ORDER_REJECTED`/`40310000` hits, today's stop placements all succeeded clean on
+> the first attempt, so the retry path hasn't been exercised yet, not provably fixed or broken;
+> (2) the remaining ~14h wedge mechanism has no CAUSE line to act on — `disablesleep` removes
+> the confirmed-sleep portion, but if wedges recur with it on, sleep was never the whole story;
+> nothing to code without a recurrence and a thread dump; (3) BTM re-approval is a human-only
+> System Settings task, enumerated the concrete plist list above instead of guessing generically.
+> Also noted, not fixed: a concurrent session's two independent runs (this session's own file,
+> committed as `ea82574`, already had the 2.0s→5.0s timeout widening) still logged
+> `tests/test_heartbeat.py` as flaky/deselected under full-suite load even after that fix — real
+> wall-clock polling under heavy concurrent CPU contention, not touched further this session;
+> flagged as an open item for a future pass to make deterministic (event-based sync instead of
+> timeout polling) rather than widening the timeout again. Test count: **1100** (full suite
+> green aside from the noted heartbeat-under-load flake).

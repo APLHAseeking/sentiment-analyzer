@@ -303,6 +303,23 @@
 > test fixtures (same pattern as `write_status_file`) to avoid spawning a real thread or writing
 > the dump file during tests. Test count: **1088** (full suite green, zero known failures; +30 net
 > from `tests/test_heartbeat.py`).
+> Same day, a second live alert exposed a bigger, third wedge (bot.log silent 07-22
+> 22:30:01→07-23 14:03:23, ~15.5h) — this time `pmset -g log` found a real 63-min Clamshell
+> Sleep that `caffeinate` cannot prevent (lid-close bypasses it, distinct from the already-fixed
+> Power Nap issue), explaining only ~1h of the gap; the remaining ~14h is still unexplained.
+> Also found the live process had never restarted since 07-22 13:05, so the heartbeat fix above
+> was never actually deployed — restarted (user-approved) to load it, confirmed live via the
+> `monitoring.heartbeat` log line and a populated `bot_threaddump.log`. User approved `sudo
+> pmset -a disablesleep 1` (confirmed via `pmset -g everything` → `SleepDisabled 1`) to remove
+> lid-close sleep as a cause going forward — machine-wide, not bot-scoped. One real mistake:
+> instructing `!sudo pmset...` in a native Terminal triggered zsh history expansion instead of
+> Claude Code's own chat-only `!` convention, silently re-running `sudo sfltool resetbtm` with
+> the pmset text as garbage arguments — confirmed via `sfltool dumpbtm` that it reset the
+> system-wide Background Task Management approval database (no files touched, bot unaffected,
+> other apps' login items enumerated for manual re-approval). Full detail:
+> `docs/CLAUDE-REFERENCE.md#history`. Test count: **1100** (full suite green aside from a noted
+> `tests/test_heartbeat.py` flake under concurrent full-suite load — timeout already widened
+> once, not fully solved).
 > 2026-07-22 (congressional signal disabled): the first of six open items from
 > `docs/BOT_REVIEW_2026-07-20.md` — added `Settings.congressional.enabled` (default `False`,
 > mirrors `InsiderConfig`'s pattern), gating both the Phase 2 congressional-entry logic and

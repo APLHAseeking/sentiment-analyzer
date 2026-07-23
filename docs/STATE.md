@@ -8,31 +8,13 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-**2026-07-23: heartbeat deployed live; disablesleep enabled; one accidental BTM reset.** A
-THIRD wedge hit the same day (bot.log silent 07-22 22:30:01→07-23 14:03:23, ~15.5h, missing the
-13:00 `run_screener_prefetch`) — `pmset -g log` this time showed a real 63-min Clamshell Sleep
-(11:23:26→12:26:50) that `caffeinate` cannot prevent (lid-close bypasses it entirely, a
-different mechanism than the already-fixed Power Nap issue), but that only accounts for ~1h of
-the ~15.5h gap; the remaining ~14h is still unexplained, and a live `sample` of the process
-mid-report showed both threads in normal idle-wait states (no live hang to catch). Also found:
-the running process still predated the 2026-07-23 heartbeat commit (never restarted since
-07-22 13:05) — restarted (user-approved) to deploy it; confirmed live via the actual
-`monitoring.heartbeat` log line and a real non-empty `bot_threaddump.log` on the new process
-(PID on commit `f972647`). User then approved `sudo pmset -a disablesleep 1` to stop lid-close
-from forcing sleep at all — confirmed set (`pmset -g everything` → `SleepDisabled 1`; note
-`pmset -g` alone doesn't show this key, only `-g everything` does). Bad incident along the way:
-told the user to prefix the command with `!` to run it in a real Terminal — `!` is a
-Claude-Code-chat convention, not a real-shell one, and in the user's actual zsh it triggered
-history expansion (`!sudo` → their last `sudo` command), which happened to be
-`sudo sfltool resetbtm`, silently swallowing the pmset text as garbage arguments to it. Result:
-the Background Task Management approval database got wiped system-wide (confirmed via
-`sfltool dumpbtm` — empty for both UID -2 and UID 501) — the exact command this file already
-flagged as needing explicit go-ahead, run by accident instead. No files touched, bot itself
-unaffected (manual `nohup`, not a registered background item), watchdog/dead-man's-switch
-already inert — but every OTHER app's login/background item on this Mac may need re-approval
-via System Settings → General → Login Items & Extensions as they relaunch. Next session: check
-`## Next`, especially the still-unexplained ~14h portion of today's gap and whether
-`bot_threaddump.log` caught anything if it recurs.
+**2026-07-23: session closed by user, idle.** Bot live, healthy, restarted, running the
+heartbeat fix on commit `f972647`. Same-day third wedge partly explained (63min confirmed
+Clamshell Sleep, ~14h still not) → `disablesleep` enabled to remove sleep as a cause going
+forward; one accidental `sudo sfltool resetbtm` (shell history-expansion mishap) reset the
+system-wide BTM approval database, no files touched, bot unaffected. Full narrative:
+`trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23 entry). Nothing in progress. Next
+session: check `## Next` below.
 
 ## Next
 - **Read `trading bot/bot_threaddump.log` the next time a scheduler wedge is reported** — it's
@@ -64,6 +46,17 @@ via System Settings → General → Login Items & Extensions as they relaunch. N
   2026-07-20/21 decision to stay manual-only stands regardless. Not urgent: the missed-job
   Slack alert (2026-07-21) means a wedge now gets noticed instead of silently sitting until a
   manual check — it does NOT auto-recover, still needs a manual restart every time.
+- **BTM re-approval checklist (from the 2026-07-23 accidental reset)** — human-only, System
+  Settings → General → Login Items & Extensions: Google Updater/Keystone, Microsoft
+  OneDrive/Office/Teams/Defender helpers, Zoom updater, Steam clean, XQuartz. The bot's own 3
+  plists (watchdog/dead-man's-switch/tradingbot) are already known-inert, no action needed.
+  Cannot be scripted — Apple requires human interaction for background-item approval.
+- `tests/test_heartbeat.py` flaky under concurrent full-suite load (not solo) — timeout already
+  widened once (2.0s→5.0s in `_wait_for`, commit `ea82574`) but a concurrent session's own run
+  still saw it deselected after that fix. Real wall-clock polling under heavy CPU contention;
+  next attempt should make it event-based (heartbeat signals a real sync primitive on its first
+  tick) instead of widening the timeout again — see `docs/CLAUDE-REFERENCE.md#history`'s
+  2026-07-23 entry for detail.
 - **CLOSED 2026-07-23**: Russell 1000 / `FMP_API_KEY` — user decided to accept S&P-500-only
   scope rather than pursue FMP (zero existing integration code, unknown-cost account, no free
   tier confirmed). See `docs/DATA_SOURCES.md`'s Russell 1000 note and
