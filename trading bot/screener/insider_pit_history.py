@@ -223,3 +223,45 @@ def fetch_form4_transactions(start: date, end: date, index_cache_dir: Path,
     if not frames:
         return pd.DataFrame(columns=_TX_COLUMNS)
     return pd.concat(frames, ignore_index=True)
+
+
+_INDEX_CACHE_DIR = Path("pit_cache/insider_index")
+_TRANSACTIONS_CACHE_DIR = Path("pit_cache/insider_transactions")
+_TRANSACTIONS_OUTPUT = Path("pit_cache/insider_transactions_full.parquet")
+
+
+def run_full_fetch() -> pd.DataFrame:
+    """The Step 4c full historical pull — same sample window as Phase 0
+    (backtesting/backtest_factor_pit.py's SAMPLE_START/SAMPLE_END) so the
+    resulting insider PIT backtest is directly comparable. Pilot-measured
+    at ~107k candidate filings / ~215k requests / ~7.2h at the compliant
+    pacing this session; fully resumable via the per-day cache if
+    interrupted. Writes the combined result to a single parquet file so
+    the Step 4d backtest driver doesn't need to know about the per-day
+    cache layout."""
+    from backtesting.backtest_factor_pit import SAMPLE_END, SAMPLE_START, universe_tickers
+    from screener.xbrl_fundamentals import _fetch_ticker_cik_map
+
+    tickers = universe_tickers()
+    cik_map = _fetch_ticker_cik_map(cache=None)
+    cik_filter = {cik_map[t] for t in tickers if t in cik_map}
+    unresolved = sorted(t for t in tickers if t not in cik_map)
+    log.info("Insider PIT history: %d/%d universe tickers resolved to a CIK (%d unresolved)",
+              len(cik_filter), len(tickers), len(unresolved))
+    if unresolved:
+        log.info("Unresolved tickers (no CIK match, excluded): %s", unresolved)
+
+    result = fetch_form4_transactions(
+        SAMPLE_START, SAMPLE_END, _INDEX_CACHE_DIR, _TRANSACTIONS_CACHE_DIR,
+        cik_filter=cik_filter,
+    )
+    _TRANSACTIONS_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
+    result.to_parquet(_TRANSACTIONS_OUTPUT)
+    log.info("Insider PIT history: %d open-market purchase transactions written to %s",
+              len(result), _TRANSACTIONS_OUTPUT)
+    return result
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    run_full_fetch()
