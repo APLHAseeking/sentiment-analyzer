@@ -1136,3 +1136,15 @@ closed market.
 > `monitoring/heartbeat.py` (unrelated to this work, passes 3/3 standalone, flaky only under
 > full-suite load — not this task's file to fix). No clean pre-heartbeat checkpoint exists to
 > state an exact delta against, since that file landed on disk concurrently with this step.
+> 2026-07-23 (Russell 1000 closed out as accepted scope, item 4 of 6 from
+> `docs/BOT_REVIEW_2026-07-20.md`, doc-only): broadening past S&P 500 needs a new data-provider
+> integration (FMP was the candidate) with zero existing code today, plus a paid/unknown-cost
+> account — no free/no-signup source was found viable after ~7 attempts across sessions
+> (iShares CSV serves bot-protection HTML, FTSE Russell redirects, stockanalysis.com is a
+> JS-rendered shell with no exposed API, SlickCharts 403s). User decided to accept S&P-500-only
+> scope rather than keep pursuing this — closed out as a deliberate choice, not a lingering open
+> bug. `docs/DATA_SOURCES.md`'s Russell 1000 row (stale "Active" status, contradicted the
+> logged live failure) corrected with the decision and reasoning; root `docs/STATE.md`'s
+> corresponding `## Next`/`## Open items` bullets closed. No code changed —
+> `bot/universe.py::_build_universe`'s existing S&P-500 fallback is now the bot's permanent
+> behavior, not a degraded state pending a fix.
