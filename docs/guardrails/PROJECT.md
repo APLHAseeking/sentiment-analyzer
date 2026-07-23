@@ -9,21 +9,28 @@
   root `requirements.txt` (flask, pandas, openpyxl, anthropic). Run: `python app.py`.
 - **`trading bot/`** — regime-aware paper trading system (primary active work).
   Full guidance and status/change history in `trading bot/CLAUDE.md`. Run tests
-  with `pytest` from inside `trading bot/` (818 tests). Has its own deps and
-  data caches. Preparing for live (paper-money) Alpaca trading starting the
-  week of 2026-07-06; a full pre-launch review (2026-07-02) fixed 2 new bugs
-  found in strategy code added since the last standalone review, added missing
-  test coverage, and added operational readiness docs (`docs/RUNBOOK.md`,
-  alert webhook config) — see `trading bot/CLAUDE.md`'s status banner for
-  details. `ALERT_WEBHOOK_URL` is set in `trading bot/.env` (confirmed
-  2026-07-17) — this line previously said it was outstanding; that was stale.
-  A reliability watchdog (`monitoring/watchdog.py`, `docs/RUNBOOK.md#watchdog`)
-  and a dead-man's-switch (`monitoring/dead_mans_switch.py`) now both run as
-  `/Library/LaunchDaemons/` LaunchDaemons (survive reboot/logout, not a
-  cold boot from fully powered off — FileVault's pre-boot password gate is
-  unavoidable) and auto-restart the bot on staleness, crash, or stale
-  deploy — see `docs/RUNBOOK.md#watchdog` for the full mechanism and the
-  post-reboot verification checklist.
+  with `pytest` from inside `trading bot/` — current count drifts every
+  session, don't hardcode it here, see `trading bot/CLAUDE.md`'s status banner
+  instead. Has its own deps and data caches. Live (paper-money) Alpaca trading
+  started 2026-07-06 and has been running since — see `trading bot/CLAUDE.md`'s
+  status banner for the full change history. `ALERT_WEBHOOK_URL` is set in
+  `trading bot/.env` (confirmed 2026-07-17).
+  **Watchdog/dead-man's-switch auto-restart is OFF, abandoned by deliberate
+  decision (2026-07-20, reconfirmed 2026-07-21/23)** — `monitoring/watchdog.py`
+  and `monitoring/dead_mans_switch.py` are manual-only
+  (`python -m monitoring.watchdog` / `monitoring.dead_mans_switch`); do not
+  re-propose launchd or cron automation for these without materially new
+  information. The main bot process itself is unaffected and still needs to
+  be checked manually — see `docs/RUNBOOK.md#after-a-reboot` for the current
+  operational reality (this paragraph previously described the watchdog as
+  actively auto-restarting via LaunchDaemons; that was stale and actively
+  misleading — corrected 2026-07-23).
+  Six items from a full bot review (`trading bot/docs/BOT_REVIEW_2026-07-20.md`)
+  were closed out 2026-07-22/23, including a real point-in-time (PIT) backtest
+  of the bot's primary signal against genuine historical data for the first
+  time — **the gate failed** (no statistically significant edge over SPY found);
+  see `trading bot/docs/PHASE0_BACKTEST_2026-07-23.md`. No live-pipeline code
+  changed as a result.
 - **`docs/superpowers/`** — `plans/` and `specs/` for past and current work.
 
 Thesis inputs at root: `stoxx600_constituents.csv`, `Thesis STOXX, and time
