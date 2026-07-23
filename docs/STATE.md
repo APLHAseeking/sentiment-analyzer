@@ -8,18 +8,31 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-**2026-07-23: added scheduler-wedge diagnostics.** Bot live, healthy, on current HEAD, scheduler
-fresh since the 07-22 13:05 restart. Same restart wedged again on its own the same day
-(13:05:56→17:02:20, ~3h56m silent) — `pmset -g log` this time showed the bot's `caffeinate`
-sleep-prevention assertion held continuously through the gap, ruling out system sleep for this
-occurrence specifically (contradicts the standing sleep-event hypothesis below). Root cause
-still unknown and unreproducible on demand. Added `trading bot/monitoring/heartbeat.py`
-(TDD, `tests/test_heartbeat.py`, full suite 1088/1088 green) — an in-process daemon thread, no
-new daemon/launchd/cron/permission surface, that logs a heartbeat and overwrites
-`bot_threaddump.log` with every thread's stack every 5 min so the NEXT wedge leaves real
-evidence instead of a silent log gap. Nothing else in progress. Next session: check `## Next`
-below, especially the two unproven-live fixes, the unexplained wedge, and — once it recurs —
-read `bot_threaddump.log` before doing anything else.
+**2026-07-23: heartbeat deployed live; disablesleep enabled; one accidental BTM reset.** A
+THIRD wedge hit the same day (bot.log silent 07-22 22:30:01→07-23 14:03:23, ~15.5h, missing the
+13:00 `run_screener_prefetch`) — `pmset -g log` this time showed a real 63-min Clamshell Sleep
+(11:23:26→12:26:50) that `caffeinate` cannot prevent (lid-close bypasses it entirely, a
+different mechanism than the already-fixed Power Nap issue), but that only accounts for ~1h of
+the ~15.5h gap; the remaining ~14h is still unexplained, and a live `sample` of the process
+mid-report showed both threads in normal idle-wait states (no live hang to catch). Also found:
+the running process still predated the 2026-07-23 heartbeat commit (never restarted since
+07-22 13:05) — restarted (user-approved) to deploy it; confirmed live via the actual
+`monitoring.heartbeat` log line and a real non-empty `bot_threaddump.log` on the new process
+(PID on commit `f972647`). User then approved `sudo pmset -a disablesleep 1` to stop lid-close
+from forcing sleep at all — confirmed set (`pmset -g everything` → `SleepDisabled 1`; note
+`pmset -g` alone doesn't show this key, only `-g everything` does). Bad incident along the way:
+told the user to prefix the command with `!` to run it in a real Terminal — `!` is a
+Claude-Code-chat convention, not a real-shell one, and in the user's actual zsh it triggered
+history expansion (`!sudo` → their last `sudo` command), which happened to be
+`sudo sfltool resetbtm`, silently swallowing the pmset text as garbage arguments to it. Result:
+the Background Task Management approval database got wiped system-wide (confirmed via
+`sfltool dumpbtm` — empty for both UID -2 and UID 501) — the exact command this file already
+flagged as needing explicit go-ahead, run by accident instead. No files touched, bot itself
+unaffected (manual `nohup`, not a registered background item), watchdog/dead-man's-switch
+already inert — but every OTHER app's login/background item on this Mac may need re-approval
+via System Settings → General → Login Items & Extensions as they relaunch. Next session: check
+`## Next`, especially the still-unexplained ~14h portion of today's gap and whether
+`bot_threaddump.log` caught anything if it recurs.
 
 ## Next
 - **Read `trading bot/bot_threaddump.log` the next time a scheduler wedge is reported** — it's
@@ -33,32 +46,39 @@ read `bot_threaddump.log` before doing anything else.
   whose qty grew past its old stop (previously stuck: HIG/LVS/VZ) — should now succeed instead
   of repeating `ORDER_REJECTED`; (B) a same-day new entry hitting the wash-trade race — should
   now clear within the widened 5x/~20s retry instead of failing outright.
-- **Investigate the 07-21/22/23 scheduler wedge root cause** — two separate silent gaps now: the
-  07-21 22:30→07-22 13:05 restart (~14.5h) and the fresh process wedging again the same day,
-  07-22 13:05:56→17:02:20 (~3h56m), missing the 15:40/15:45/16:00 jobs (caught by the 07-21
-  `job_missed` alert). The second gap is confirmed NOT a sleep event (`caffeinate` assertion
-  held throughout) — the first was never confirmed either way, and no mechanism is confirmed
-  for either. `monitoring/heartbeat.py` (added 2026-07-23) exists so the next occurrence leaves
-  a real thread-stack dump instead of another unexplained gap — see the item above. Watchdog is
-  off (see below), so nothing will catch a recurrence automatically.
+- **Investigate the remaining scheduler wedge root cause** — three silent gaps so far: 07-21
+  22:30→07-22 13:05 (~14.5h, mechanism never confirmed), 07-22 13:05:56→17:02:20 (~3h56m,
+  confirmed NOT sleep — `caffeinate` held throughout), and 07-22 22:30:01→07-23 14:03:23
+  (~15.5h, only ~1h explained by a confirmed real Clamshell Sleep — ~14h still unexplained).
+  `disablesleep` (see above) should remove sleep as a cause going forward; if wedges keep
+  happening with it on, sleep was never the whole story and the remaining mechanism is still
+  open. `monitoring/heartbeat.py` (added 2026-07-23, live-verified deployed as of the 15:31
+  restart) exists so the next occurrence leaves a real thread-stack dump instead of another
+  unexplained gap — see the item above. Watchdog is off (see below), so nothing auto-recovers.
 - Watchdog/dead-man's-switch auto-restart remains non-functional and **abandoned by
-  deliberate decision** (2026-07-20, reconfirmed 2026-07-21) — `sudo sfltool resetbtm` is
-  still the only untried lever (resets ALL apps' background-item approvals on this Mac, not
-  just this project) and still needs the user's explicit go-ahead before anyone runs it. Not
-  urgent: the new missed-job Slack alert (2026-07-21) means a wedge now gets noticed instead
-  of silently sitting until a manual check — it does NOT auto-recover, still needs a manual
-  restart every time.
+  deliberate decision** (2026-07-20, reconfirmed 2026-07-21). `sudo sfltool resetbtm` — the
+  lever this file previously flagged as needing explicit go-ahead — was run **accidentally**
+  2026-07-23 (shell history-expansion mishap, not a deliberate watchdog attempt; see `## Now`)
+  and did reset the system-wide BTM approval database. Re-running it deliberately for the
+  watchdog is now moot either way (nothing to reset twice) but still not planned — the
+  2026-07-20/21 decision to stay manual-only stands regardless. Not urgent: the missed-job
+  Slack alert (2026-07-21) means a wedge now gets noticed instead of silently sitting until a
+  manual check — it does NOT auto-recover, still needs a manual restart every time.
 - **CLOSED 2026-07-23**: Russell 1000 / `FMP_API_KEY` — user decided to accept S&P-500-only
   scope rather than pursue FMP (zero existing integration code, unknown-cost account, no free
   tier confirmed). See `docs/DATA_SOURCES.md`'s Russell 1000 note and
   `trading bot/docs/BOT_REVIEW_2026-07-20.md`. Not an open item anymore.
 - requirements.txt pinning/lockfile: still not started.
-- Remaining sleep-wedge hardening (Power Nap disabled 2026-07-17; root cause of wedges is
-  confirmed real macOS sleep events, not a code bug): if wedges keep recurring despite that,
-  next step is user's call between `sudo pmset -a disablesleep 1` (same laptop, real
-  battery/heat tradeoff) or migrating off the laptop entirely (Oracle Cloud Always Free / a
-  small VPS / a home always-on device) — see `docs/RUNBOOK.md#sleep-wedges` for the full
-  writeup. Not actioned without the user choosing.
+- **DONE 2026-07-23**: `sudo pmset -a disablesleep 1` applied system-wide (confirmed via
+  `pmset -g everything` → `SleepDisabled 1`) after Clamshell Sleep (lid-close, distinct from
+  the already-fixed Power Nap issue) was confirmed to have caused a real 63-min gap during
+  today's wedge. This is a machine-wide setting, not scoped to the bot — closing the lid no
+  longer sleeps anything on this Mac until it's turned back off (`sudo pmset -a disablesleep
+  0`). Watch for: (a) whether wedges stop recurring now that lid-close sleep is off, (b)
+  battery drain if ever run unplugged (fully awake, no suspend), (c) any other app noticing the
+  lid-close-sleep change. Migrating off the laptop entirely (Oracle Cloud Always Free / a small
+  VPS / a home always-on device) remains the bigger, not-yet-needed option if wedges persist
+  even with this — see `docs/RUNBOOK.md#sleep-wedges`.
 
 ## Constraints
 - User 2026-07-17 (this review thread): report findings for sign-off first, no fixes applied
