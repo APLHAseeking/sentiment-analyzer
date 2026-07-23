@@ -1412,3 +1412,23 @@ closed market.
 > `backtesting/backtest_sue_pit.py`'s `hac_mean_tstat()` (step 5) — the full historical price
 > pull across all ~1,206 tickers happens as part of that step, once the harness is otherwise
 > ready to consume it.
+> 2026-07-23 (live incident, ORDER_REJECTED on LVS close, fixed): user-reported Slack alerts
+> led to two findings. (1) DEAD_FEED for Capitol Trades at 15:42 — capitoltrades.com 429'd
+> both the JSON and HTML tiers, retries exhausted in ~6s; external rate-limiting, not a code
+> bug, and zero trading impact (congressional signal already disabled for trading decisions
+> since 2026-07-22, scraping is DB-logging only). (2) A real bug: `run_exit_review` decided to
+> exit LVS at 16:00 and called `close_position`, which rejected on every retry with Alpaca
+> code 40310000 ("insufficient qty available", `available: 0`) — a resting trailing stop
+> placed 18 minutes earlier (15:41:48) reserved the position's *entire* qty
+> (`held_for_orders` == `existing_qty`), and `close_position`/`reduce_position` never
+> cancelled a ticker's resting stop before attempting to sell it, only after
+> (`_book_closed_position`, needed there for the separate reconcile-ghost-position caller
+> that has no prior cancel of its own). `bot/broker.py::cancel_stop_order(ticker,
+> order_id=None)` already existed for exactly this ("full close / reduce path" per its own
+> docstring) — it just wasn't being called before the sell. Fixed: both `close_position` and
+> `reduce_position` now call `cancel_stop_order(ticker)` up front, before placing the closing
+> order (`bot/portfolio.py`). `test_close_position_cancels_resting_stop` updated for the now-
+> expected 2x call count (pre-sell + the existing post-fill cancel); 2 new regression tests
+> added, proven red (stashed the fix, both failed with the exact live error shape) then green.
+> Test count: **+2** from whatever this session's running baseline was. Not yet live-verified
+> against the real stuck LVS position — next step.

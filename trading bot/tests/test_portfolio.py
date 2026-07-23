@@ -1068,7 +1068,79 @@ def test_close_position_cancels_resting_stop(mock_broker, db):
         signal_id=None, entry_price=100.0, entry_date="2026-04-01",
     )
 
-    mock_broker.cancel_stop_order.assert_called_once_with("AAPL")
+    # Called twice: once up front (frees any qty a resting stop still holds,
+    # so the sell itself can't be rejected) and once in _book_closed_position
+    # (the shared post-fill cleanup also used by reconcile_with_broker's
+    # ghost-position path, which has no pre-sell cancel of its own). The
+    # second call is a harmless no-op once the first has already cleared it.
+    assert mock_broker.cancel_stop_order.call_count == 2
+    mock_broker.cancel_stop_order.assert_any_call("AAPL")
+
+
+def test_close_position_frees_stop_before_selling(mock_broker, db):
+    """A resting stop reserving the FULL qty must not permanently block
+    close_position's own sell (live 2026-07-23 LVS incident: Alpaca rejected
+    every retry with available=0 because a same-qty stop was still resting).
+    The stop has to be cancelled BEFORE the sell is attempted, not only after."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    stop_cancelled = {"done": False}
+
+    def _cancel_stop(ticker, order_id=None):
+        stop_cancelled["done"] = True
+
+    def _place_order(ticker, side, qty):
+        order = Order(ticker=ticker, side=OrderSide.SELL, qty=qty, order_type=OrderType.MARKET)
+        if not stop_cancelled["done"]:
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = "insufficient qty available for order (available: 0)"
+        else:
+            order.status = OrderStatus.FILLED
+            order.filled_qty = qty
+        return order
+
+    mock_broker.cancel_stop_order.side_effect = _cancel_stop
+    mock_broker.place_order.side_effect = _place_order
+    db.insert_position("LVS", 40.0, 21.795129576, 5.0, "2026-07-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    closed = portfolio.close_position(
+        "LVS", 21.795129576, exit_price=39.0, exit_reason="ai_exit",
+        signal_id=None, entry_price=40.0, entry_date="2026-07-01",
+    )
+
+    assert closed is True
+    assert db.get_closed_positions()[0]["ticker"] == "LVS"
+
+
+def test_reduce_position_frees_stop_before_selling(mock_broker, db):
+    """Same reservation gap as close_position, on the partial-exit path."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    stop_cancelled = {"done": False}
+
+    def _cancel_stop(ticker, order_id=None):
+        stop_cancelled["done"] = True
+
+    def _place_order(ticker, side, qty):
+        order = Order(ticker=ticker, side=OrderSide.SELL, qty=qty, order_type=OrderType.MARKET)
+        if not stop_cancelled["done"]:
+            order.status = OrderStatus.REJECTED
+            order.reject_reason = "insufficient qty available for order (available: 0)"
+        else:
+            order.status = OrderStatus.FILLED
+            order.filled_qty = qty
+        return order
+
+    mock_broker.cancel_stop_order.side_effect = _cancel_stop
+    mock_broker.place_order.side_effect = _place_order
+    db.insert_position("LVS", 40.0, 21.795129576, 5.0, "2026-07-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    reduced = portfolio.reduce_position(
+        "LVS", 21.795129576, exit_price=39.0,
+        signal_id=None, entry_price=40.0, entry_date="2026-07-01",
+    )
+
+    assert reduced is True
 
 
 def test_hedge_stop_pass_does_not_retrail_long_positions(mock_broker, db):

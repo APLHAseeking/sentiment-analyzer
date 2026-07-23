@@ -8,13 +8,21 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-**2026-07-23: session closed by user, idle.** Bot live, healthy, restarted, running the
-heartbeat fix on commit `f972647`. Same-day third wedge partly explained (63min confirmed
-Clamshell Sleep, ~14h still not) → `disablesleep` enabled to remove sleep as a cause going
-forward; one accidental `sudo sfltool resetbtm` (shell history-expansion mishap) reset the
-system-wide BTM approval database, no files touched, bot unaffected. Full narrative:
-`trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23 entry). Nothing in progress. Next
-session: check `## Next` below.
+**2026-07-23 (new): user reported two Slack alerts (DEAD_FEED, ORDER_REJECTED/LVS).**
+DEAD_FEED = capitoltrades.com 429 rate-limit, no code bug, zero trading impact (congressional
+signal already disabled for trading). ORDER_REJECTED = real bug, reproduced: `close_position`/
+`reduce_position` never cancelled a ticker's resting stop before selling, so a same-qty stop
+blocked the sell outright (LVS stuck). Fixed in `bot/portfolio.py` (cancel up front, mirrors
+existing `enforce_stop_losses` pattern); 2 new regression tests proven red then green;
+`pytest tests/test_portfolio.py` 101/101 green. Full detail:
+`trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23 LVS entry). **Not yet live-verified
+against the real stuck LVS position or committed — next step.**
+
+**2026-07-23 (earlier, prior session): session closed by user, idle.** Bot live, healthy,
+restarted, running the heartbeat fix on commit `f972647`. Same-day third wedge partly explained
+(63min confirmed Clamshell Sleep, ~14h still not) → `disablesleep` enabled to remove sleep as a
+cause going forward; one accidental `sudo sfltool resetbtm` (shell history-expansion mishap)
+reset the system-wide BTM approval database, no files touched, bot unaffected.
 
 ## Next
 - **Read `trading bot/bot_threaddump.log` the next time a scheduler wedge is reported** — it's

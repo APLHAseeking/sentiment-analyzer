@@ -195,6 +195,13 @@ class Portfolio:
                        entry_date: str, signal_source: str = "congressional",
                        direction: str = "long") -> bool:
         """Returns True if the position was booked closed, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
+        # A resting stop reserves the position's qty at the broker ("held_for_orders"),
+        # so a sell placed while it's still open can be rejected with zero qty
+        # available even though the position is fully ours. Free it up front —
+        # cancel_stop_order(ticker) with no order_id clears every open stop for
+        # this ticker, which is exactly the full-close case.
+        if hasattr(self.broker, "cancel_stop_order"):
+            self.broker.cancel_stop_order(ticker)
         order = self._place_closing_order_with_retry(ticker, shares, direction)
         _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
         if order.status in _NON_FILL:
@@ -313,6 +320,12 @@ class Portfolio:
                         signal_source: str = "congressional",
                         direction: str = "long") -> bool:
         """Returns True if the partial close was booked, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
+        # Same reservation gap as close_position: a resting stop can hold the
+        # entire qty and block even a partial sell. Free it up front; a fresh
+        # trailing stop for the reduced share count is re-placed by the next
+        # enforce_stop_losses poll regardless (see the cancel below).
+        if hasattr(self.broker, "cancel_stop_order"):
+            self.broker.cancel_stop_order(ticker)
         sell_qty = shares / 2
         order = self._place_closing_order_with_retry(ticker, sell_qty, direction)
         _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)

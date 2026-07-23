@@ -13,6 +13,10 @@
 > the old resting stop reserved -> new stop can never get enough "available" qty from Alpaca)
 > and widened the initial-stop wash-trade retry (3x/~3s -> 5x/~20s, still firing on ~60% of new
 > entries). See the dated entry at the end of this banner.
+> **2026-07-23: fixed `close_position`/`reduce_position` not cancelling a ticker's resting
+> stop before selling** — a same-qty stop reserves 100% of the position at the broker, so the
+> close/reduce sell itself got rejected (`available: 0`), live-reproduced on LVS. See
+> `docs/CLAUDE-REFERENCE.md#history` for full detail.
 > Phase 0 gate: **BLOCKED ON DATA** — real point-in-time data not yet acquired; all historical
 > performance numbers are look-ahead biased until then. See `docs/PHASE0_FINDINGS.md` for gate
 > decision rules and required datasets.
