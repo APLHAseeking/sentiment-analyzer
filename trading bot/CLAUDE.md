@@ -289,6 +289,20 @@
 > reserved, and (B) initial-stop wash-trade rejections still occurring despite the existing
 > 3x retry. Both fixed; see `docs/CLAUDE-REFERENCE.md#history` for full detail. Test count:
 > **1058** (full suite green, zero known failures).
+> 2026-07-22/23 (scheduler-wedge diagnostics, root cause still open): the fresh process from the
+> 07-22 13:05 restart wedged again on its own, ~3h56m with zero `bot.log` output
+> (13:05:56→17:02:20), missing the 15:40/15:45/16:00 jobs (`job_missed` alert fired, matching
+> 2026-07-21's mitigation) before self-recovering. New evidence this time: `pmset -g log` showed
+> the bot's own `caffeinate` sleep-prevention assertion held continuously the whole gap — this
+> occurrence was **not** a system-sleep event, unlike the standing hypothesis. Root cause still
+> unknown and unreproducible on demand. Added `monitoring/heartbeat.py`: a daemon thread inside
+> the same process (no daemon/launchd/cron/permission surface — respects the 2026-07-20/21
+> decision to stop re-litigating that) that logs a heartbeat and overwrites `bot_threaddump.log`
+> with every thread's stack every 5 min, so the next wedge leaves real evidence instead of a
+> silent gap. Wired into `orchestration/main_loop.py::start()`; mocked in the `orch`/`orch_fitted`
+> test fixtures (same pattern as `write_status_file`) to avoid spawning a real thread or writing
+> the dump file during tests. Test count: **1088** (full suite green, zero known failures; +30 net
+> from `tests/test_heartbeat.py`).
 > 2026-07-22 (congressional signal disabled): the first of six open items from
 > `docs/BOT_REVIEW_2026-07-20.md` — added `Settings.congressional.enabled` (default `False`,
 > mirrors `InsiderConfig`'s pattern), gating both the Phase 2 congressional-entry logic and
@@ -335,6 +349,26 @@
 > rates aren't available via the paper API, so this is an explicitly-flagged conservative
 > approximation, not a precise model. New tests proven red then green. Test count: **1073**
 > (full suite green, zero known failures).
+> 2026-07-23 (short-selling prep, item 2e of 6: SimulatedBroker sell-to-open support):
+> `execution/paper_broker.py`'s `SimulatedBroker` rejected any sell with no held position —
+> sell-to-open didn't exist, and it had no `shorting_enabled()`/`is_shortable()` at all, so
+> `Portfolio.open_position`'s short branch would `AttributeError` against it immediately.
+> Added a `shorting_enabled: bool = False` constructor flag (default preserves every existing
+> caller's behavior exactly — a sell with no position still raises when the flag is off) plus
+> `shorting_enabled()`/`is_shortable()` methods mirroring `AlpacaBroker`'s interface. Rewrote
+> `_apply_fill` to handle all 4 direction combinations (open/add long, buy-to-cover a short,
+> open/add a short) while leaving the pre-existing long-only arithmetic byte-identical.
+> `run_bot.py --simulated` now wires `shorting_enabled=settings.strategy.enable_short_selling`.
+> 12 new tests in `tests/test_paper_broker.py`; 7 of them proven red (old code rejected every
+> short-side scenario) then green. Full suite as observed this session: **1087 passed, 1
+> deselected** (1088 collected) — the one deselect is a pre-existing, unrelated flaky test in a
+> concurrent uncommitted session's `tests/test_heartbeat.py` (real-time background-thread
+> timing, passes 3/3 standalone; not touched here, not this task's to fix). Not asserting an
+> exact "+N from baseline" delta this entry — `monitoring/heartbeat.py`'s test count landed
+> concurrently with this work and this banner doesn't have a clean pre-heartbeat checkpoint to
+> diff against. This closes the 5th and final code-level short-selling design-spec open
+> question — only 2f (live-verifying the Alpaca sign convention against a real paper account)
+> remains before the feature is fully prepped, and that stays a manual step, not automated.
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

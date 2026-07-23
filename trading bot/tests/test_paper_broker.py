@@ -229,3 +229,117 @@ def test_place_stop_order_accepts_side_param(broker):
 def test_place_stop_order_still_works_with_no_side(broker):
     order_id = broker.place_stop_order(ticker="AAPL", qty=5.0, stop_price=140.0)
     assert order_id is not None
+
+
+# ------------------------------------------------------------------
+# Short-selling support (sell-to-open / buy-to-cover) — short-selling
+# design spec's open question 5
+# ------------------------------------------------------------------
+
+@pytest.fixture
+def short_broker():
+    return SimulatedBroker(
+        initial_cash=100_000.0, slippage_bps=0.0, commission_per_share=0.0,
+        shorting_enabled=True,
+    )
+
+
+def test_shorting_disabled_by_default():
+    assert SimulatedBroker(initial_cash=100_000.0).shorting_enabled() is False
+
+
+def test_shorting_enabled_flag_reflected(short_broker):
+    assert short_broker.shorting_enabled() is True
+
+
+def test_is_shortable_matches_shorting_enabled_flag(broker, short_broker):
+    assert broker.is_shortable("AAPL") is False
+    assert short_broker.is_shortable("AAPL") is True
+
+
+def test_shorting_disabled_still_rejects_sell_without_position(broker, mocker):
+    """Default (shorting_enabled=False) must preserve the original behavior
+    exactly — a sell with no held position is rejected, not silently opened
+    as a short. Proves the new capability is additive, not a default change."""
+    _mock_price(mocker, "XYZ", 100.0)
+    order = broker.place_order("XYZ", "sell", 5.0)
+    assert order.status == OrderStatus.REJECTED
+
+
+def test_sell_to_open_creates_short_position(short_broker, mocker):
+    _mock_price(mocker, "TSLA", 100.0)
+    order = short_broker.place_order("TSLA", "sell", 10.0)
+    assert order.status == OrderStatus.FILLED
+    assert order.filled_qty == 10.0
+    positions = short_broker._positions
+    assert "TSLA" in positions
+    assert positions["TSLA"].qty == -10.0
+    assert positions["TSLA"].avg_entry_price == 100.0
+
+
+def test_sell_to_open_short_credits_cash(short_broker, mocker):
+    _mock_price(mocker, "TSLA", 100.0)
+    short_broker.place_order("TSLA", "sell", 10.0)
+    assert short_broker.get_cash() == pytest.approx(100_000.0 + 1_000.0)
+
+
+def test_short_position_reduces_equity_as_price_rises(short_broker, mocker):
+    """A short's market_value is negative (qty<0), so a price rise must
+    reduce equity — the correct net-equity direction for a short liability."""
+    _mock_price(mocker, "TSLA", 100.0)
+    short_broker.place_order("TSLA", "sell", 10.0)
+    equity_at_open = short_broker.get_equity()  # cash 101k + (-10*100) = 100k
+    short_broker.set_position_price("TSLA", 120.0)
+    assert short_broker.get_equity() == pytest.approx(equity_at_open - 200.0)
+
+
+def test_buy_to_cover_full_short_removes_position(short_broker, mocker):
+    _mock_price(mocker, "TSLA", 100.0)
+    short_broker.place_order("TSLA", "sell", 10.0)   # open short, cash -> 101,000
+    order = short_broker.place_order("TSLA", "buy", 10.0)  # cover fully
+    assert order.status == OrderStatus.FILLED
+    assert order.filled_qty == 10.0
+    assert "TSLA" not in short_broker._positions
+    assert short_broker.get_cash() == pytest.approx(100_000.0)  # round-trip, no slippage
+
+
+def test_buy_to_cover_partial_short_reduces_qty(short_broker, mocker):
+    _mock_price(mocker, "TSLA", 100.0)
+    short_broker.place_order("TSLA", "sell", 10.0)  # -10 @ 100
+    order = short_broker.place_order("TSLA", "buy", 4.0)  # cover 4 of 10
+    assert order.filled_qty == 4.0
+    assert short_broker._positions["TSLA"].qty == pytest.approx(-6.0)
+    assert short_broker.get_cash() == pytest.approx(100_000.0 + 1_000.0 - 400.0)
+
+
+def test_buy_to_cover_caps_filled_qty_at_short_size(short_broker, mocker):
+    """Requesting to buy more than the short's size must only fill up to the
+    held short quantity (mirrors the existing long-side partial-sell cap)."""
+    _mock_price(mocker, "TSLA", 100.0)
+    short_broker.place_order("TSLA", "sell", 5.0)  # -5 @ 100
+    order = short_broker.place_order("TSLA", "buy", 8.0)  # request more than held
+    assert order.filled_qty == 5.0
+    assert "TSLA" not in short_broker._positions
+
+
+def test_adding_to_existing_short_position(short_broker, mocker):
+    _mock_price(mocker, "TSLA", 100.0)
+    short_broker.place_order("TSLA", "sell", 10.0)  # -10 @ avg 100
+    _mock_price(mocker, "TSLA", 110.0)
+    short_broker.place_order("TSLA", "sell", 5.0)   # add -5 @ 110
+    pos = short_broker._positions["TSLA"]
+    assert pos.qty == pytest.approx(-15.0)
+    assert pos.avg_entry_price == pytest.approx((100.0 * 10 + 110.0 * 5) / 15)
+
+
+def test_long_only_buy_and_sell_unaffected_by_shorting_enabled(short_broker, mocker):
+    """A shorting-enabled broker must still behave identically for ordinary
+    long buy/sell — the new branches must not have disturbed the unchanged
+    long-side arithmetic."""
+    _mock_price(mocker, "AAPL", 150.0)
+    short_broker.place_order("AAPL", "buy", 10.0)
+    assert short_broker._positions["AAPL"].qty == 10.0
+    assert short_broker.get_cash() == pytest.approx(100_000.0 - 1_500.0)
+    short_broker.place_order("AAPL", "sell", 10.0)
+    assert "AAPL" not in short_broker._positions
+    assert short_broker.get_cash() == pytest.approx(100_000.0, abs=0.01)

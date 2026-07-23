@@ -25,6 +25,7 @@ def _make_broker(simulated: bool):
         return SimulatedBroker(
             initial_cash=settings.execution.initial_simulated_cash,
             slippage_bps=settings.execution.slippage_bps,
+            shorting_enabled=settings.strategy.enable_short_selling,
         )
     else:
         from bot.broker import AlpacaBroker

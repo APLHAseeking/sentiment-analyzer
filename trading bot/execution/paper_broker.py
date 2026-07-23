@@ -34,10 +34,16 @@ class SimulatedBroker(BrokerInterface):
         initial_cash: float = 100_000.0,
         slippage_bps: float = 5.0,
         commission_per_share: float = 0.0,
+        shorting_enabled: bool = False,
     ) -> None:
         self._cash = initial_cash
         self._slippage_bps = slippage_bps
         self._commission_per_share = commission_per_share
+        # Default False preserves existing behavior for every current caller
+        # (a sell with no held position still raises, as it always has) —
+        # short-selling design spec's open question 5. Pass True to opt this
+        # simulator into sell-to-open support (see _apply_fill).
+        self._shorting_enabled = shorting_enabled
         # ticker → Position
         self._positions: dict[str, Position] = {}
         # full order history
@@ -59,6 +65,24 @@ class SimulatedBroker(BrokerInterface):
 
     def get_commission_per_share(self) -> float:
         return self._commission_per_share
+
+    def shorting_enabled(self) -> bool:
+        """Simulated account-level shorting capability (set via __init__).
+
+        Mirrors AlpacaBroker.shorting_enabled()'s interface so Portfolio.
+        open_position's short branch works against either broker without a
+        broker-type check. No real account/margin restriction exists here —
+        this is purely the constructor flag."""
+        return self._shorting_enabled
+
+    def is_shortable(self, ticker: str) -> bool:
+        """Every ticker is shortable when the simulator has shorting enabled.
+
+        Real per-name shortability (hard-to-borrow, restricted lists) isn't
+        modeled — this simulator doesn't have market data for it, same
+        simplification already applied to short borrow fees
+        (ExecutionConfig.short_borrow_cost_pct)."""
+        return self._shorting_enabled
 
     def get_cash(self) -> float:
         return self._cash
@@ -146,41 +170,88 @@ class SimulatedBroker(BrokerInterface):
         ticker = order.ticker
         qty = order.qty
         commission = qty * self._commission_per_share
-        filled_qty = qty  # default; overwritten for partial sells
+        filled_qty = qty  # default; overwritten for partial closes/covers
+        existing = self._positions.get(ticker)
 
         if order.side == OrderSide.BUY:
-            cost = fill_price * qty + commission
-            if cost > self._cash:
-                raise RuntimeError(
-                    f"Insufficient buying power: need ${cost:.2f}, have ${self._cash:.2f}"
-                )
-            self._cash -= cost
-            if ticker in self._positions:
-                pos = self._positions[ticker]
-                total_qty = pos.qty + qty
-                pos.avg_entry_price = (
-                    (pos.avg_entry_price * pos.qty + fill_price * qty) / total_qty
-                )
-                pos.qty = total_qty
-                pos.current_price = fill_price
+            if existing is not None and existing.qty < 0:
+                # Buy-to-cover an existing short — opposite side of the held
+                # position, mirrors AlpacaBroker's convention (a short's stop/
+                # close is a buy). Reduces the (negative) qty toward zero.
+                filled_qty = min(qty, abs(existing.qty))
+                cost = fill_price * filled_qty + commission
+                if cost > self._cash:
+                    raise RuntimeError(
+                        f"Insufficient buying power: need ${cost:.2f}, have ${self._cash:.2f}"
+                    )
+                self._cash -= cost
+                existing.qty += filled_qty
+                existing.current_price = fill_price
+                if abs(existing.qty) <= 1e-6:
+                    del self._positions[ticker]
             else:
+                # Opening a new long, or adding to an existing long — unchanged.
+                cost = fill_price * qty + commission
+                if cost > self._cash:
+                    raise RuntimeError(
+                        f"Insufficient buying power: need ${cost:.2f}, have ${self._cash:.2f}"
+                    )
+                self._cash -= cost
+                if existing is not None:
+                    total_qty = existing.qty + qty
+                    existing.avg_entry_price = (
+                        (existing.avg_entry_price * existing.qty + fill_price * qty) / total_qty
+                    )
+                    existing.qty = total_qty
+                    existing.current_price = fill_price
+                else:
+                    self._positions[ticker] = Position(
+                        ticker=ticker,
+                        qty=qty,
+                        avg_entry_price=fill_price,
+                        current_price=fill_price,
+                    )
+        else:  # SELL
+            if existing is None:
+                # Sell-to-open a short — only when this simulator has shorting
+                # enabled (default False; see __init__). Portfolio.open_position
+                # already checks shorting_enabled()/is_shortable() before ever
+                # reaching here; this re-applies the same gate defensively at
+                # the broker layer, matching how a real account-level
+                # restriction would reject an unauthorized short (short-selling
+                # design spec's open question 5). Proceeds are credited to cash
+                # immediately — this simulator does not model margin/collateral
+                # requirements for short positions.
+                if not self._shorting_enabled:
+                    raise RuntimeError(f"Cannot sell {ticker}: no position held")
+                proceeds = fill_price * qty - commission
+                self._cash += proceeds
                 self._positions[ticker] = Position(
                     ticker=ticker,
-                    qty=qty,
+                    qty=-qty,
                     avg_entry_price=fill_price,
                     current_price=fill_price,
                 )
-        else:  # SELL
-            if ticker not in self._positions:
-                raise RuntimeError(f"Cannot sell {ticker}: no position held")
-            pos = self._positions[ticker]
-            filled_qty = min(qty, pos.qty)     # actual shares sold (may be < requested)
-            proceeds = fill_price * filled_qty - commission
-            self._cash += proceeds
-            pos.qty -= filled_qty
-            pos.current_price = fill_price
-            if pos.qty <= 1e-6:
-                del self._positions[ticker]
+            elif existing.qty < 0:
+                # Adding to an existing short.
+                proceeds = fill_price * qty - commission
+                self._cash += proceeds
+                total_qty = existing.qty - qty
+                existing.avg_entry_price = (
+                    (existing.avg_entry_price * abs(existing.qty) + fill_price * qty)
+                    / abs(total_qty)
+                )
+                existing.qty = total_qty
+                existing.current_price = fill_price
+            else:
+                # Selling to reduce/close an existing long — unchanged.
+                filled_qty = min(qty, existing.qty)     # actual shares sold (may be < requested)
+                proceeds = fill_price * filled_qty - commission
+                self._cash += proceeds
+                existing.qty -= filled_qty
+                existing.current_price = fill_price
+                if existing.qty <= 1e-6:
+                    del self._positions[ticker]
 
         order.status = OrderStatus.FILLED
         order.filled_qty = filled_qty

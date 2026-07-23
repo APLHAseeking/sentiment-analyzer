@@ -8,23 +8,39 @@ fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is curr
 restarted, healthy, running the latest fixes.
 
 ## Now
-**2026-07-22: session closed by user, idle.** Bot live, healthy, on current HEAD (`b06b9ee`),
-scheduler fresh since the 13:05 restart. Nothing in progress. Next session: check `## Next`
-below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge.
+**2026-07-23: added scheduler-wedge diagnostics.** Bot live, healthy, on current HEAD, scheduler
+fresh since the 07-22 13:05 restart. Same restart wedged again on its own the same day
+(13:05:56→17:02:20, ~3h56m silent) — `pmset -g log` this time showed the bot's `caffeinate`
+sleep-prevention assertion held continuously through the gap, ruling out system sleep for this
+occurrence specifically (contradicts the standing sleep-event hypothesis below). Root cause
+still unknown and unreproducible on demand. Added `trading bot/monitoring/heartbeat.py`
+(TDD, `tests/test_heartbeat.py`, full suite 1088/1088 green) — an in-process daemon thread, no
+new daemon/launchd/cron/permission surface, that logs a heartbeat and overwrites
+`bot_threaddump.log` with every thread's stack every 5 min so the NEXT wedge leaves real
+evidence instead of a silent log gap. Nothing else in progress. Next session: check `## Next`
+below, especially the two unproven-live fixes, the unexplained wedge, and — once it recurs —
+read `bot_threaddump.log` before doing anything else.
 
 ## Next
+- **Read `trading bot/bot_threaddump.log` the next time a scheduler wedge is reported** — it's
+  overwritten every 5 min with a full thread-stack dump; the copy present when the gap is
+  noticed shows what every thread (including the scheduler's own) was doing when it stalled.
+  This is the actual diagnostic payoff of the 2026-07-23 heartbeat work — don't just restart
+  and move on without reading it first.
 - **Live-verify the two 2026-07-21 `ORDER_REJECTED` fixes** (`bot/portfolio.py`, commit
   `b06b9ee` — see Done below) — neither has been behaviorally proven against real Alpaca yet,
   only against a mocked broker. Watch for: (A) a trailing-stop update recurring on a position
   whose qty grew past its old stop (previously stuck: HIG/LVS/VZ) — should now succeed instead
   of repeating `ORDER_REJECTED`; (B) a same-day new entry hitting the wash-trade race — should
   now clear within the widened 5x/~20s retry instead of failing outright.
-- **Investigate the 07-21/22 scheduler wedge root cause** — bot.log went silent ~14.5h
-  (2026-07-21 22:30:01 to the 2026-07-22 13:05 restart), missing at least the 07-22 13:00
-  `run_screener_prefetch` job. Not investigated this session (restart to deploy the fix above
-  doubled as the recovery) — matches the long-documented sleep-event wedge pattern, but not
-  confirmed via `pmset -g log` this time. Watchdog is off (see below), so nothing will catch a
-  recurrence automatically.
+- **Investigate the 07-21/22/23 scheduler wedge root cause** — two separate silent gaps now: the
+  07-21 22:30→07-22 13:05 restart (~14.5h) and the fresh process wedging again the same day,
+  07-22 13:05:56→17:02:20 (~3h56m), missing the 15:40/15:45/16:00 jobs (caught by the 07-21
+  `job_missed` alert). The second gap is confirmed NOT a sleep event (`caffeinate` assertion
+  held throughout) — the first was never confirmed either way, and no mechanism is confirmed
+  for either. `monitoring/heartbeat.py` (added 2026-07-23) exists so the next occurrence leaves
+  a real thread-stack dump instead of another unexplained gap — see the item above. Watchdog is
+  off (see below), so nothing will catch a recurrence automatically.
 - Watchdog/dead-man's-switch auto-restart remains non-functional and **abandoned by
   deliberate decision** (2026-07-20, reconfirmed 2026-07-21) — `sudo sfltool resetbtm` is
   still the only untried lever (resets ALL apps' background-item approvals on this Mac, not
@@ -75,7 +91,7 @@ below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
-- Test command: cd "trading bot" && pytest — 1058 tests green as of 2026-07-21 (freshly re-run), 0 known failures
+- Test command: cd "trading bot" && pytest — 1088 tests green as of 2026-07-23 (freshly re-run), 0 known failures
 - Branch: feature/profitable-strategies-lowvol-residmom-insider; 45+ commits ahead of origin, not pushed
 - SUE PIT backtest modules: screener/xbrl_pit_sue.py (companyfacts fetch/cache, PIT quarterly EPS, PIT SUE), backtesting/pit_constituents.py (PIT S&P 500 membership), backtesting/backtest_sue_pit.py (drift/HAC/gate). Report: trading bot/docs/SUE_PIT_BACKTEST_2026-07-14.md. Cache dir trading bot/pit_cache/ (gitignored).
 - Bot process: check via `ps aux | grep run_bot.py`; started via `nohup caffeinate -i -s /opt/homebrew/bin/python3 run_bot.py > bot.log 2>&1 &` from inside "trading bot/" (caffeinate wrapper added 2026-07-15, see RUNBOOK.md#sleep-wedges; use the absolute python3 path, confirm with `which python3` first — a bare `"python3"` caused a real outage under a minimal-PATH launchd context, 2026-07-17). Dead-man's-switch: `launchctl list | grep tradingbot`. As of 2026-07-21: PID 54604, commit `cb88ce5`.
@@ -85,6 +101,20 @@ below, especially the two unproven-live fixes and the unexplained 07-21/22 wedge
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-23 (fix-plan Step 2e of 5, SimulatedBroker sell-to-open support): `SimulatedBroker`
+  had no way to open a short — `_apply_fill` unconditionally raised on a sell with no held
+  position, and it lacked `shorting_enabled()`/`is_shortable()` entirely, so
+  `Portfolio.open_position`'s short branch would `AttributeError` against it. Added a
+  `shorting_enabled: bool = False` constructor flag (default preserves all existing behavior
+  exactly) and rewrote `_apply_fill` to handle buy-to-cover / sell-to-open / add-to-short while
+  leaving the pre-existing long-only arithmetic byte-identical (verified by reading the full
+  diff, not just tests passing). `run_bot.py --simulated` now wires the flag from
+  `enable_short_selling`. RESULT: 12 new tests, 7 proven red→green, full suite 1087
+  passed/1 deselected (the deselect is an unrelated flaky test in a concurrent uncommitted
+  session's new `monitoring/heartbeat.py` — not this task's file, noted not fixed). This was
+  the last of the 5 short-selling prerequisite code fixes (design spec's open question 5) —
+  only 2f (manual live-verification of the Alpaca sign convention) remains. Full narrative:
+  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23 entry).
 - 2026-07-22 (fix-plan Step 2d of 5, short borrow fees): the short-side AI cost hurdle shared
   `_ESTIMATED_COST_PCT` verbatim with longs — no borrow-fee term. Added
   `ExecutionConfig.short_borrow_cost_pct` (flat addend, default 0.5), applied only at the short

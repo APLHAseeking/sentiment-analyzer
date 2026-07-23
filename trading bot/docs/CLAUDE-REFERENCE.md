@@ -1098,3 +1098,41 @@ closed market.
 > — the short candidate's cost hurdle equals constant+addend, proven red against the pre-fix
 > line then green; `tests/test_config.py` — default is a positive addend). Test count: **1073
 > passed** (was 1071; +2 new).
+> 2026-07-23 (short-selling prep, item 2e of 6: SimulatedBroker sell-to-open support): the
+> design spec's 5th and final open question. `execution/paper_broker.py`'s `SimulatedBroker`
+> had no way to open a short at all — `_apply_fill`'s SELL branch unconditionally raised
+> `"Cannot sell {ticker}: no position held"` for any ticker not already held, and the class had
+> neither `shorting_enabled()` nor `is_shortable()` (only `AlpacaBroker` did) — so
+> `Portfolio.open_position`'s short branch (which calls both unconditionally at
+> `bot/portfolio.py:61-64`) would `AttributeError` immediately against a `SimulatedBroker`,
+> confirming the spec's claim exactly. Added a `shorting_enabled: bool = False` constructor
+> flag — default `False` preserves every existing caller's behavior byte-for-byte (a sell with
+> no position still raises exactly as before) — and `shorting_enabled()`/`is_shortable()`
+> methods that both just return the flag (this simulator doesn't model per-name
+> hard-to-borrow/restricted-list status, the same simplification already applied to short
+> borrow fees in item 2d). Rewrote `_apply_fill` to branch on the *existing position's sign*
+> rather than just BUY/SELL: BUY-with-existing-short is now buy-to-cover (reduces the negative
+> qty toward zero, deletes the position once fully covered — mirrors AlpacaBroker's convention
+> that a short's close is a buy); SELL-with-no-existing-position now opens a short (negative
+> qty) when `shorting_enabled` is True, still raising the original error when False;
+> SELL-with-existing-short adds to it (weighted-average entry price, same formula shape as the
+> existing add-to-long branch generalized to `abs()` magnitudes). The pre-existing
+> BUY-no-existing / BUY-existing-long / SELL-existing-long branches keep their exact original
+> formulas — verified by reading the full diff line-by-line before landing, not just by tests
+> passing. Proceeds from a short sale are credited to cash immediately; this simulator does not
+> model margin/collateral requirements for short positions (documented explicitly, not a silent
+> gap). `run_bot.py`'s `_make_broker` now passes
+> `shorting_enabled=settings.strategy.enable_short_selling` when constructing `SimulatedBroker`
+> for `--simulated` mode, mirroring the same flag's live-mode gating. 12 new tests in
+> `tests/test_paper_broker.py` (sell-to-open, cash crediting, equity direction on a price move,
+> full and partial buy-to-cover, capping filled_qty at the held short size, adding to an
+> existing short, and an explicit check that ordinary long buy/sell is byte-identical on a
+> shorting-enabled broker) — 7 proven red against the pre-fix code then green; the rest
+> (shorting-disabled-by-default preservation, `is_shortable`/`shorting_enabled` getters,
+> long-side unaffected) are regression/interface guards. Full suite as run this session:
+> **1087 passed, 1 deselected** — the deselect is
+> `tests/test_heartbeat.py::test_start_heartbeat_writes_thread_dump_file`, a real-time
+> background-thread-timing test in a concurrent, uncommitted session's new
+> `monitoring/heartbeat.py` (unrelated to this work, passes 3/3 standalone, flaky only under
+> full-suite load — not this task's file to fix). No clean pre-heartbeat checkpoint exists to
+> state an exact delta against, since that file landed on disk concurrently with this step.
