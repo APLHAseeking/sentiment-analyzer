@@ -1320,3 +1320,44 @@ closed market.
 > `backtesting/pit_data.py`'s existing `CSVPITProvider` and running the pre-committed gate
 > (t-stat > 2, IR > 0.5, stable across periods) via `backtesting/backtest_sue_pit.py`'s
 > already-generic `hac_mean_tstat()`.
+> 2026-07-23 (Phase 0 PIT data build, step 2 of 6: SimFin raw fundamentals fetcher): the plan
+> for this step named an open question — whether SimFin's `derived` dataset (pre-computed
+> financial ratios) would be available on the free tier, with combining raw income/balance/
+> cashflow statements manually as the documented fallback if not. Live-tested `derived` (and
+> `derived-banks`) directly: both return HTTP 500 `{"error":"Premium dataset selected, please
+> upgrade to at least a BASIC subscription"}` — confirmed premium-only, not a bug or
+> misconfiguration on our end. Fell back to the documented Plan B. Live-verified each of the 5
+> raw datasets needed instead, capturing their exact real column sets before writing any
+> parsing code: `income`/`balance`/`cashflow` (quarterly, market=us) all share
+> `Ticker;SimFinId;Currency;Fiscal Year;Fiscal Period;Report Date;Publish Date;Restated Date`
+> as their first 8 semicolon-delimited columns, then statement-specific line items (e.g.
+> balance has `Total Equity`, `Total Liabilities`, `Short Term Debt`/`Long Term Debt`; cashflow
+> has `Net Cash from Operating Activities` and a `Change in Fixed Assets & Intangibles` line
+> usable as a capex proxy for free-cash-flow); `companies` has `Ticker`/`IndustryId` (not a
+> plain sector string — SimFin only exposes sector via a separate lookup); `industries` maps
+> `IndustryId` → `Industry`/`Sector` (74 rows). New `screener/simfin_fundamentals.py`:
+> `fetch_simfin_dataset(dataset, cache_path, market, variant)` — one shared fetch+cache
+> function for all 5 datasets (each a `bulk-download/s3` call differing only in the
+> `dataset`/`variant` query params), permanent parquet cache with no TTL (matching
+> `screener/xbrl_pit_sue.py`/`ff_factors.py`'s precedent — historical filings don't get
+> revised, and SimFin tracks any revision separately via its own `Restated Date` column,
+> preserved as-is in the raw cached data); `sector_map(companies_df, industries_df)` builds a
+> `{ticker: sector}` dict via an inner join on `IndustryId`, dropping rows with no `Ticker` or
+> no matching `IndustryId` rather than guessing. Deliberately NOT computing the actual ratios
+> (trailingPE, priceToBook, marketCap, etc.) in this step — those need share-price data merged
+> in, which doesn't exist yet (step 4 of this plan); ratio computation is deferred to the
+> harness-wiring step once point-in-time prices are available, keeping this step's scope to
+> "acquire and cache the raw inputs," matching the dependency order the data actually has.
+> Added `Credentials.simfin_api_key` and `Credentials.tiingo_api_key` to `system/config.py`
+> (mirrors `propublica_api_key`'s exact `_env(...)` factory pattern) — `simfin_fundamentals.py`
+> reads the key via `settings.credentials.simfin_api_key`, not a raw `os.environ` lookup (the
+> more consistent path than `AlpacaBroker`'s own direct-`os.environ` pattern, which predates
+> this and wasn't touched). 5 new offline tests (semicolon-CSV parsing + cache round-trip,
+> cache-hit skips network, missing-key raises, sector-map join, sector-map excludes unmatched
+> industry ids) plus a live end-to-end run fetching all 5 real datasets (income/balance/
+> cashflow: ~49.7k rows each; companies: 6,588; industries: 74) and building a real sector map
+> (6,275 tickers resolved; AAPL and MSFT both confirmed "Technology"). Test count: **1109**
+> (full suite green aside from the pre-existing unrelated flaky heartbeat test). Next: reuse
+> the existing `backtesting/pit_constituents.py` for constituents (step 3, zero new code), then
+> the Tiingo+yfinance historical-price fetcher (step 4) — needed before this step's raw
+> fundamentals can actually become the ratio-based `fundamentals.csv` the harness expects.

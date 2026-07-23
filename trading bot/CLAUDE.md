@@ -429,6 +429,19 @@
 > any test. 4 new offline tests plus one live end-to-end run against the real Ken French
 > servers (26,152 rows, 1926-2026). Test count: **1104** (full suite green aside from the
 > same pre-existing unrelated flaky heartbeat test).
+> 2026-07-23 (Phase 0 PIT data build, step 2 of 6: SimFin raw fundamentals fetcher): live-
+> verified SimFin's `derived` dataset (pre-computed ratios) is premium-only on the free tier
+> (HTTP 500 "Premium dataset selected") — the plan's own documented fallback kicked in:
+> new `screener/simfin_fundamentals.py` fetches and permanently caches the 5 raw datasets
+> (income/balance/cashflow quarterly + companies/industries reference tables) instead, each
+> confirmed working on the free tier and column-schema-verified via real API calls before
+> writing any code. Ratio computation (trailingPE/priceToBook/etc., which also needs price
+> data) is deferred to the harness-wiring step once PIT prices exist. Added
+> `Credentials.simfin_api_key`/`tiingo_api_key` to `system/config.py` (mirrors
+> `propublica_api_key`'s pattern). 5 new offline tests plus a live end-to-end run fetching all
+> 5 real datasets (income/balance/cashflow: ~49.7k rows each; companies: 6,588; industries: 74)
+> and building a real sector map (AAPL/MSFT → Technology, confirmed). Test count: **1109**
+> (full suite green aside from the same pre-existing flaky heartbeat test).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

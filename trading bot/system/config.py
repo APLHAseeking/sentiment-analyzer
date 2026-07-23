@@ -38,6 +38,8 @@ class Credentials:
     alpaca_secret_key: str = field(default_factory=lambda: _env("ALPACA_SECRET_KEY"))
     alpaca_base_url: str = field(default_factory=lambda: _env("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
     propublica_api_key: str = field(default_factory=lambda: _env("PROPUBLICA_API_KEY"))
+    simfin_api_key: str = field(default_factory=lambda: _env("SIMFIN_API_KEY"))
+    tiingo_api_key: str = field(default_factory=lambda: _env("TIINGO_API_KEY"))
     fincept_scripts_path: str = field(default_factory=lambda: _env("FINCEPT_SCRIPTS_PATH", ""))
 
 

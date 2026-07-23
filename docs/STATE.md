@@ -115,6 +115,18 @@ session: check `## Next` below.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-23 (new plan, step 2 of 6: SimFin raw fundamentals fetcher): live-tested SimFin's
+  `derived` (pre-computed ratios) dataset — confirmed premium-only (HTTP 500), not available
+  free. Fell back to the plan's documented alternative: fetch raw income/balance/cashflow
+  (quarterly) + companies/industries reference tables instead, each schema-verified via real
+  API calls first. New `trading bot/screener/simfin_fundamentals.py` — one shared fetch+cache
+  function for all 5 datasets, permanent parquet cache, plus a `sector_map()` helper (ticker →
+  sector via IndustryId join). Ratio computation itself (needs price data) deferred to the
+  harness-wiring step once PIT prices exist (step 4). Added
+  `Credentials.simfin_api_key`/`tiingo_api_key` to config. RESULT: 5 new tests + live
+  end-to-end run (all 5 real datasets fetched, ~49.7k rows each for the statements, real sector
+  map built and spot-checked). Full suite 1109 passed. Full narrative:
+  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, step 2 entry).
 - 2026-07-23 (new plan, step 1 of 6: Phase 0 PIT data build — Ken French factor returns):
   starting the highest-leverage item from `docs/BOT_REVIEW_2026-07-20.md` — the Phase 0
   backtest gate has been BLOCKED ON DATA since before this feature branch existed. User got
