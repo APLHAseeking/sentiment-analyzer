@@ -67,11 +67,20 @@ def _parse_form_idx_with_cik(text: str, filing_date: str) -> pd.DataFrame:
 def fetch_form4_index_for_date(d: date, cache_dir: Path) -> pd.DataFrame:
     """Fetch (or load from permanent per-day cache) one day's EDGAR daily
     index, filtered to Form 4 rows. A confirmed-not-published day
-    (weekend/holiday, HTTP 404) caches an empty frame — permanent, since a
-    holiday never later publishes an index. A transient network failure is
-    NOT cached (mirrors the Tiingo-429-cached-as-a-permanent-miss bug found
-    and fixed in Phase 0 — see `market_data/pit_prices.py`'s
-    `TiingoRateLimited` handling) so a later run can still find real data."""
+    (weekend/holiday) caches an empty frame — permanent, since a holiday
+    never later publishes an index. Live-verified against real SEC
+    responses this session: missing daily-index files come back as HTTP
+    403 with an S3 ``AccessDenied`` body (SEC's Archives are S3-backed
+    with public ListBucket disabled, so a missing object 403s rather than
+    404s), not the HTTP 404 bot/insider.py's live "last few days" walker
+    assumes — confirmed via a direct check on 3 known dates (2 weekend
+    403s with the AccessDenied body, 1 business-day 200). Any other 403
+    (a real access-denial/rate-limit response, distinguishable by lacking
+    that body) is treated as a transient failure, matching a plain
+    RequestException. A transient failure is NOT cached (mirrors the
+    Tiingo-429-cached-as-a-permanent-miss bug found and fixed in Phase 0 —
+    see `market_data/pit_prices.py`'s `TiingoRateLimited` handling) so a
+    later run can still find real data."""
     cache_dir = Path(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cache_path = _daily_index_cache_path(cache_dir, d)
@@ -85,7 +94,10 @@ def fetch_form4_index_for_date(d: date, cache_dir: Path) -> pd.DataFrame:
     empty = pd.DataFrame(columns=_INDEX_COLUMNS)
     try:
         resp = requests.get(url, headers=_headers(), timeout=30)
-        if resp.status_code == 404:  # not published — weekend/holiday, permanent
+        not_published = resp.status_code == 404 or (
+            resp.status_code == 403 and "AccessDenied" in resp.text
+        )
+        if not_published:
             empty.to_parquet(cache_path)
             return empty
         resp.raise_for_status()

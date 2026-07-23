@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
-import pytest
+import requests
 
 from screener.insider_pit_history import (
     _parse_form_idx_with_cik,
@@ -65,6 +65,44 @@ def test_fetch_form4_index_for_date_caches_404_permanently(tmp_path, mocker):
 
     assert result.empty
     assert (cache_dir / "2022-01-01.parquet").exists()
+
+
+def test_fetch_form4_index_for_date_caches_403_access_denied_permanently(tmp_path, mocker):
+    """Live-verified this session: SEC's Archives are S3-backed with public
+    ListBucket disabled, so a genuinely missing daily-index file (weekend/
+    holiday) 403s with an S3 AccessDenied body, not a 404 — bot/insider.py's
+    live walker assumes 404, this must not repeat that assumption or every
+    weekend/holiday would be treated as a transient failure and re-fetched
+    forever instead of permanently cached as not-published."""
+    cache_dir = tmp_path / "insider_index"
+    resp = mocker.MagicMock(
+        status_code=403,
+        text='<?xml version="1.0"?><Error><Code>AccessDenied</Code></Error>',
+    )
+    mocker.patch("screener.insider_pit_history.requests.get", return_value=resp)
+    mocker.patch("screener.insider_pit_history.time.sleep")
+
+    result = fetch_form4_index_for_date(date(2023, 6, 3), cache_dir)  # a Saturday
+
+    assert result.empty
+    assert (cache_dir / "2023-06-03.parquet").exists()
+
+
+def test_fetch_form4_index_for_date_does_not_cache_a_non_access_denied_403(tmp_path, mocker):
+    """A 403 WITHOUT the S3 AccessDenied body is a real access-denial or
+    rate-limit response, not "day not published" — must not be cached
+    permanently, or a genuine rate-limit block would silently and
+    permanently blank out real data for that day."""
+    cache_dir = tmp_path / "insider_index"
+    resp = mocker.MagicMock(status_code=403, text="Rate limit exceeded")
+    resp.raise_for_status = mocker.MagicMock(side_effect=requests.exceptions.HTTPError("403"))
+    mocker.patch("screener.insider_pit_history.requests.get", return_value=resp)
+    mocker.patch("screener.insider_pit_history.time.sleep")
+
+    result = fetch_form4_index_for_date(date(2023, 6, 5), cache_dir)  # a Monday
+
+    assert result.empty
+    assert not (cache_dir / "2023-06-05.parquet").exists()
 
 
 def test_fetch_form4_index_for_date_does_not_cache_transient_failure(tmp_path, mocker):
