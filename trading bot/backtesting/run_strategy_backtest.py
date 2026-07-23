@@ -29,6 +29,7 @@ Usage
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date, timedelta
 
 import pandas as pd
@@ -150,6 +151,8 @@ def run_pit_backtest(
     per_trade_risk_pct: float | None = None,
     max_position_pct: float | None = None,
     max_positions: int | None = None,
+    score_column: str = "composite_score",
+    score_transform: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> dict:
     """Run a full PIT backtest across the given rebalance dates.
 
@@ -165,6 +168,19 @@ def run_pit_backtest(
     commission_pct    : round-trip commission as % of trade value
     factor_csv_path   : path to Ken French factor CSV for attribution (optional)
     spy_prices        : SPY daily close series for beta/alpha/IR (optional)
+    score_column      : column of `_compute_composite`'s output to rank/select
+                         top_n by — defaults to the live composite, but any of
+                         the per-sleeve columns it also leaves on the frame
+                         (value_score/momentum_score/quality_score/
+                         low_vol_score/reversal_score) or a caller-supplied
+                         derived column works too, for sleeve-decomposition
+                         backtests that don't touch screener/factor_scorer.py
+    score_transform   : optional fn(scored_df) -> scored_df applied right
+                         after _compute_composite, before the score_column
+                         selection — lets a caller add a derived column (e.g.
+                         a composite variant excluding one sleeve) without
+                         reimplementing the rebalance loop or touching
+                         screener/factor_scorer.py. None (default) is a no-op.
 
     Returns
     -------
@@ -223,8 +239,10 @@ def run_pit_backtest(
         if scored_df.empty:
             log.warning("Empty scored_df for %s — all tickers filtered out", rebal_date)
             continue
+        if score_transform is not None:
+            scored_df = score_transform(scored_df)
 
-        top = scored_df.nlargest(top_n, "composite_score")
+        top = scored_df.nlargest(top_n, score_column)
         rebal_str = rebal_date.isoformat()
         hold_end_str = hold_end.isoformat()
 
@@ -250,7 +268,8 @@ def run_pit_backtest(
             all_signals.append({
                 "date": rebal_str,
                 "ticker": ticker,
-                "conviction": int(top.loc[ticker, "composite_score"]),
+                "conviction": int(top.loc[ticker, score_column]),
+                "sector": top.loc[ticker, "sector"] if "sector" in top.columns else None,
                 "position_pct": size_pct,
             })
             # Collect prices for the holding period

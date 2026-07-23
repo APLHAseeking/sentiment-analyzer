@@ -335,6 +335,90 @@ class TestRunPITBacktest:
         assert "alpha_annualized_pct" in result["metrics"]
         assert "information_ratio" in result["metrics"]
 
+    def test_score_column_selects_alternate_top_n(self, tmp_path, monkeypatch):
+        """score_column lets a caller rank/select by a single sleeve instead
+        of composite_score, without touching screener/factor_scorer.py — the
+        seam the Phase 0 follow-up sleeve-decomposition backtest relies on."""
+        c, f, p = _make_fixtures(tmp_path)
+        provider = CSVPITProvider(c, f, p)
+
+        from backtesting import run_strategy_backtest as rsb
+
+        fake_scored = pd.DataFrame(
+            {
+                "composite_score": [90, 10, 50],
+                "value_score": [10, 90, 50],
+                "sector": ["Technology", "Technology", "Energy"],
+            },
+            index=["AAPL", "MSFT", "GOOG"],
+        )
+        monkeypatch.setattr(rsb, "_build_factor_df", lambda *a, **k: fake_scored)
+        monkeypatch.setattr(rsb, "_compute_composite", lambda df, regime_label=None: fake_scored)
+
+        composite_result = rsb.run_pit_backtest(
+            provider=provider, rebalance_dates=["2020-02-01"], top_n=1,
+        )
+        value_result = rsb.run_pit_backtest(
+            provider=provider, rebalance_dates=["2020-02-01"], top_n=1,
+            score_column="value_score",
+        )
+
+        assert [s["ticker"] for s in composite_result["signals"]] == ["AAPL"]
+        assert [s["ticker"] for s in value_result["signals"]] == ["MSFT"]
+        assert value_result["signals"][0]["conviction"] == 90
+
+    def test_score_transform_can_derive_a_new_column(self, tmp_path, monkeypatch):
+        """score_transform lets a caller add a derived score column (e.g. a
+        composite variant excluding one sleeve) purely inside the backtest
+        driver, before the top_n selection — relied on by the Phase 0
+        follow-up's ex-low-vol composite variant."""
+        c, f, p = _make_fixtures(tmp_path)
+        provider = CSVPITProvider(c, f, p)
+
+        from backtesting import run_strategy_backtest as rsb
+
+        fake_scored = pd.DataFrame(
+            {
+                "composite_score": [90, 10, 50],
+                "value_score": [10, 90, 50],
+                "quality_score": [10, 90, 50],
+                "sector": ["Technology", "Technology", "Energy"],
+            },
+            index=["AAPL", "MSFT", "GOOG"],
+        )
+        monkeypatch.setattr(rsb, "_build_factor_df", lambda *a, **k: fake_scored)
+        monkeypatch.setattr(rsb, "_compute_composite", lambda df, regime_label=None: fake_scored)
+
+        def _derive_ex_composite(df: pd.DataFrame) -> pd.DataFrame:
+            df = df.copy()
+            df["ex_composite_score"] = (df["value_score"] + df["quality_score"]) / 2
+            return df
+
+        result = rsb.run_pit_backtest(
+            provider=provider, rebalance_dates=["2020-02-01"], top_n=1,
+            score_column="ex_composite_score", score_transform=_derive_ex_composite,
+        )
+
+        assert [s["ticker"] for s in result["signals"]] == ["MSFT"]
+        assert result["signals"][0]["conviction"] == 90
+
+    def test_signals_include_sector(self, tmp_path):
+        """Sector flows from the PIT fundamentals snapshot through to each
+        signal dict — needed for the Phase 0 follow-up's financials-sector
+        cut, which reads it off the returned signals rather than re-deriving
+        it."""
+        c, f, p = _make_fixtures(tmp_path)
+        provider = CSVPITProvider(c, f, p)
+
+        result = run_pit_backtest(
+            provider=provider,
+            rebalance_dates=["2020-02-01"],
+            top_n=4,
+        )
+        sectors = {s["ticker"]: s["sector"] for s in result["signals"]}
+        assert sectors
+        assert all(sector in ("Technology", "Energy") for sector in sectors.values())
+
 
 # ── _compute_pit_price_factors window-anchoring tests ──────────────────────────
 
