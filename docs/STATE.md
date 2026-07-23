@@ -115,6 +115,16 @@ session: check `## Next` below.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-23 (new plan, step 4 of 6: historical/delisted price fetcher): new
+  `trading bot/market_data/pit_prices.py` — yfinance first (free), Tiingo fallback only for
+  tickers yfinance genuinely lacks, gaps recorded explicitly (never silently dropped). Per-
+  ticker permanent cache, including caching misses. Shares one yfinance session per batch,
+  closed when done (matches `factor_scorer.py`'s existing leaked-socket fix). RESULT: 12 new
+  tests + a real small-sample live run (AAPL/MSFT/SIVB/BBBY resolved — yfinance covered SIVB/
+  BBBY itself, better than expected; FRC correctly gapped). **Deliberately deferred the full
+  ~1,206-ticker production pull** to a separate later run, per the user's choice — build+verify
+  now, run the expensive full pull only when kicked off deliberately. Full suite 1121 passed.
+  Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, step 4 entry).
 - 2026-07-23 (new plan, step 3 of 6: PIT constituents, zero new code): re-verified
   `backtesting/pit_constituents.py::fetch_sp500_pit_constituents` still works end-to-end — a
   live run returned 1,350,248 (date,ticker) rows, 1996-01-02 to 2026-06-30, 1,206 unique

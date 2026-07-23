@@ -442,6 +442,23 @@
 > 5 real datasets (income/balance/cashflow: ~49.7k rows each; companies: 6,588; industries: 74)
 > and building a real sector map (AAPL/MSFT → Technology, confirmed). Test count: **1109**
 > (full suite green aside from the same pre-existing flaky heartbeat test).
+> 2026-07-23 (Phase 0 PIT data build, step 3 of 6, zero new code): re-verified
+> `backtesting/pit_constituents.py` still works end-to-end (1,350,248 rows, 1996-2026, 1,206
+> unique historical S&P 500 tickers). No commit for this step.
+> 2026-07-23 (Phase 0 PIT data build, step 4 of 6: historical/delisted price fetcher): new
+> `market_data/pit_prices.py` — yfinance first (free, no budget), Tiingo fallback only for
+> tickers yfinance has no data for, tickers found in neither source recorded as an explicit gap
+> (never silently dropped). Per-ticker permanent parquet cache, including caching a "miss" so a
+> confirmed-unavailable ticker isn't re-fetched every run. Shares one yfinance session across
+> the whole batch, explicitly closed when done — same leaked-socket fix `screener/
+> factor_scorer.py::_fetch_all_infos` already established. 12 new offline tests, plus a real
+> small-sample live run (deliberately deferring the full ~1,206-ticker production pull, per
+> user's choice, to a separate later run): AAPL/MSFT/SIVB/BBBY all resolved via yfinance alone
+> (Tiingo fallback wasn't even needed for the two 2023-collapse names this run), FRC correctly
+> landed in the gap list (yfinance 404, Tiingo also confirmed no data) — proves the fallback +
+> gap-tracking logic end to end, not just in mocks. Cache round-trip confirmed (second run:
+> 0.08s, zero network calls). Test count: **1121** (full suite green aside from the same
+> pre-existing flaky heartbeat test).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

@@ -1361,3 +1361,54 @@ closed market.
 > the existing `backtesting/pit_constituents.py` for constituents (step 3, zero new code), then
 > the Tiingo+yfinance historical-price fetcher (step 4) — needed before this step's raw
 > fundamentals can actually become the ratio-based `fundamentals.csv` the harness expects.
+> 2026-07-23 (Phase 0 PIT data build, step 3 of 6: PIT constituents, zero new code): re-ran
+> `backtesting/pit_constituents.py::fetch_sp500_pit_constituents` live to confirm it still
+> works before relying on it further — 1,350,248 (date,ticker) rows, 1996-01-02 through
+> 2026-06-30, 1,206 unique tickers that were ever S&P 500 members historically. No code
+> changed, no commit for this step (it's already-built precedent from the SUE backtest).
+> 2026-07-23 (Phase 0 PIT data build, step 4 of 6: historical/delisted price fetcher): the
+> plan's most-uncertain remaining piece — real request-budget limits (Tiingo: 50/hr, 1,000/day,
+> 2GB/month) against ~1,206 unique historical tickers to cover. Design: try `yfinance` first
+> for every ticker (free, no per-request budget, already a dependency) and only fall back to
+> Tiingo for tickers yfinance genuinely has no data for — keeping Tiingo's real budget usage to
+> a small subset rather than exhausting it on names yfinance already covers. New
+> `market_data/pit_prices.py`: `fetch_ticker_prices()` (single ticker, tries yfinance via
+> `yf.Ticker(...).history()`, falls back to `_fetch_tiingo()` which hits
+> `https://api.tiingo.com/tiingo/daily/{ticker}/prices` with header `Authorization: Token
+> <TIINGO_API_KEY>` — confirmed real endpoint/auth format this session) and `fetch_pit_prices()`
+> (batch — one shared yfinance session for the whole run, explicitly closed in a `finally`
+> block, matching `screener/factor_scorer.py::_fetch_all_infos`'s already-established
+> leaked-socket fix; aggregates into a wide-format DataFrame — date index, one column per
+> ticker — matching `CSVPITProvider`'s `prices.csv` schema exactly). A ticker found in neither
+> source is recorded in an explicit `missing` list, not silently dropped — matches `screener/
+> xbrl_pit_sue.py`'s "fail soft with a typed empty result + warning" convention. Caching is
+> per-ticker, permanent (no TTL — a delisted name's historical prices are immutable, and even
+> an active name's PIT backtest window is a fixed historical range), and a confirmed "miss" is
+> cached too (as an empty parquet frame) so a ticker already known to be unavailable everywhere
+> isn't re-fetched on every subsequent run.
+>
+> 12 new offline tests (yfinance success/empty/exception paths; Tiingo 200/404/missing-key
+> paths; yfinance-preferred-over-Tiingo; Tiingo-fallback-on-yfinance-miss; gap-recorded-and-
+> cached when neither source has data; cache hit skips both network paths entirely; cached-miss
+> returns None without re-fetching; batch aggregation into wide format + gap list). Then,
+> **deliberately deferring the full ~1,206-ticker production pull to a separate later run** (per
+> the user's explicit choice — build and verify now, run the expensive full pull only when
+> deliberately kicked off), ran a real small-sample live test instead: `['AAPL', 'MSFT', 'SIVB',
+> 'BBBY', 'FRC']` over 2022-01-01 to 2023-12-31. Result: AAPL and MSFT resolved via yfinance as
+> expected; SIVB and BBBY (the same two 2023-collapse tickers Tiingo alone was tested against
+> earlier this session) turned out to be covered by **yfinance itself** this time (real
+> ~$0.03-0.04 SIVB prices near its 2023 collapse, confirming genuine historical data, not a
+> stale/wrong ticker) — meaning the Tiingo fallback wasn't even exercised for them in this run,
+> a better outcome than assumed (yfinance's own delisted-ticker coverage is broader than
+> expected, at least for these two names); FRC correctly resolved to neither source (yfinance
+> 404 "Quote not found", Tiingo also confirmed no data in the earlier verification pass) and
+> landed in the `missing` list exactly as designed — proving the gap-tracking logic against
+> real API responses, not just mocks. Cache round-trip confirmed separately: a second run
+> against the same 5 tickers completed in 0.08s with zero network calls. Test count: **1121**
+> (full suite green aside from the pre-existing unrelated flaky heartbeat test). Next: wire
+> `constituents.csv`/`fundamentals.csv` (needs the deferred ratio computation, combining step
+> 2's raw statements with this step's prices)/`prices.csv` into `backtesting/pit_data.py`'s
+> `CSVPITProvider`, run `run_pit_backtest`, and compute the pre-committed gate via
+> `backtesting/backtest_sue_pit.py`'s `hac_mean_tstat()` (step 5) — the full historical price
+> pull across all ~1,206 tickers happens as part of that step, once the harness is otherwise
+> ready to consume it.
