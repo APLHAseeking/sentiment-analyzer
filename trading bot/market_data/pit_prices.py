@@ -31,6 +31,19 @@ log = logging.getLogger(__name__)
 
 _TIINGO_TIMEOUT_SECONDS = 15
 _TIINGO_INTER_REQUEST_SLEEP = 2.0  # generous under Tiingo's 50/hr free-tier cap
+_TIINGO_RATE_LIMIT_RETRIES = 3
+_TIINGO_RATE_LIMIT_BACKOFF_SECONDS = 30.0  # Tiingo's window is hourly; a short
+                                            # retry loop doesn't clear a real
+                                            # rate limit, it only survives a
+                                            # brief burst — see TiingoRateLimited
+
+
+class TiingoRateLimited(Exception):
+    """Tiingo returned 429 and retries were exhausted — a TRANSIENT failure,
+    not "this ticker has no data." Callers must not cache this as a miss
+    (see fetch_ticker_prices) — that would permanently and wrongly exclude
+    a ticker just because it happened to be rate-limited during one run.
+    """
 
 
 def _fetch_yfinance(ticker: str, start: str, end: str, session) -> pd.Series | None:
@@ -49,22 +62,43 @@ def _fetch_yfinance(ticker: str, start: str, end: str, session) -> pd.Series | N
 
 
 def _fetch_tiingo(ticker: str, start: str, end: str) -> pd.Series | None:
+    """Returns None only for a CONFIRMED absence (Tiingo returned a non-429
+    error status, e.g. 404 "ticker not found" — safe to cache as a
+    permanent miss). Raises TiingoRateLimited if 429 persists after
+    retries — a transient condition the caller must NOT cache as a miss.
+    """
     from system.config import settings
     key = settings.credentials.tiingo_api_key
     if not key:
         raise RuntimeError("Missing required env var: TIINGO_API_KEY")
     url = f"https://api.tiingo.com/tiingo/daily/{ticker}/prices"
     headers = {"Authorization": "Token " + key, "Content-Type": "application/json"}
-    try:
-        resp = requests.get(
-            url, headers=headers, params={"startDate": start, "endDate": end},
-            timeout=_TIINGO_TIMEOUT_SECONDS,
+
+    resp = None
+    for attempt in range(_TIINGO_RATE_LIMIT_RETRIES):
+        try:
+            resp = requests.get(
+                url, headers=headers, params={"startDate": start, "endDate": end},
+                timeout=_TIINGO_TIMEOUT_SECONDS,
+            )
+        except requests.exceptions.RequestException as exc:
+            log.warning("Tiingo fetch failed for %s: %s", ticker, exc)
+            time.sleep(_TIINGO_INTER_REQUEST_SLEEP)
+            return None
+        if resp.status_code != 429:
+            break
+        log.warning(
+            "Tiingo rate-limited (attempt %d/%d) fetching %s — backing off %.0fs",
+            attempt + 1, _TIINGO_RATE_LIMIT_RETRIES, ticker, _TIINGO_RATE_LIMIT_BACKOFF_SECONDS,
         )
-    except requests.exceptions.RequestException as exc:
-        log.warning("Tiingo fetch failed for %s: %s", ticker, exc)
-        return None
-    finally:
+        time.sleep(_TIINGO_RATE_LIMIT_BACKOFF_SECONDS)
+    else:
         time.sleep(_TIINGO_INTER_REQUEST_SLEEP)
+        raise TiingoRateLimited(
+            f"Tiingo still rate-limited for {ticker} after {_TIINGO_RATE_LIMIT_RETRIES} retries"
+        )
+
+    time.sleep(_TIINGO_INTER_REQUEST_SLEEP)
     if resp.status_code != 200:
         log.info("Tiingo has no data for %s (status %d) — recording as a gap",
                   ticker, resp.status_code)
@@ -82,7 +116,10 @@ def fetch_ticker_prices(
 ) -> pd.Series | None:
     """Fetch (or load from permanent cache) one ticker's daily close-price
     series. Returns None if no data was found in either source — the caller
-    must track this as an explicit gap, not silently drop the ticker.
+    must track this as an explicit gap, not silently drop the ticker. A
+    Tiingo rate limit (TiingoRateLimited) is NOT treated as a miss — it
+    propagates as a genuine error rather than being cached or silently
+    swallowed, since retrying later could still find real data.
     """
     cache_path = cache_dir / f"{ticker}.parquet"
     if cache_path.exists():
@@ -120,7 +157,16 @@ def fetch_pit_prices(
     missing: list[str] = []
     try:
         for ticker in tickers:
-            series = fetch_ticker_prices(ticker, start, end, cache_dir, session=session)
+            try:
+                series = fetch_ticker_prices(ticker, start, end, cache_dir, session=session)
+            except TiingoRateLimited as exc:
+                # Transient — not cached as a miss (see fetch_ticker_prices),
+                # so a later run can still find real data. Still counts as
+                # "missing" for THIS run's output, but the batch must not
+                # crash over one rate-limited ticker.
+                log.warning("%s — treating %s as missing for this run only", exc, ticker)
+                missing.append(ticker)
+                continue
             if series is None:
                 missing.append(ticker)
             else:

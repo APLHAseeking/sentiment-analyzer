@@ -80,6 +80,132 @@ def fetch_simfin_dataset(
     return df
 
 
+_TRAILING_QUARTERS = 4
+
+
+def compute_fundamentals_snapshots(
+    income_df: pd.DataFrame,
+    balance_df: pd.DataFrame,
+    cashflow_df: pd.DataFrame,
+    sector_by_ticker: dict[str, str],
+    price_lookup,
+) -> pd.DataFrame:
+    """Combine raw SimFin statements into PIT-correct ratio snapshots.
+
+    One row per (ticker, Publish Date) — matches docs/PIT_DATA_REQUIREMENTS.md's
+    fundamentals.csv schema: date, ticker, trailingPE, priceToBook,
+    freeCashflow, marketCap, returnOnEquity, profitMargins, debtToEquity,
+    sector. SimFin's free tier has no pre-computed ratios (see module
+    docstring), so this is where they're actually computed.
+
+    Trailing-twelve-month figures (P/E, ROE, profit margin, free cash flow)
+    use a rolling sum of the trailing `_TRAILING_QUARTERS` quarters' Net
+    Income / Revenue / Operating Cash Flow / capex, ordered by each
+    ticker's own Report Date (fiscal-period order, not Publish Date —
+    filings for different tickers arrive on different schedules, but a
+    single ticker's own quarters must roll in the order they occurred).
+    Point-in-time ratios (P/B, D/E, market cap) use the single balance-sheet
+    snapshot published alongside that quarter. A ticker/quarter with fewer
+    than `_TRAILING_QUARTERS` prior quarters on record gets `None` for the
+    trailing-figure ratios rather than a partial-window value that would
+    silently understate/overstate the trailing figure.
+
+    `price_lookup(ticker, as_of)` must return the latest available price ON
+    OR BEFORE `as_of` (never a future price) or None if unavailable — the
+    PIT guarantee is the caller's responsibility (see market_data/pit_prices.py).
+    Rows with no price available get `None` for the three price-dependent
+    fields (trailingPE, priceToBook, marketCap) but keep the price-independent
+    ones (returnOnEquity, profitMargins, debtToEquity, sector) rather than
+    being dropped entirely.
+    """
+    key_cols = ["Ticker", "Report Date", "Publish Date"]
+    merged = (
+        income_df[key_cols + ["Revenue", "Net Income", "Shares (Diluted)"]]
+        .merge(
+            balance_df[key_cols + ["Total Equity", "Short Term Debt", "Long Term Debt"]],
+            on=key_cols, how="inner",
+        )
+        .merge(
+            cashflow_df[key_cols + [
+                "Net Cash from Operating Activities",
+                "Change in Fixed Assets & Intangibles",
+            ]],
+            on=key_cols, how="inner",
+        )
+    )
+    merged["Report Date"] = pd.to_datetime(merged["Report Date"])
+    merged["Publish Date"] = pd.to_datetime(merged["Publish Date"])
+    merged = merged.sort_values(["Ticker", "Report Date"]).reset_index(drop=True)
+
+    grouped = merged.groupby("Ticker", group_keys=False)
+    merged["_trailing_revenue"] = grouped["Revenue"].transform(
+        lambda s: s.rolling(_TRAILING_QUARTERS, min_periods=_TRAILING_QUARTERS).sum()
+    )
+    merged["_trailing_net_income"] = grouped["Net Income"].transform(
+        lambda s: s.rolling(_TRAILING_QUARTERS, min_periods=_TRAILING_QUARTERS).sum()
+    )
+    merged["_trailing_op_cashflow"] = grouped["Net Cash from Operating Activities"].transform(
+        lambda s: s.rolling(_TRAILING_QUARTERS, min_periods=_TRAILING_QUARTERS).sum()
+    )
+    merged["_trailing_capex"] = grouped["Change in Fixed Assets & Intangibles"].transform(
+        lambda s: s.rolling(_TRAILING_QUARTERS, min_periods=_TRAILING_QUARTERS).sum()
+    )
+
+    rows = []
+    for _, row in merged.iterrows():
+        ticker = row["Ticker"]
+        publish_date = row["Publish Date"].date()
+        shares = row["Shares (Diluted)"]
+        equity = row["Total Equity"]
+        debt = (row["Short Term Debt"] or 0) + (row["Long Term Debt"] or 0)
+        trailing_revenue = row["_trailing_revenue"]
+        trailing_net_income = row["_trailing_net_income"]
+        trailing_op_cf = row["_trailing_op_cashflow"]
+        trailing_capex = row["_trailing_capex"]
+
+        price = price_lookup(ticker, publish_date)
+
+        trailing_pe = None
+        price_to_book = None
+        market_cap = None
+        if price is not None and shares and shares > 0:
+            market_cap = price * shares
+            if pd.notna(trailing_net_income) and trailing_net_income > 0:
+                trailing_pe = price / (trailing_net_income / shares)
+            if equity and equity > 0:
+                price_to_book = price / (equity / shares)
+
+        free_cash_flow = (
+            trailing_op_cf + trailing_capex
+            if pd.notna(trailing_op_cf) and pd.notna(trailing_capex) else None
+        )
+        return_on_equity = (
+            trailing_net_income / equity
+            if pd.notna(trailing_net_income) and equity else None
+        )
+        profit_margins = (
+            trailing_net_income / trailing_revenue
+            if pd.notna(trailing_net_income) and pd.notna(trailing_revenue)
+            and trailing_revenue != 0 else None
+        )
+        debt_to_equity = debt / equity if equity else None
+
+        rows.append({
+            "date": publish_date.isoformat(),
+            "ticker": ticker,
+            "trailingPE": trailing_pe,
+            "priceToBook": price_to_book,
+            "freeCashflow": free_cash_flow,
+            "marketCap": market_cap,
+            "returnOnEquity": return_on_equity,
+            "profitMargins": profit_margins,
+            "debtToEquity": debt_to_equity,
+            "sector": sector_by_ticker.get(ticker),
+        })
+
+    return pd.DataFrame(rows)
+
+
 def sector_map(companies_df: pd.DataFrame, industries_df: pd.DataFrame) -> dict[str, str]:
     """Build {ticker: sector} from the companies + industries reference tables.
 

@@ -1432,3 +1432,99 @@ closed market.
 > added, proven red (stashed the fix, both failed with the exact live error shape) then green.
 > Test count: **+2** from whatever this session's running baseline was. Not yet live-verified
 > against the real stuck LVS position — next step.
+> 2026-07-23 (Phase 0 PIT data build, step 5 of 6 — harness wiring, gate computation, and the
+> full run; step 6, the report): built `screener/simfin_fundamentals.py::compute_fundamentals_snapshots`,
+> the ratio computation deferred from step 2 now that PIT prices exist. Combines raw income/
+> balance/cashflow via trailing-4-quarter rolling sums (ordered by each ticker's own Report
+> Date, not Publish Date — a single ticker's own quarters must roll in fiscal-period order) for
+> the trailing-figure ratios (trailingPE, returnOnEquity, profitMargins, freeCashflow);
+> point-in-time balance-sheet snapshots for priceToBook/debtToEquity/marketCap; a
+> caller-supplied `price_lookup(ticker, as_of)` for the 3 price-dependent fields, returning
+> `None` for those specifically (not the whole row) when no PIT price is available. A
+> ticker/quarter with fewer than 4 prior quarters gets `None` for trailing-figure ratios rather
+> than a partial-window value that would silently understate the true trailing figure; a
+> negative trailing-12mo net income gets `None` for trailingPE rather than a nonsensical
+> negative ratio (matches yfinance's own convention, verified this is what `screener/
+> factor_scorer.py` already assumes elsewhere). Verified against 5 hand-computed fixtures
+> (exact expected ratios worked out by hand — trailing sums, P/E, P/B, D/E, ROE, margin, FCF —
+> not just "did it run without error").
+>
+> `run_pit_backtest` (`backtesting/run_strategy_backtest.py`) gains one additive return-dict
+> key, `equity_series` (the raw daily equity curve `pd.Series`) — lets a caller compute its own
+> gate statistics (a HAC t-stat on daily excess returns) without duplicating the simulation.
+> Zero change to any existing key or behavior; 1 new test, proven red (removed the key, test
+> failed) then green.
+>
+> New `backtesting/backtest_factor_pit.py` — the Phase 0 driver, mirroring
+> `backtest_sue_pit.py`'s structure and discipline exactly: `SAMPLE_START`/`SAMPLE_END`
+> (2021-09-01 to 2025-06-30, bounded by SimFin's confirmed 5-year free-tier fundamentals window
+> plus the ~1-year trailing-4Q run-in `compute_fundamentals_snapshots` needs), quarterly
+> `REBALANCE_DATES`, `build_constituents_csv`/`build_prices_csv`/`build_fundamentals_csv`
+> (assemble the 3 `CSVPITProvider` input files from the cached raw data built in steps 1-4),
+> `run_gate`/`stability_split` (import `backtesting.backtest_sue_pit.hac_mean_tstat` — a fully
+> generic Newey-West HAC t-stat function, not SUE-specific — mirror `run_gate`'s exact
+> mean/tstat/IR formula shape, generalized from an event-study return to a continuous equity
+> curve), `fetch_spy_returns` (SPY benchmark), and `run()` tying it all together.
+>
+> **Three real bugs caught by live testing, all fixed before the full run, not discovered
+> after**: (1) `market_data/pit_prices.py`'s `_fetch_tiingo` cached a 429 (rate-limited,
+> transient) as a PERMANENT "no data" miss — would have wrongly and silently excluded real
+> tickers forever on any future run. Fixed with a 3-attempt retry-with-30s-backoff loop and a
+> new `TiingoRateLimited` exception that explicitly refuses to be cached, propagating instead
+> (caught by `fetch_pit_prices` per-ticker so one rate-limited name doesn't crash the whole
+> batch; caught by `backtest_factor_pit.py`'s `price_lookup` closure the same way). Caught
+> live: an early wiring-test attempt hit this via bug (2) below, wrote 973 wrongly-cached empty
+> "miss" parquet files (of 1,037 total) before being stopped mid-run — all deleted, allowed to
+> regenerate correctly under the fix. 4 new regression tests, 1 proven red then green.
+> (2) `build_fundamentals_csv` silently ignored its own ticker-scope parameter, walking
+> SimFin's full ~3,781-ticker universe regardless of what the caller intended — this is what
+> triggered bug (1) at scale (every ticker outside the intended small test set triggered a
+> fresh, unbudgeted, un-cached fetch attempt). Fixed by actually filtering the income/balance/
+> cashflow DataFrames to the given tickers before scoring; regression test asserts the
+> restriction is honored via `call_args` inspection. (3) `REBALANCE_DATES` used
+> `Timestamp.isoformat()` (includes a time component, `'2021-09-30T00:00:00'`) where
+> `run_pit_backtest`'s own `date.fromisoformat()` parser needs plain `YYYY-MM-DD` — crashed the
+> first real wiring attempt immediately; fixed with `.date().isoformat()`.
+>
+> A small-scale wiring test (8 well-known tickers: AAPL/MSFT/JPM/XOM/JNJ/PG/KO/WMT) then ran
+> clean end-to-end — real prices, real ratio-computed fundamentals, real backtest, real gate
+> numbers (not meaningful statistically at n=8, but structurally correct) — before the real
+> production run was attempted, per the user's explicit two-step approval ("build it now, if
+> the test run was good, continue with full run").
+>
+> **Full production run (first pass) surfaced one more real gap, investigated and fixed before
+> finalizing, not footnoted**: only 429 of 576 universe tickers (74.5%) got any fundamentals at
+> all. Checked why rather than accepting it — found 146 missing tickers concentrated in one
+> sector (AIG, AXP, BAC, C, BK, CB and more, all financials). SimFin reports banks/insurers on
+> separate `income-banks`/`income-insurance` (and balance-/cashflow- equivalents) datasets with
+> materially different statement structures (a bank's income statement has no "Short Term
+> Debt"/"Total Equity"; confirmed empirically all 3 variants per statement type share the same
+> core columns `compute_fundamentals_snapshots` actually reads, and all 3 are free-tier
+> accessible) — the original fetch only pulled the generic variant, silently excluding an
+> entire sector from ever being scored. Fixed by concatenating all 3 variants per statement
+> type; 2 new tests (one regression-testing the original ticker-scope bug still holds across
+> all 3 variants, one asserting all 9 dataset/variant names get requested). Coverage improved
+> to 461/576 (80.0%) — some names (C, BK, confirmed directly against the raw cached parquet
+> files) are genuinely absent from SimFin's free tier entirely, not a bug. Re-ran the full
+> backtest after the fix: result barely moved (t-stat -1.75 vs -1.77, IR -0.78 vs -0.79) —
+> reassuring evidence the finding isn't an artifact of the missing-financials gap.
+>
+> **Final result — the Phase 0 gate FAILS.** Universe 576 tickers, 560 (97.2%) with price data
+> (16 missing — an honest, disclosed gap, mostly ticker-rename/merger cases: ANTM/CDAY/COG/
+> WLTW/BRK.B/BF.B/FRC), 461 (80.0%) with fundamentals, 319 signals, 58 trades over 16 quarterly
+> rebalances (2021-09-01 to 2025-06-30). Gate: **t-stat = -1.75, IR = -0.78** against the
+> pre-committed t>2/IR>0.5 bar — not merely insignificant, the point estimate is negative
+> (annualized alpha -6.34%, Sharpe -0.56). Stability split: both halves negative (-0.49/-2.00),
+> not a sign-flip artifact. Supplementary multi-factor (Fama-French + momentum) attribution
+> shows alpha_pct=+9.6% but tstat=0.95 (not significant) after controlling for the strategy's
+> realized low market beta (0.24) — reported as diagnostic context only, same discipline as the
+> SUE backtest's regime breakdown, never substituted for the actual pre-committed decision.
+> Per `docs/PHASE0_FINDINGS.md`'s rule: **gate fails, do not proceed to add complexity. No code
+> change follows** — `screener/factor_scorer.py` untouched, same commitment the SUE backtest
+> made and kept. Full report: `docs/PHASE0_BACKTEST_2026-07-23.md`; `docs/PHASE0_FINDINGS.md`'s
+> gate status updated from "BLOCKED ON DATA" to "TESTED — GATE FAILS". 22 new tests across
+> `tests/test_simfin_fundamentals_ratios.py`, `tests/test_pit_prices.py`, `tests/test_pit_data.py`,
+> `tests/test_backtest_factor_pit.py`. This completes all 6 items from the original
+> `docs/BOT_REVIEW_2026-07-20.md` review except the already-closed-by-decision item 2f (manual
+> live-verification of the Alpaca short sign convention, deliberately deferred per the user's
+> choice not to pursue short-selling activation right now).

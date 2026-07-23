@@ -169,11 +169,16 @@ def run_pit_backtest(
     Returns
     -------
     dict with keys:
-        metrics     : compute_all() output dict
-        attribution : attribute_returns() output dict (None if no factor_csv_path)
-        signals     : list of signal dicts generated
-        n_signals   : total signals
-        windows     : per-rebalance-date details
+        metrics       : compute_all() output dict
+        attribution   : attribute_returns() output dict (None if no factor_csv_path)
+        signals       : list of signal dicts generated
+        n_signals     : total signals
+        windows       : per-rebalance-date details
+        equity_series : the raw daily equity curve (pd.Series) — exposed so
+                        callers can compute their own statistics (e.g. a HAC
+                        t-stat gate on daily excess returns) without
+                        duplicating the simulation. Empty Series if no
+                        signals were generated.
     """
     risk_budget = per_trade_risk_pct if per_trade_risk_pct is not None else _settings.sizing.per_trade_risk_pct
     pos_ceiling = max_position_pct if max_position_pct is not None else _settings.risk.max_position_pct
@@ -275,6 +280,7 @@ def run_pit_backtest(
             "signals": [],
             "n_signals": 0,
             "windows": windows,
+            "equity_series": pd.Series(dtype=float),
         }
 
     # Simulate
@@ -324,4 +330,5 @@ def run_pit_backtest(
         "signals": all_signals,
         "n_signals": len(all_signals),
         "windows": windows,
+        "equity_series": eq,
     }

@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from market_data.pit_prices import (
-    _fetch_tiingo, _fetch_yfinance, fetch_pit_prices, fetch_ticker_prices,
+    TiingoRateLimited, _fetch_tiingo, _fetch_yfinance, fetch_pit_prices, fetch_ticker_prices,
 )
 
 
@@ -81,6 +81,67 @@ def test_fetch_tiingo_returns_none_on_404(mocker):
     mocker.patch("market_data.pit_prices.time.sleep")
 
     assert _fetch_tiingo("FRC", "2023-01-01", "2023-02-01") is None
+
+
+def test_fetch_tiingo_raises_tiingo_rate_limited_after_exhausting_retries(mocker):
+    """A 429 must NOT be treated as 'no data' (see the 2026-07-23 incident:
+    an earlier version of this code cached a rate-limited response as a
+    permanent miss, wrongly excluding real tickers). It must raise
+    TiingoRateLimited instead, so the caller never caches it."""
+    mocker.patch("market_data.pit_prices.requests.get",
+                 return_value=_mock_tiingo_response(429))
+    mocker.patch("market_data.pit_prices.time.sleep")
+
+    with pytest.raises(TiingoRateLimited):
+        _fetch_tiingo("AAPL", "2023-01-01", "2023-02-01")
+
+
+def test_fetch_tiingo_succeeds_after_a_retry(mocker):
+    """A transient 429 that clears on retry must return real data, not
+    give up after the first attempt."""
+    responses = [_mock_tiingo_response(429), _mock_tiingo_response(
+        200, [{"date": "2023-01-03T00:00:00.000Z", "adjClose": 100.0}]
+    )]
+    mocker.patch("market_data.pit_prices.requests.get", side_effect=responses)
+    mocker.patch("market_data.pit_prices.time.sleep")
+
+    series = _fetch_tiingo("AAPL", "2023-01-01", "2023-02-01")
+
+    assert series is not None
+    assert series.iloc[0] == 100.0
+
+
+def test_fetch_ticker_prices_does_not_cache_a_rate_limit(tmp_path, mocker):
+    """TiingoRateLimited must propagate uncaught from fetch_ticker_prices —
+    no cache file written — so a later run can still find real data,
+    unlike a confirmed 404 miss which IS cached."""
+    mock_ticker = MagicMock()
+    mock_ticker.history.return_value = pd.DataFrame()
+    mocker.patch("market_data.pit_prices.yf.Ticker", return_value=mock_ticker)
+    mocker.patch("market_data.pit_prices._fetch_tiingo", side_effect=TiingoRateLimited("rate limited"))
+
+    with pytest.raises(TiingoRateLimited):
+        fetch_ticker_prices("AAPL", "2023-01-01", "2023-02-01", tmp_path)
+
+    assert not (tmp_path / "AAPL.parquet").exists()
+
+
+def test_fetch_pit_prices_treats_rate_limited_ticker_as_missing_without_crashing(tmp_path, mocker):
+    """A single rate-limited ticker must not crash the whole batch — it's
+    recorded as missing for this run (uncached) while the rest proceed."""
+    mocker.patch("market_data.pit_prices.make_shared_yf_session", return_value=None)
+
+    def fake_fetch_ticker_prices(ticker, start, end, cache_dir, session=None):
+        if ticker == "RATELIMITED":
+            raise TiingoRateLimited("rate limited")
+        return pd.Series([100.0], index=pd.to_datetime(["2024-01-02"]), name=ticker)
+
+    mocker.patch("market_data.pit_prices.fetch_ticker_prices", side_effect=fake_fetch_ticker_prices)
+
+    wide, missing = fetch_pit_prices(["AAPL", "RATELIMITED"], "2024-01-01", "2024-01-05", tmp_path)
+
+    assert list(wide.columns) == ["AAPL"]
+    assert missing == ["RATELIMITED"]
 
 
 def test_fetch_tiingo_raises_without_api_key():

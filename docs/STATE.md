@@ -123,6 +123,26 @@ reset the system-wide BTM approval database, no files touched, bot unaffected.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-23 (new plan, steps 5+6 of 6: harness wiring, full run, report — PLAN COMPLETE): built
+  the ratio computation (`screener/simfin_fundamentals.py::compute_fundamentals_snapshots`,
+  5 hand-verified fixtures), a new `backtesting/backtest_factor_pit.py` driver (mirrors
+  `backtest_sue_pit.py`), and an additive `equity_series` key on `run_pit_backtest`'s return.
+  Caught and fixed 3 real bugs before/during the full run: a Tiingo 429 wrongly cached as a
+  permanent miss (973 poisoned cache files deleted), `build_fundamentals_csv` ignoring its own
+  ticker-scope param (walked SimFin's full universe, triggered the 429 storm above), and a
+  `Timestamp.isoformat()` vs `date.fromisoformat()` format mismatch. Small-scale (8-ticker)
+  wiring test ran clean, per user approval ran the full production pull. First full run found
+  one more real gap (146/576 tickers, concentrated in financials, missing fundamentals because
+  SimFin splits banks/insurers onto separate dataset variants never fetched) — fixed by
+  merging all 3 variants per statement type; re-ran, result barely moved (reassuring). **Final
+  result: Phase 0 gate FAILS** — t-stat=-1.75, IR=-0.78 (needs t>2/IR>0.5), negative point
+  estimate, consistent across both stability-split halves. Full report:
+  `trading bot/docs/PHASE0_BACKTEST_2026-07-23.md`; `docs/PHASE0_FINDINGS.md` updated from
+  "BLOCKED ON DATA" to "TESTED — GATE FAILS". No code change to `screener/factor_scorer.py`.
+  RESULT: 22 new tests, full suite 1142 passed. **This completes all 6 items from
+  `docs/BOT_REVIEW_2026-07-20.md`** except item 2f (already closed by the user's decision not
+  to pursue short-selling activation). Full narrative:
+  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, PIT steps 5+6 entry).
 - 2026-07-23 (new plan, step 4 of 6: historical/delisted price fetcher): new
   `trading bot/market_data/pit_prices.py` — yfinance first (free), Tiingo fallback only for
   tickers yfinance genuinely lacks, gaps recorded explicitly (never silently dropped). Per-

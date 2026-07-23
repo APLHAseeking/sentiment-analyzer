@@ -463,6 +463,71 @@
 > gap-tracking logic end to end, not just in mocks. Cache round-trip confirmed (second run:
 > 0.08s, zero network calls). Test count: **1121** (full suite green aside from the same
 > pre-existing flaky heartbeat test).
+> 2026-07-23 (Phase 0 PIT data build, step 5 of 6 — harness wiring, gate computation, and the
+> actual full run): built `screener/simfin_fundamentals.py::compute_fundamentals_snapshots` —
+> the ratio computation deferred from step 2, now that prices exist. Combines raw income/
+> balance/cashflow via trailing-4-quarter rolling sums (ordered by each ticker's own Report
+> Date) for P/E, ROE, profit margin, and free cash flow; point-in-time balance-sheet snapshots
+> for P/B, D/E, market cap; a caller-supplied `price_lookup` for the 3 price-dependent fields.
+> Verified with 5 hand-computed fixtures (exact expected ratios worked out by hand, not just
+> "did it run"), including a negative-earnings case confirming trailingPE returns `None` rather
+> than a nonsensical negative ratio (matches yfinance's own convention). `run_pit_backtest`
+> gains one additive return-dict key, `equity_series` (the raw daily equity curve), so a gate
+> can be computed externally without duplicating the simulation — zero change to existing
+> keys/behavior. New `backtesting/backtest_factor_pit.py` — the driver, mirroring
+> `backtest_sue_pit.py`'s structure: builds all 3 `CSVPITProvider` input files from the cached
+> raw data, runs `run_pit_backtest` on the full existing factor composite, computes the gate via
+> `hac_mean_tstat` on daily SPY-relative excess returns, runs a stability split.
+>
+> Two real bugs caught by live testing before they could reach the full run: (1) a Tiingo 429
+> (rate-limited, transient) was being cached as a PERMANENT "no data" miss — would have wrongly
+> and silently excluded real tickers forever; fixed with a retry-with-backoff loop and a new
+> `TiingoRateLimited` exception that explicitly refuses to be cached, propagating instead so a
+> later run can still find real data (caught live: an early wiring-test attempt actually hit
+> this via a separate scope bug below, produced 973 wrongly-cached miss files, all deleted and
+> allowed to regenerate correctly under the fix). (2) `build_fundamentals_csv` silently ignored
+> its own ticker-scope parameter, walking SimFin's full ~3,781-ticker universe regardless of
+> what the caller intended — caught by the exact symptom above; fixed by actually filtering the
+> income/balance/cashflow DataFrames before scoring, with a regression test asserting the
+> restriction is honored. (3) `REBALANCE_DATES` used `Timestamp.isoformat()` (includes a time
+> component, `'2021-09-30T00:00:00'`) where `run_pit_backtest`'s own `date.fromisoformat()`
+> parser needs plain `YYYY-MM-DD` — crashed the first real wiring attempt immediately, fixed
+> with `.date().isoformat()`. A small-scale wiring test (8 well-known tickers) then ran clean
+> end-to-end before the real production run was attempted, per the user's explicit two-step
+> approval ("build it now, if the test run was good, continue with full run").
+>
+> **First full run surfaced one more real gap, found and fixed before finalizing**: only 429 of
+> 576 universe tickers (74.5%) got any fundamental snapshot at all — checked why rather than
+> footnoting it, and found 146 missing tickers concentrated in ONE SECTOR (AIG, AXP, BAC, C,
+> BK, CB and more — banks/insurers). SimFin reports financials on separate `-banks`/
+> `-insurance` dataset variants with different statement structures; `build_fundamentals_csv`
+> only fetched the generic variant, silently zeroing out an entire sector's fundamentals
+> instead of scoring it and letting it lose on the merits. Confirmed all 3 variants (generic/
+> banks/insurance) share the same core columns `compute_fundamentals_snapshots` reads, and are
+> all free-tier accessible; fixed by concatenating all 3 per statement type. Coverage improved
+> to 461/576 tickers (some names — C, BK confirmed — are genuinely absent from SimFin's free
+> tier entirely, not a bug, checked directly). Re-ran the full backtest: result barely moved
+> (t-stat -1.75 vs -1.77, IR -0.78 vs -0.79) — reassuring, since it means the finding is robust
+> to this data-completeness question, not an artifact of the missing sector.
+>
+> **Full production run result (final) — the gate FAILS, an honest negative finding, not a
+> bug**: universe 576 tickers (2021-09-01 to 2025-06-30, bounded by SimFin's 5yr free-tier
+> fundamentals window plus the trailing-4Q run-in), 16 tickers (2.8%) with no price data in
+> either source (an honest, disclosed gap — mostly ticker-rename/merger cases: ANTM/CDAY/COG/
+> WLTW/BRK.B/BF.B/FRC among them), 319 signals, 58 trades. Gate: **t-stat = -1.75, IR = -0.78**
+> (rule needs t>2 AND IR>0.5) — not merely insignificant, the point estimate is negative
+> (annualized alpha -6.34%, Sharpe -0.56, information_ratio -0.78). Stability split: both
+> halves negative (-0.49 / -2.00), i.e. consistently negative, not a sign-flip artifact.
+> Supplementary multi-factor attribution (Fama-French + momentum) shows a different but
+> non-overriding picture: alpha_pct=+9.6% but tstat=0.95 (not remotely significant) after
+> controlling for the strategy's realized low market beta (0.24) — a diagnostic noted per the
+> SUE-backtest precedent of reporting regime/attribution breakdowns as context, never as a
+> second gate. Per `docs/PHASE0_FINDINGS.md`'s pre-committed rule ("If alpha is not
+> statistically positive → STOP. Do not add more complexity."): **the gate fails. No code
+> change follows from this result** — `screener/factor_scorer.py` is untouched, same
+> commitment the SUE backtest made and kept. 22 new tests across
+> `tests/test_simfin_fundamentals_ratios.py`, `tests/test_pit_prices.py`, `tests/test_pit_data.py`,
+> `tests/test_backtest_factor_pit.py`. See `docs/PHASE0_BACKTEST_2026-07-23.md` for the full report.
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

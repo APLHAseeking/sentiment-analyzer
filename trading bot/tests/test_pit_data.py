@@ -202,6 +202,25 @@ class TestRunPITBacktest:
         assert "sharpe" in result["metrics"]
         assert "total_return_pct" in result["metrics"]
 
+    def test_result_exposes_raw_equity_series(self, tmp_path):
+        """equity_series lets callers compute their own statistics (e.g. a
+        HAC t-stat gate on daily excess returns) without duplicating the
+        simulation — added for the Phase 0 PIT backtest gate."""
+        c, f, p = _make_fixtures(tmp_path)
+        provider = CSVPITProvider(c, f, p)
+
+        result = run_pit_backtest(
+            provider=provider,
+            rebalance_dates=["2020-02-01", "2020-08-01"],
+            top_n=3,
+            position_pct=5.0,
+            initial_cash=100_000.0,
+        )
+
+        assert "equity_series" in result
+        assert isinstance(result["equity_series"], pd.Series)
+        assert len(result["equity_series"]) > 0
+
     def test_delisted_ticker_excluded_after_removal(self, tmp_path):
         """ENRN must not appear in signals generated from the Aug 2020 rebalance."""
         c, f, p = _make_fixtures(tmp_path)
