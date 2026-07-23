@@ -48,7 +48,9 @@ class Portfolio:
                       rationale: str, entry_price: float,
                       signal_source: str = "congressional",
                       initial_stop_pct: float | None = None,
-                      direction: str = "long") -> bool:
+                      direction: str = "long",
+                      model: str = "",
+                      provider: str = "") -> bool:
         """Returns True if position was successfully opened."""
         is_short = direction == "short"
 
@@ -151,6 +153,8 @@ class Portfolio:
                 entry_commission=entry_commission,
                 stop_pct=stop_pct_used,
                 direction=direction,
+                model=model,
+                provider=provider,
             )
         except Exception:
             log.critical(
@@ -234,9 +238,13 @@ class Portfolio:
         sell (close_position) and for a fill discovered after the fact via
         get_order_history() (reconcile_with_broker's ghost-position handling)."""
         entry_commission = 0.0
+        model = ""
+        provider = ""
         for pos in db.get_open_positions():
             if pos["ticker"] == ticker:
                 entry_commission = pos["entry_commission"] if pos["entry_commission"] is not None else 0.0
+                model = pos["model"] if pos["model"] is not None else ""
+                provider = pos["provider"] if pos["provider"] is not None else ""
                 break
         db.log_closed_position(
             ticker=ticker,
@@ -251,6 +259,8 @@ class Portfolio:
             costs=exit_commission,
             entry_commission=entry_commission,
             direction=direction,
+            model=model,
+            provider=provider,
         )
         db.delete_position(ticker)
         if hasattr(self.broker, "cancel_stop_order"):
@@ -325,10 +335,14 @@ class Portfolio:
             )
         exit_commission = actual_filled * self.broker.get_commission_per_share()
         entry_commission = 0.0
+        model = ""
+        provider = ""
         for pos in db.get_open_positions():
             if pos["ticker"] == ticker:
                 full_entry_comm = pos["entry_commission"] if pos["entry_commission"] is not None else 0.0
                 entry_commission = full_entry_comm * (actual_filled / shares) if shares > 0 else 0.0
+                model = pos["model"] if pos["model"] is not None else ""
+                provider = pos["provider"] if pos["provider"] is not None else ""
                 break
         db.log_closed_position(
             ticker=ticker,
@@ -343,6 +357,8 @@ class Portfolio:
             costs=exit_commission,
             entry_commission=entry_commission,
             direction=direction,
+            model=model,
+            provider=provider,
         )
         db.update_position_shares(ticker, shares - actual_filled)
         # Cancel the stale full-qty stop; the next enforce_stop_losses poll re-places

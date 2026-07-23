@@ -93,6 +93,42 @@ def test_score_entry_returns_entry_score(mocker):
     assert isinstance(result, EntryScore)
     assert result.conviction == 8
 
+
+def test_score_entry_stamps_anthropic_model_and_provider(mocker):
+    """Attribution-only fields (performance/tracker.py's by_model()) — this
+    file's autouse fixture forces provider=anthropic."""
+    payload = json.dumps({"conviction": 8, "position_pct": 5.0,
+                          "rationale": "Good", "entry": "buy", "risk_flags": []})
+    _mock_claude(mocker, payload)
+    disc = {"id": "x1", "politician": "Jane Doe", "ticker": "XOM",
+            "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
+            "amount_range": "$50,001 - $100,000"}
+    result = score_entry(disc, committees=["House Energy and Commerce"],
+                         sector="Energy", lag_days=2, estimated_cost_pct=0.05)
+    assert result.provider == "anthropic"
+    assert result.model == "claude-sonnet-4-6"
+
+
+def test_score_entry_stamps_openai_model_and_provider(mocker):
+    """Switching the configured provider must change the stamp — proves the
+    attribution isn't hardcoded to whichever provider this file defaults to."""
+    import dataclasses
+    from system.config import settings as real_settings
+    mocker.patch("system.config.settings", dataclasses.replace(real_settings, llm_provider="openai"))
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = _make_openai_resp(
+        json.dumps({"conviction": 8, "position_pct": 5.0,
+                    "rationale": "Good", "entry": "buy", "risk_flags": []})
+    )
+    mocker.patch("bot.ai_analyst._get_openai_client", return_value=mock_client)
+    disc = {"id": "x1", "politician": "Jane Doe", "ticker": "XOM",
+            "transaction_date": "2026-04-10", "disclosure_date": "2026-04-12",
+            "amount_range": "$50,001 - $100,000"}
+    result = score_entry(disc, committees=["House Energy and Commerce"],
+                         sector="Energy", lag_days=2, estimated_cost_pct=0.05)
+    assert result.provider == "openai"
+    assert result.model == "gpt-5.4"
+
 def test_parse_exit_hold():
     raw = json.dumps({"action": "hold", "rationale": "Momentum ok"})
     d = parse_exit_response(raw)
@@ -1017,6 +1053,21 @@ def test_score_entry_short_parses_response(monkeypatch):
     assert isinstance(score, EntryScore)
     assert score.entry == "sell"
     assert score.expected_return_pct == -8.0
+
+
+def test_score_entry_short_stamps_model_and_provider(monkeypatch):
+    """EntryScore.model/provider are attribution-only (performance/tracker.py's
+    by_model()) — stamped from settings.llm_provider after the LLM call, not
+    decision-critical. This file's autouse fixture forces provider=anthropic."""
+    monkeypatch.setattr(
+        "bot.ai_analyst._llm_call",
+        lambda *a, **k: '{"conviction": 8, "position_pct": 4.0, "rationale": "overvalued", '
+                        '"entry": "sell", "risk_flags": []}',
+    )
+    score = score_entry_short(sector="Technology", estimated_cost_pct=0.4,
+                              factor_score=15, ticker="XYZ")
+    assert score.provider == "anthropic"
+    assert score.model == "claude-sonnet-4-6"
 
 
 def test_review_short_exit_pnl_is_inverted(monkeypatch):

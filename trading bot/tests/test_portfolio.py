@@ -224,6 +224,48 @@ def test_close_position_stores_signal_source(mock_broker, db):
     assert rows[0]["signal_source"] == "fundamental"
 
 
+def test_open_position_stores_model_and_provider(mock_broker, db):
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("AAPL", 5.0, None, "test", 100.0,
+                            model="gpt-5.4", provider="openai")
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "AAPL")
+    assert pos["model"] == "gpt-5.4"
+    assert pos["provider"] == "openai"
+
+
+def test_close_position_carries_model_and_provider_from_open_position(mock_broker, db):
+    """model/provider aren't close_position() parameters — they're read back
+    from the still-open position row (same pattern as entry_commission) so a
+    closed trade can still be attributed to the LLM that opened it."""
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("AAPL", 5.0, None, "test", 100.0,
+                            model="gpt-5.4", provider="openai")
+    portfolio.close_position(
+        ticker="AAPL", shares=10.0, exit_price=110.0,
+        exit_reason="ai_exit", signal_id=None,
+        entry_price=100.0, entry_date="2026-04-01",
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["model"] == "gpt-5.4"
+    assert rows[0]["provider"] == "openai"
+
+
+def test_reduce_position_carries_model_and_provider_from_open_position(mock_broker, db):
+    mock_broker.get_positions.return_value = []
+    portfolio = Portfolio(broker=mock_broker)
+    portfolio.open_position("AAPL", 5.0, None, "test", 100.0,
+                            model="claude-sonnet-4-6", provider="anthropic")
+    portfolio.reduce_position(
+        ticker="AAPL", shares=10.0, exit_price=110.0,
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["model"] == "claude-sonnet-4-6"
+    assert rows[0]["provider"] == "anthropic"
+
+
 def test_open_position_defaults_source_to_congressional(mock_broker, db):
     mock_broker.get_positions.return_value = []
     portfolio = Portfolio(broker=mock_broker)

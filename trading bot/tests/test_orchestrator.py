@@ -312,6 +312,49 @@ def test_congressional_estimated_cost_pct_wired_to_current_constant(mocker, orch
     assert score_spy.call_args[1]["estimated_cost_pct"] == _ESTIMATED_COST_PCT
 
 
+def test_process_signal_passes_model_and_provider_to_open_position(mocker, orch):
+    """score.model/score.provider (attribution-only, from EntryScore) must
+    reach Portfolio.open_position so a closed trade can eventually be broken
+    down by which LLM produced the signal (performance/tracker.py's
+    by_model()) — never used in the sizing/entry decision itself."""
+    from bot.ai_analyst import EntryScore
+    from risk.risk_manager import RiskVeto
+
+    orch._broker = _mock_broker(cash=100_000, position_value=0)
+    mocker.patch("orchestration.main_loop.get_committees_for_politician", return_value=["Finance"])
+    mocker.patch("orchestration.main_loop.get_sector_for_ticker", return_value="Technology")
+    mocker.patch("orchestration.main_loop.compute_lag_days", return_value=2)
+    mocker.patch("orchestration.main_loop.get_cluster_count", return_value=1)
+    mocker.patch("orchestration.main_loop.has_upcoming_event", return_value=(False, ""))
+    mocker.patch("orchestration.main_loop.gather_research", return_value=None)
+    mocker.patch(
+        "orchestration.main_loop.score_entry_with_debate",
+        return_value=EntryScore(
+            conviction=8, position_pct=4.0, rationale="good", entry="buy", risk_flags=(),
+            model="gpt-5.4", provider="openai",
+        ),
+    )
+    mocker.patch("orchestration.main_loop.yf.Ticker",
+                 return_value=_make_yf_ticker_mock(price=100.0))
+    orch._risk.validate_order.return_value = RiskVeto(
+        allowed=True, reason="OK", size_multiplier=1.0,
+    )
+    mocker.patch("orchestration.main_loop.insert_signal", return_value=1)
+    mocker.patch.object(orch._corr_filter, "size_multiplier", return_value=1.0)
+    orch._portfolio.open_position.return_value = True
+
+    disc = {
+        "id": "d1", "politician": "J", "ticker": "AAPL",
+        "transaction_date": "2026-04-01", "disclosure_date": "2026-04-03",
+        "amount_range": "$50,001 - $100,000",
+    }
+    orch._process_signal(disc, {})
+
+    call_kwargs = orch._portfolio.open_position.call_args[1]
+    assert call_kwargs["model"] == "gpt-5.4"
+    assert call_kwargs["provider"] == "openai"
+
+
 def test_morning_pipeline_survives_congressional_scraper_exception(mocker, orch):
     """A congressional-scraper failure (this has broken this way twice before
     — see docs/CLAUDE-REFERENCE.md#data-caveats) must not propagate out of

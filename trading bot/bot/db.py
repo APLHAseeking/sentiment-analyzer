@@ -228,6 +228,26 @@ _MIGRATIONS: list[tuple[int, str, str]] = [
         "Add direction to fundamental_signals",
         "ALTER TABLE fundamental_signals ADD COLUMN direction TEXT NOT NULL DEFAULT 'long'",
     ),
+    (
+        11,
+        "Add model to positions",
+        "ALTER TABLE positions ADD COLUMN model TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        12,
+        "Add provider to positions",
+        "ALTER TABLE positions ADD COLUMN provider TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        13,
+        "Add model to closed_positions",
+        "ALTER TABLE closed_positions ADD COLUMN model TEXT NOT NULL DEFAULT ''",
+    ),
+    (
+        14,
+        "Add provider to closed_positions",
+        "ALTER TABLE closed_positions ADD COLUMN provider TEXT NOT NULL DEFAULT ''",
+    ),
 ]
 
 
@@ -305,17 +325,21 @@ def insert_position(ticker: str, entry_price: float, shares: float,
                     signal_source: str = "congressional",
                     entry_commission: float = 0.0,
                     stop_pct: float = 15.0,
-                    direction: str = "long") -> None:
+                    direction: str = "long",
+                    model: str = "",
+                    provider: str = "") -> None:
     if direction not in ("long", "short"):
         raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
     with get_conn() as conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO positions
                (ticker, entry_price, shares, position_pct, entry_date, signal_id,
-                rationale, peak_price, signal_source, entry_commission, stop_pct, direction)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rationale, peak_price, signal_source, entry_commission, stop_pct, direction,
+                model, provider)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, entry_price, shares, position_pct, entry_date, signal_id,
-             rationale, entry_price, signal_source, entry_commission, stop_pct, direction),
+             rationale, entry_price, signal_source, entry_commission, stop_pct, direction,
+             model, provider),
         )
         if cur.rowcount == 0:
             raise ValueError(
@@ -411,7 +435,9 @@ def log_closed_position(ticker: str, entry_price: float, exit_price: float,
                         signal_source: str = "congressional",
                         costs: float = 0.0,
                         entry_commission: float = 0.0,
-                        direction: str = "long") -> None:
+                        direction: str = "long",
+                        model: str = "",
+                        provider: str = "") -> None:
     if direction not in ("long", "short"):
         raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
     # Long: profit when exit > entry. Short: profit when exit < entry (bought
@@ -423,11 +449,12 @@ def log_closed_position(ticker: str, entry_price: float, exit_price: float,
         conn.execute(
             """INSERT INTO closed_positions
                (ticker, entry_price, exit_price, shares, entry_date, exit_date,
-                exit_reason, realized_pnl, signal_id, closed_at, signal_source, direction)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                exit_reason, realized_pnl, signal_id, closed_at, signal_source, direction,
+                model, provider)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (ticker, entry_price, exit_price, shares, entry_date, exit_date,
              exit_reason, realized_pnl, signal_id, datetime.now(UTC).isoformat(),
-             signal_source, direction),
+             signal_source, direction, model, provider),
         )
 
 def get_closed_positions() -> list[sqlite3.Row]:

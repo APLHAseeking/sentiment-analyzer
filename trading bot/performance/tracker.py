@@ -47,6 +47,34 @@ class PerformanceTracker:
             return {"error": "No portfolio history yet — run the bot for at least one day"}
         return compute_all(eq, tr)
 
+    def by_model(self) -> dict[str, dict]:
+        """Per-model trade attribution — did one LLM's calls outperform another's?
+
+        Returns {model: {n_trades, avg_return_pct, win_rate}}. Rows predating
+        the model/provider columns (2026-07-23) report as "unknown" — there
+        won't be enough history to draw a conclusion for a while regardless.
+        """
+        with db.get_conn() as conn:
+            rows = conn.execute(
+                "SELECT entry_price, exit_price, model FROM closed_positions"
+            ).fetchall()
+        grouped: dict[str, list[float]] = {}
+        for r in rows:
+            entry = float(r["entry_price"])
+            if entry <= 0:
+                continue
+            ret = (float(r["exit_price"]) - entry) / entry
+            label = r["model"] or "unknown"
+            grouped.setdefault(label, []).append(ret)
+        return {
+            label: {
+                "n_trades": len(rets),
+                "avg_return_pct": round(sum(rets) / len(rets) * 100, 2),
+                "win_rate": round(sum(1 for r in rets if r > 0) / len(rets), 3),
+            }
+            for label, rets in grouped.items()
+        }
+
     def by_regime(self) -> dict[str, dict]:
         """Per-regime trade attribution.
 

@@ -81,3 +81,41 @@ def test_by_regime_groups_by_label(db):
     result = tracker.by_regime()
     total_trades = sum(v["n_trades"] for v in result.values())
     assert total_trades == 1
+
+
+def test_by_model_empty(db):
+    tracker = PerformanceTracker()
+    result = tracker.by_model()
+    assert isinstance(result, dict)
+
+
+def test_by_model_groups_by_model(db):
+    db.log_closed_position(
+        ticker="AAPL", entry_price=100.0, exit_price=110.0, shares=10.0,
+        entry_date="2026-01-02", exit_date="2026-01-15", exit_reason="ai_exit",
+        signal_id=None, model="gpt-5.4", provider="openai",
+    )
+    db.log_closed_position(
+        ticker="MSFT", entry_price=200.0, exit_price=190.0, shares=5.0,
+        entry_date="2026-01-03", exit_date="2026-01-16", exit_reason="ai_exit",
+        signal_id=None, model="claude-sonnet-4-6", provider="anthropic",
+    )
+    tracker = PerformanceTracker()
+    result = tracker.by_model()
+    assert result["gpt-5.4"]["n_trades"] == 1
+    assert result["gpt-5.4"]["win_rate"] == 1.0  # 110 > 100
+    assert result["claude-sonnet-4-6"]["n_trades"] == 1
+    assert result["claude-sonnet-4-6"]["win_rate"] == 0.0  # 190 < 200
+
+
+def test_by_model_reports_unknown_for_rows_without_model(db):
+    """Rows predating the model/provider columns (2026-07-23) have '' —
+    grouped as "unknown" rather than silently dropped."""
+    db.log_closed_position(
+        ticker="AAPL", entry_price=100.0, exit_price=110.0, shares=10.0,
+        entry_date="2026-01-02", exit_date="2026-01-15", exit_reason="ai_exit",
+        signal_id=1,
+    )
+    tracker = PerformanceTracker()
+    result = tracker.by_model()
+    assert result["unknown"]["n_trades"] == 1

@@ -1,7 +1,7 @@
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import anthropic as _anthropic
 import openai as _openai
@@ -244,6 +244,11 @@ _VALID_SETUP_TYPES = {
     "reversal", "range_bound", "no_clean_setup",
 }
 
+# Single source of truth for both the actual API calls (_llm_call) and score
+# attribution (score_entry/score_entry_short stamping EntryScore.model) — kept
+# in sync automatically rather than duplicating the model strings.
+_MODEL_BY_PROVIDER = {"openai": "gpt-5.4", "anthropic": "claude-sonnet-4-6"}
+
 _client: _anthropic.Anthropic | None = None
 
 
@@ -325,6 +330,12 @@ class EntryScore:
     entry: str
     risk_flags: tuple[str, ...]
     expected_return_pct: float = 0.0
+    # Attribution only (2026-07-23) — which LLM produced this score, so trade
+    # P&L can eventually be broken down by model (performance/tracker.py's
+    # by_model()). Stamped by score_entry()/score_entry_short() after the
+    # underlying _llm_call; never used in sizing/entry decisions.
+    model: str = ""
+    provider: str = ""
 
 
 @dataclass(frozen=True)
@@ -545,7 +556,7 @@ def _llm_call(
         ]
         try:
             resp = client.chat.completions.create(
-                model="gpt-5.4",
+                model=_MODEL_BY_PROVIDER["openai"],
                 max_completion_tokens=max_tokens,
                 temperature=0,
                 seed=0,
@@ -560,7 +571,7 @@ def _llm_call(
                 "them; determinism cannot be fully enforced for this model", exc,
             )
             resp = client.chat.completions.create(
-                model="gpt-5.4",
+                model=_MODEL_BY_PROVIDER["openai"],
                 max_completion_tokens=max_tokens,
                 messages=openai_messages,
             )
@@ -579,7 +590,7 @@ def _llm_call(
 
     client = _get_client()
     msg = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=_MODEL_BY_PROVIDER["anthropic"],
         max_tokens=max_tokens,
         temperature=0,
         system=[{
@@ -639,7 +650,10 @@ def score_entry(
     def _call():
         return parse_entry_response(_llm_call(system_text, prompt))
 
-    return _call_with_retry(_call)
+    result = _call_with_retry(_call)
+    from system.config import settings
+    provider = settings.llm_provider
+    return replace(result, provider=provider, model=_MODEL_BY_PROVIDER.get(provider, provider))
 
 
 def score_entry_short(
@@ -662,7 +676,10 @@ def score_entry_short(
     def _call():
         return parse_entry_response(_llm_call(system_text, prompt))
 
-    return _call_with_retry(_call)
+    result = _call_with_retry(_call)
+    from system.config import settings
+    provider = settings.llm_provider
+    return replace(result, provider=provider, model=_MODEL_BY_PROVIDER.get(provider, provider))
 
 
 def score_entry_with_debate(

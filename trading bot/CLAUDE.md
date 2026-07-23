@@ -376,6 +376,30 @@
 > live bot-protection-HTML failure) corrected; `docs/STATE.md`'s open items closed. No code
 > changed — `bot/universe.py`'s S&P-500 fallback is the bot's permanent scope now, not a
 > degraded state.
+> 2026-07-23 (LLM model/prompt-strictness review, item 5 of 6 — attribution instrumentation
+> only, zero trading-behavior change): premise check first — entry/exit/technical scoring
+> already runs on `gpt-5.4` (a frontier model), not `gpt-4o-mini` (that's used only for
+> `bot/researcher.py`'s separate news-sentiment step, never switchable via `llm_provider`).
+> Neither switching models nor tightening the already-substantially-rule-driven prompt further
+> is a data-driven call today — the bot had no way to tie a trade's realized P&L back to which
+> LLM produced its signal at all (no `model`/`provider` column anywhere), and live history is
+> still too short to draw a conclusion regardless. Built the instrumentation instead of
+> guessing: `EntryScore` gains `model`/`provider` fields (attribution-only, stamped from
+> `settings.llm_provider` after the LLM call in `score_entry`/`score_entry_short`, never read
+> by any sizing/entry decision); `positions`/`closed_positions` gain matching columns (4 new
+> migrations, `model`/`provider` default `''`); `Portfolio.open_position` takes the new fields
+> and `_book_closed_position`/`reduce_position` carry them forward from the still-open
+> position row at close time, same pattern as the existing `entry_commission` copy-through;
+> all 4 `main_loop.py` call sites that reach `EntryScore` now pass `score.model`/
+> `score.provider` through. Added `performance/tracker.py`'s `by_model()`, mirroring the
+> existing `by_regime()`. There's also a built-but-never-tested `enable_cross_model_debate`
+> flag (`system/config.py`, default off) that can run a high-conviction signal's bear argument
+> on the *other* configured provider — a real, if narrow, existing mechanism worth enabling
+> once both API keys are confirmed present, as a low-risk way to start generating cross-model
+> comparison data. 12 new tests across `tests/test_db.py`/`test_portfolio.py`/
+> `test_ai_analyst.py`/`test_performance.py`/`test_orchestrator.py`; the orchestrator wiring
+> test proven red then green. Full suite as run this session: **1100 passed, 1 deselected**
+> (same pre-existing unrelated flaky heartbeat test noted in the 2e entry above).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

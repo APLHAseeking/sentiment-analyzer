@@ -992,6 +992,7 @@ class RegimeAwareOrchestrator:
             ticker=ticker, position_pct=final_pct,
             signal_id=signal_id, rationale=score.rationale, entry_price=entry_price,
             initial_stop_pct=initial_stop_pct,
+            model=score.model, provider=score.provider,
         )
         if not opened:
             return False
@@ -1120,6 +1121,7 @@ class RegimeAwareOrchestrator:
             ticker=ticker, position_pct=final_pct,
             signal_id=None, rationale=score.rationale, entry_price=entry_price,
             signal_source=signal_type, initial_stop_pct=initial_stop_pct,
+            model=score.model, provider=score.provider,
         )
         if not opened:
             return False
@@ -1266,6 +1268,8 @@ class RegimeAwareOrchestrator:
             entry_price=entry_price,
             signal_source=signal_type,
             initial_stop_pct=initial_stop_pct,
+            model=score.model,
+            provider=score.provider,
         )
         if not opened:
             return False
@@ -1404,6 +1408,8 @@ class RegimeAwareOrchestrator:
             signal_source="fundamental",
             initial_stop_pct=self._cfg.risk.short_trailing_stop_pct,
             direction="short",
+            model=score.model,
+            provider=score.provider,
         )
         if not opened:
             return False

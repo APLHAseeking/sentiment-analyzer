@@ -197,6 +197,32 @@ def test_log_closed_position_stores_signal_source(db):
     assert rows[0]["signal_source"] == "fundamental"
 
 
+def test_insert_position_stores_model_and_provider(db):
+    db.insert_position("AAPL", 100.0, 10.0, 4.0, "2026-04-28", None, "test",
+                       model="gpt-5.4", provider="openai")
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "AAPL")
+    assert pos["model"] == "gpt-5.4"
+    assert pos["provider"] == "openai"
+
+
+def test_insert_position_defaults_model_and_provider_to_empty(db):
+    db.insert_position("AAPL", 100.0, 10.0, 4.0, "2026-04-28", None, "test")
+    pos = next(p for p in db.get_open_positions() if p["ticker"] == "AAPL")
+    assert pos["model"] == ""
+    assert pos["provider"] == ""
+
+
+def test_log_closed_position_stores_model_and_provider(db):
+    db.log_closed_position(
+        "AAPL", 100.0, 110.0, 10.0,
+        "2026-04-01", "2026-04-28", "ai_exit", None,
+        model="claude-sonnet-4-6", provider="anthropic",
+    )
+    rows = db.get_closed_positions()
+    assert rows[0]["model"] == "claude-sonnet-4-6"
+    assert rows[0]["provider"] == "anthropic"
+
+
 def test_signal_source_defaults_to_congressional(db):
     db.log_closed_position(
         "MSFT", 200.0, 220.0, 5.0,

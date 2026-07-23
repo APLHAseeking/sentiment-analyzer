@@ -1148,3 +1148,74 @@ closed market.
 > corresponding `## Next`/`## Open items` bullets closed. No code changed —
 > `bot/universe.py::_build_universe`'s existing S&P-500 fallback is now the bot's permanent
 > behavior, not a degraded state pending a fix.
+> 2026-07-23 (LLM model/prompt-strictness review, item 5 of 6 from
+> `docs/BOT_REVIEW_2026-07-20.md` — instrumentation only, zero trading-behavior change): user
+> asked to review whether to switch away from what they believed was `gpt-4o-mini` running the
+> bot's trading decisions, or alternatively make the prompts stricter so any model could run
+> them. Premise check first: entry/exit/technical conviction scoring — the decision that
+> actually sizes and places trades — runs on `gpt-5.4` (`bot/ai_analyst.py`'s `_llm_call`), a
+> frontier model, not `gpt-4o-mini`; that model is used only for `bot/researcher.py`'s
+> separate, lower-stakes news-sentiment score, with its own independent OpenAI client that
+> never touches `Settings.llm_provider` and can't be switched to Anthropic. So the premise
+> didn't apply to the part of the system that decides trades.
+>
+> On switching models for better returns: unanswerable today, not because of a data
+> shortage alone but because the bot had **no way to attribute a trade's realized P&L back to
+> which LLM produced its signal at all** — `bot/db.py`'s `positions`/`closed_positions` tables
+> and `EntryScore` had no model/provider field whatsoever. Live paper trading also still has
+> too little history (per `docs/STATE.md`: "too early to call an edge" as of 2026-07-21) to
+> justify a switch on returns data even if attribution existed.
+>
+> On tightening the prompt: `_ENTRY_SCHEMA` (`bot/ai_analyst.py`) is already substantially
+> rule-driven — bounded enums (`conviction` 1-10, `entry` strictly `buy`/`skip`/`sell`), hard
+> conviction→position-size bands, per-signal-type deterministic point-adjustment rules
+> (`_CONGRESSIONAL_RULES`/`_FUNDAMENTAL_RULES`/etc.), all re-validated in code
+> (`parse_entry_response`). The only genuinely open-ended field is `rationale` (free text,
+> already documented as "observability only, not decision-critical" at `ai_analyst.py:377-378`
+> pre-this-change) — little room left to tighten without gutting the one field that's already
+> inert to the decision.
+>
+> Built the instrumentation instead of guessing which lever to pull: `EntryScore` gains
+> `model: str = ""` and `provider: str = ""` fields, stamped via `dataclasses.replace()` in
+> `score_entry()`/`score_entry_short()` immediately after `_call_with_retry` returns, sourced
+> from `settings.llm_provider` and a new `_MODEL_BY_PROVIDER = {"openai": "gpt-5.4",
+> "anthropic": "claude-sonnet-4-6"}` dict — `_llm_call`'s own two hardcoded model-string call
+> sites were refactored to read from this same dict, so the attribution and the actual API
+> call can never drift apart. `score_entry_with_debate()` needed no changes — it returns
+> whatever `score_entry()` returns, which is already stamped. `bot/db.py` gains 4 migrations
+> (11-14: `model`/`provider` on `positions` and `closed_positions`, default `''`, following the
+> exact one-column-per-migration convention the `direction` columns used). `insert_position()`
+> and `log_closed_position()` take the new fields directly; `Portfolio.open_position()` gains
+> `model`/`provider` params threaded to `db.insert_position`; `Portfolio._book_closed_position()`
+> and `reduce_position()` don't take them as parameters at all — instead they read `model`/
+> `provider` back off the still-open position row before deleting it, the exact same pattern
+> already used for `entry_commission`, so a closed trade stays attributed to the LLM that
+> opened it without changing either close-path's public signature. All 4 `main_loop.py` call
+> sites that reach an `EntryScore` (`_process_signal`, `_process_insider_signal`,
+> `_process_fundamental_candidate`, `_process_fundamental_short_candidate`) now pass
+> `model=score.model, provider=score.provider` to `open_position`; the 5th `open_position` call
+> site (hedge ETF orders) has no `EntryScore` at all — correctly left with empty attribution.
+> `performance/tracker.py` gains `by_model()`, mirroring the existing `by_regime()` exactly
+> (same grouping/win-rate/avg-return shape, no join needed since the columns now live directly
+> on `closed_positions`).
+>
+> Noted but not touched: `system/config.py`'s `enable_cross_model_debate` flag (default off)
+> already exists and can run a high-conviction signal's bear argument on the *other*
+> configured provider — a real, narrow, built mechanism for cross-model comparison that's
+> never been enabled with real data. Worth considering once both `OPENAI_API_KEY` and
+> `ANTHROPIC_API_KEY` are confirmed present, as a bounded way to start generating comparison
+> data without a full provider switch — a decision for later, once enough history exists,
+> explicitly deferred here.
+>
+> 12 new tests: `tests/test_db.py` (4 — insert/log store and default the new columns),
+> `tests/test_portfolio.py` (3 — open stores them, close and reduce both carry them forward
+> from the open row), `tests/test_ai_analyst.py` (3 — score_entry stamps both providers
+> correctly, score_entry_short stamps correctly), `tests/test_performance.py` (3 — empty case,
+> groups correctly, pre-existing rows without the column report as "unknown" rather than being
+> dropped), `tests/test_orchestrator.py` (1 — the wiring from `score.model`/`score.provider`
+> through to `open_position`'s kwargs, proven red against the pre-fix call site then green).
+> Zero change to which trades get placed or how they're sized — attribution-only, verified by
+> the full existing decision-logic test suite passing unchanged. Full suite as run this
+> session: **1100 passed, 1 deselected** (the deselect is the same pre-existing, unrelated
+> flaky `tests/test_heartbeat.py` test noted in the 2e entry — a concurrent uncommitted
+> session's file, not touched here).

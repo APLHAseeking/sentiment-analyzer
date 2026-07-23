@@ -102,6 +102,20 @@ read `bot_threaddump.log` before doing anything else.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-23 (fix-plan Step 5 of 5, LLM model/prompt review — instrumentation only, zero
+  trading-behavior change): premise check found entry/exit scoring already runs on `gpt-5.4`
+  (frontier model), not `gpt-4o-mini` (that's only `bot/researcher.py`'s separate news-
+  sentiment step). Bot had no way to attribute a trade's P&L back to which LLM produced its
+  signal — added `model`/`provider` to `EntryScore`, `positions`, and `closed_positions` (4 DB
+  migrations), threaded through `Portfolio.open_position`/close paths and all 4 `main_loop.py`
+  call sites; added `performance/tracker.py`'s `by_model()`. Attribution-only — zero change to
+  sizing/entry decisions, verified by the full existing test suite passing unchanged. Noted the
+  existing but never-enabled `enable_cross_model_debate` flag as worth considering later, once
+  enough history exists. RESULT: 12 new tests, key wiring test proven red→green, full suite
+  1100 passed/1 deselected (same pre-existing unrelated flaky heartbeat test). **This completes
+  all 5 items from the fix-plan** — only Step 2f (live-verify the Alpaca short sign convention,
+  together, against the real paper account) remains outstanding, by design (not automatable
+  alone). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23 entry).
 - 2026-07-23 (fix-plan Step 4 of 5, Russell 1000 closed out as accepted scope, doc-only):
   updated `docs/DATA_SOURCES.md`'s stale "Active" row for the iShares Russell 1000 source
   (contradicted the logged live failure), added a note explaining the decision, and closed
