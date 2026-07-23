@@ -300,6 +300,7 @@ def run_pit_backtest(
             "n_signals": 0,
             "windows": windows,
             "equity_series": pd.Series(dtype=float),
+            "trades": [],
         }
 
     # Simulate
@@ -350,4 +351,5 @@ def run_pit_backtest(
         "n_signals": len(all_signals),
         "windows": windows,
         "equity_series": eq,
+        "trades": sim.trades,
     }
