@@ -528,6 +528,23 @@
 > commitment the SUE backtest made and kept. 22 new tests across
 > `tests/test_simfin_fundamentals_ratios.py`, `tests/test_pit_prices.py`, `tests/test_pit_data.py`,
 > `tests/test_backtest_factor_pit.py`. See `docs/PHASE0_BACKTEST_2026-07-23.md` for the full report.
+> 2026-07-23 (naked-stop gap found and fixed, live-verified against the real Alpaca paper
+> account): a Slack alert reporting rejected orders turned out to name tickers/order-IDs
+> (`AAPL`/`XOM`/`TSLA`/`GHOST`/`b5b24e9e-fake`) that exist nowhere in `bot.log`, `trading.db`,
+> or the live broker account — they're literal `tests/test_portfolio.py` fixture strings, not
+> real bot activity. But checking the real account anyway surfaced an independent, genuine gap:
+> only 5 of 30 open positions had a resting stop order at Alpaca. Root cause: same-day fix
+> `9701bb3` (cancel a ticker's resting stop before `close_position`/`reduce_position` sells, so
+> the sell itself isn't blocked) frees the stop unconditionally but never restored it if the
+> sell was then rejected for any reason — left the position genuinely naked until the next
+> scheduled `enforce_stop_losses` poll (15:45/17:00/20:00 Amsterdam, up to ~3h gap). Fixed:
+> both functions now capture the freed stop's exact price before cancelling and restore it
+> immediately on a rejected sell (`Portfolio._capture_and_free_stop`/`_restore_stop_if_known`),
+> mirroring the restore-on-failure pattern `enforce_stop_losses`'s own trailing-update already
+> used. 2 new regression tests proven red against the pre-fix code then green. Full suite as
+> run this session: **1169 passed**. Per user's explicit choice, the 25 positions already naked on
+> the live book were NOT re-protected — this closes the cause for future trades only, it does
+> not retroactively fix today's exposure.
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

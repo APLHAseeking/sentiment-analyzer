@@ -119,7 +119,7 @@ closed market.
   `technical/indicators.py` (pure functions + `TechnicalSnapshot`/`compute_snapshot`) and
   `technical/sector_map.py` (GICS sector string → sector ETF ticker, used for
   relative-strength vs. sector; unmapped sectors are treated as neutral, not an error).
-- **Rejected sells are no-ops at the DB layer:** `close_position`/`reduce_position` book nothing and mutate nothing on a REJECTED order — they alert and leave the position for the next reconcile/poll.
+- **Rejected sells are no-ops at the DB layer:** `close_position`/`reduce_position` book nothing and mutate nothing on a REJECTED order — they alert. As of 2026-07-23 they also restore the resting stop they'd freed before attempting the sell (see `#history`), so the position is not left naked pending the next reconcile/poll.
 - The regime lock file (`RISK_LOCKOUT`) is **not** auto-cleared; trading stays halted until a human deletes it.
 - Dates are ISO `YYYY-MM-DD` strings throughout; regime/DB joins assume this.
 - **Entry hurdle is prompt text, not a code-level filter:** `bot/ai_analyst.py`'s `_ENTRY_SCHEMA` tells the LLM the buy/skip rule (currently 3x cost / 1.0% absolute, loosened from 5x/1.5% on 2026-07-10) — there is no separate deterministic check in Python. `EntryScore.expected_return_pct` (added 2026-07-10, default `0.0` for backward compat) is observability only, populated from the LLM's own self-reported estimate and persisted on `signals`/`fundamental_signals`; it does not gate anything in code.
@@ -1528,3 +1528,39 @@ closed market.
 > `docs/BOT_REVIEW_2026-07-20.md` review except the already-closed-by-decision item 2f (manual
 > live-verification of the Alpaca short sign convention, deliberately deferred per the user's
 > choice not to pursue short-selling activation right now).
+>
+> 2026-07-23 (naked-stop gap found and fixed): a Slack alert reported a wave of rejected
+> orders across `AAPL`/`XOM`/`TSLA`/`GHOST` and a `b5b24e9e-fake` order ID — none of which
+> exist anywhere in `bot.log`, `trading.db`, or a direct read of the real Alpaca paper
+> account. Traced every one of those identifiers to literal fixture strings in
+> `tests/test_portfolio.py` (`test_open_position_unconfirmed_fill_does_not_insert_to_db`'s
+> `"b5b24e9e-fake"`, `test_reconcile_removes_ghost_positions`'s `"GHOST"`, and the
+> `AAPL`/`XOM`/`TSLA` rejected-sell tests around lines 891-1562) — none of those tests mock
+> `monitoring.logger.fire_alert`, so running `pytest tests/test_portfolio.py` with the real
+> `ALERT_WEBHOOK_URL` loaded posts this exact text to the live Slack channel. Not yet
+> confirmed whether that's actually what happened this session.
+>
+> Checking the real account anyway (rather than trusting the alert) surfaced a second,
+> genuine, unrelated problem: only 5 of 30 open positions (`FIS`/`ADBE`/`SNA`/`CPRT`/`FSLR`)
+> had a resting stop order at Alpaca — verified via a direct read-only `TradingClient.get_orders()`
+> call, not logs. Root cause: the same-day `9701bb3` fix (cancel a ticker's resting stop
+> before `close_position`/`reduce_position` sells, since the stop otherwise reserves the full
+> qty and blocks the sell with "insufficient qty available") frees the stop unconditionally
+> but never restored it if the subsequent sell was then rejected for any reason (market-closed
+> timing, insufficient qty, anything) — the position was left genuinely naked until the next
+> scheduled `enforce_stop_losses` poll (15:45/17:00/20:00 Amsterdam), up to a ~3h gap. Given
+> 25/30 positions were affected simultaneously, this most likely traces back to a broad
+> take-profit/exit-review pass earlier the same day, before the `9701bb3` fix (and the
+> restart that deployed it) existed.
+>
+> Fixed in `bot/portfolio.py`: both functions now capture the freed stop's exact price via a
+> new `_capture_and_free_stop` helper before cancelling, and restore it immediately with a new
+> `_restore_stop_if_known` helper if the sell doesn't fill — mirroring the restore-on-failure
+> pattern `enforce_stop_losses`'s own trailing-stop update already uses when a retry also
+> fails (bounded, no infinite retry). 2 new regression tests
+> (`test_close_position_restores_stop_when_sell_rejected`,
+> `test_reduce_position_restores_stop_when_sell_rejected`) proven red against the pre-fix code
+> (via `git stash`, not a hypothetical) then green. Full suite as run this session: **1169
+> passed**. Per the user's explicit choice, the 25 positions already naked on the live book at
+> the time were NOT re-protected (a separate, one-off `enforce_stop_losses()` call was offered
+> and declined) — this fix closes the *cause* for future trades only.

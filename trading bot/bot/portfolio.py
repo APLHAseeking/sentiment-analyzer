@@ -199,13 +199,15 @@ class Portfolio:
         # so a sell placed while it's still open can be rejected with zero qty
         # available even though the position is fully ours. Free it up front —
         # cancel_stop_order(ticker) with no order_id clears every open stop for
-        # this ticker, which is exactly the full-close case.
-        if hasattr(self.broker, "cancel_stop_order"):
-            self.broker.cancel_stop_order(ticker)
+        # this ticker, which is exactly the full-close case. Its price is
+        # captured first so a rejected sell can restore it immediately instead
+        # of leaving the position naked until the next enforce_stop_losses poll.
+        existing_stop_price = self._capture_and_free_stop(ticker)
         order = self._place_closing_order_with_retry(ticker, shares, direction)
         _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
         if order.status in _NON_FILL:
             reason = order.reject_reason or order.status.value
+            self._restore_stop_if_known(ticker, shares, direction, existing_stop_price)
             emit_event(
                 log, EventType.ORDER_REJECTED,
                 f"Close for {ticker} {order.status.value} after retries ({reason}) — "
@@ -273,6 +275,36 @@ class Portfolio:
         if hasattr(self.broker, "cancel_stop_order"):
             self.broker.cancel_stop_order(ticker)
 
+    def _capture_and_free_stop(self, ticker: str) -> float:
+        """Cancel any resting stop for ticker, returning its price (0.0 if none
+        or unknown) so a rejected closing sell can restore it via
+        _restore_stop_if_known instead of leaving the position naked until the
+        next enforce_stop_losses poll."""
+        if not hasattr(self.broker, "cancel_stop_order"):
+            return 0.0
+        existing_stop_price = 0.0
+        if hasattr(self.broker, "get_stop_orders"):
+            try:
+                resting = self.broker.get_stop_orders().get(ticker)
+                if resting is not None:
+                    existing_stop_price = float(resting[0])
+            except Exception:
+                pass
+        self.broker.cancel_stop_order(ticker)
+        return existing_stop_price
+
+    def _restore_stop_if_known(self, ticker: str, qty: float, direction: str,
+                               stop_price: float) -> None:
+        """Re-place a stop just freed by _capture_and_free_stop after its
+        closing sell failed to fill — only if we actually captured a real
+        price (0.0 means there was no resting stop to begin with)."""
+        if stop_price <= 0 or not hasattr(self.broker, "place_stop_order"):
+            return
+        stop_side = "buy" if direction == "short" else "sell"
+        self.broker.place_stop_order(
+            ticker=ticker, qty=qty, stop_price=stop_price, side=stop_side
+        )
+
     def _place_stop_with_retry(self, ticker: str, qty: float, stop_price: float,
                                max_retries: int = 5, side: str = "sell") -> str | None:
         """Alpaca's wash-trade check can reject a stop placed immediately after
@@ -321,16 +353,19 @@ class Portfolio:
                         direction: str = "long") -> bool:
         """Returns True if the partial close was booked, False on no-fill (REJECTED/CANCELLED/SUBMITTED)."""
         # Same reservation gap as close_position: a resting stop can hold the
-        # entire qty and block even a partial sell. Free it up front; a fresh
+        # entire qty and block even a partial sell. Free it up front, capturing
+        # its price first so a rejected sell can restore it (at the full,
+        # unchanged share count) immediately instead of leaving the position
+        # naked until the next enforce_stop_losses poll. On success, a fresh
         # trailing stop for the reduced share count is re-placed by the next
         # enforce_stop_losses poll regardless (see the cancel below).
-        if hasattr(self.broker, "cancel_stop_order"):
-            self.broker.cancel_stop_order(ticker)
+        existing_stop_price = self._capture_and_free_stop(ticker)
         sell_qty = shares / 2
         order = self._place_closing_order_with_retry(ticker, sell_qty, direction)
         _NON_FILL = (OrderStatus.REJECTED, OrderStatus.CANCELLED, OrderStatus.SUBMITTED)
         if order.status in _NON_FILL:
             reason = order.reject_reason or order.status.value
+            self._restore_stop_if_known(ticker, shares, direction, existing_stop_price)
             emit_event(
                 log, EventType.ORDER_REJECTED,
                 f"Reduce for {ticker} {order.status.value} after retries ({reason}) — "

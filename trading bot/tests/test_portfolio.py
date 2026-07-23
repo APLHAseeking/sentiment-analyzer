@@ -1143,6 +1143,61 @@ def test_reduce_position_frees_stop_before_selling(mock_broker, db):
     assert reduced is True
 
 
+def test_close_position_restores_stop_when_sell_rejected(mock_broker, db, mocker):
+    """close_position frees the resting stop up front (test above) so its own
+    sell can't be blocked — but if the sell is rejected anyway (e.g. market
+    closed), the position stays open and must not be left with zero broker-side
+    protection. The freed stop's exact price must be restored immediately,
+    not left for the next enforce_stop_losses poll (real 2026-07-23 gap: 25 of
+    30 live positions found naked after exactly this sequence)."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    mocker.patch("time.sleep")  # skip real backoff delay in test
+    mock_broker.get_stop_orders.return_value = {"AAPL": (95.0, 10.0, "old-stop-id")}
+    rejected = Order(ticker="AAPL", side=OrderSide.SELL, qty=10.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    result = portfolio.close_position(
+        "AAPL", 10.0, exit_price=110.0, exit_reason="ai_exit",
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    assert result is False
+    mock_broker.place_stop_order.assert_called_once_with(
+        ticker="AAPL", qty=10.0, stop_price=95.0, side="sell"
+    )
+
+
+def test_reduce_position_restores_stop_when_sell_rejected(mock_broker, db, mocker):
+    """Same gap as close_position, on the partial-exit path — the restored
+    stop must cover the FULL, unchanged share count (the reduce never
+    happened), not the smaller attempted sell_qty."""
+    from execution.broker_interface import Order, OrderSide, OrderStatus, OrderType
+    mocker.patch("time.sleep")  # skip real backoff delay in test
+    mock_broker.get_stop_orders.return_value = {"AAPL": (95.0, 10.0, "old-stop-id")}
+    rejected = Order(ticker="AAPL", side=OrderSide.SELL, qty=5.0, order_type=OrderType.MARKET)
+    rejected.status = OrderStatus.REJECTED
+    rejected.reject_reason = "market closed"
+    mock_broker.place_order.return_value = rejected
+
+    db.insert_position("AAPL", 100.0, 10.0, 5.0, "2026-04-01", None, "Test")
+    portfolio = Portfolio(broker=mock_broker)
+
+    result = portfolio.reduce_position(
+        "AAPL", 10.0, exit_price=110.0,
+        signal_id=None, entry_price=100.0, entry_date="2026-04-01",
+    )
+
+    assert result is False
+    mock_broker.place_stop_order.assert_called_once_with(
+        ticker="AAPL", qty=10.0, stop_price=95.0, side="sell"
+    )
+
+
 def test_hedge_stop_pass_does_not_retrail_long_positions(mock_broker, db):
     """enforce_stop_losses(source_include='hedge') must not touch a long position's stop."""
     from system.config import RiskConfig
