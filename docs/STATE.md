@@ -115,6 +115,12 @@ session: check `## Next` below.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-23 (new plan, step 3 of 6: PIT constituents, zero new code): re-verified
+  `backtesting/pit_constituents.py::fetch_sp500_pit_constituents` still works end-to-end — a
+  live run returned 1,350,248 (date,ticker) rows, 1996-01-02 to 2026-06-30, 1,206 unique
+  tickers ever in the S&P 500 historically. No code change, no commit for this step. Next:
+  step 4, the historical/delisted price fetcher (Tiingo+yfinance) — the biggest remaining
+  unknown given Tiingo's real request budget vs. ~1,206 tickers to cover.
 - 2026-07-23 (new plan, step 2 of 6: SimFin raw fundamentals fetcher): live-tested SimFin's
   `derived` (pre-computed ratios) dataset — confirmed premium-only (HTTP 500), not available
   free. Fell back to the plan's documented alternative: fetch raw income/balance/cashflow
