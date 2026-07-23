@@ -2,643 +2,110 @@
 
 ## Goal
 Fix why the live paper bot isn't trading and keep it trading reliably; investigate new
-factor edges without deploying unvetted ones. Root-caused across several sessions
-(dead-for-3-days hang, phantom fills, wrong pipeline timing, NAV-baseline bug, unconditional
-fundamental_signals insert, stop-loss wash-trade race — see Done). Bot is currently live,
-restarted, healthy, running the latest fixes.
+factor edges without deploying unvetted ones. Bot is live, restarted, healthy.
 
 ## Now
-**2026-07-23 (new): user reported two Slack alerts (DEAD_FEED, ORDER_REJECTED/LVS).**
-DEAD_FEED = capitoltrades.com 429 rate-limit, no code bug, zero trading impact (congressional
-signal already disabled for trading). ORDER_REJECTED = real bug, reproduced: `close_position`/
-`reduce_position` never cancelled a ticker's resting stop before selling, so a same-qty stop
-blocked the sell outright (LVS stuck). Fixed in `bot/portfolio.py` (cancel up front, mirrors
-existing `enforce_stop_losses` pattern); 2 new regression tests proven red then green;
-`pytest tests/test_portfolio.py` 101/101 green. Full detail:
-`trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23 LVS entry). **Not yet live-verified
-against the real stuck LVS position or committed — next step.**
-
-**2026-07-23 (earlier, prior session): session closed by user, idle.** Bot live, healthy,
-restarted, running the heartbeat fix on commit `f972647`. Same-day third wedge partly explained
-(63min confirmed Clamshell Sleep, ~14h still not) → `disablesleep` enabled to remove sleep as a
-cause going forward; one accidental `sudo sfltool resetbtm` (shell history-expansion mishap)
-reset the system-wide BTM approval database, no files touched, bot unaffected.
+2026-07-23: bot live and healthy, PID 21508, commit `3590db2` (includes the LVS stop-cancel
+fix, `9701bb3`). Deployed via safe restart at 18:26 CEST; last job before restart completed
+cleanly, nothing mid-run. Not yet behaviorally proven against a real order rejection — needs
+a natural close/reduce event on a position with a resting stop (see `## Next`).
 
 ## Next
-- **Read `trading bot/bot_threaddump.log` the next time a scheduler wedge is reported** — it's
-  overwritten every 5 min with a full thread-stack dump; the copy present when the gap is
-  noticed shows what every thread (including the scheduler's own) was doing when it stalled.
-  This is the actual diagnostic payoff of the 2026-07-23 heartbeat work — don't just restart
-  and move on without reading it first.
-- **Live-verify the two 2026-07-21 `ORDER_REJECTED` fixes** (`bot/portfolio.py`, commit
-  `b06b9ee` — see Done below) — neither has been behaviorally proven against real Alpaca yet,
-  only against a mocked broker. Watch for: (A) a trailing-stop update recurring on a position
-  whose qty grew past its old stop (previously stuck: HIG/LVS/VZ) — should now succeed instead
-  of repeating `ORDER_REJECTED`; (B) a same-day new entry hitting the wash-trade race — should
-  now clear within the widened 5x/~20s retry instead of failing outright.
-- **Investigate the remaining scheduler wedge root cause** — three silent gaps so far: 07-21
-  22:30→07-22 13:05 (~14.5h, mechanism never confirmed), 07-22 13:05:56→17:02:20 (~3h56m,
-  confirmed NOT sleep — `caffeinate` held throughout), and 07-22 22:30:01→07-23 14:03:23
-  (~15.5h, only ~1h explained by a confirmed real Clamshell Sleep — ~14h still unexplained).
-  `disablesleep` (see above) should remove sleep as a cause going forward; if wedges keep
-  happening with it on, sleep was never the whole story and the remaining mechanism is still
-  open. `monitoring/heartbeat.py` (added 2026-07-23, live-verified deployed as of the 15:31
-  restart) exists so the next occurrence leaves a real thread-stack dump instead of another
-  unexplained gap — see the item above. Watchdog is off (see below), so nothing auto-recovers.
-- Watchdog/dead-man's-switch auto-restart remains non-functional and **abandoned by
-  deliberate decision** (2026-07-20, reconfirmed 2026-07-21). `sudo sfltool resetbtm` — the
-  lever this file previously flagged as needing explicit go-ahead — was run **accidentally**
-  2026-07-23 (shell history-expansion mishap, not a deliberate watchdog attempt; see `## Now`)
-  and did reset the system-wide BTM approval database. Re-running it deliberately for the
-  watchdog is now moot either way (nothing to reset twice) but still not planned — the
-  2026-07-20/21 decision to stay manual-only stands regardless. Not urgent: the missed-job
-  Slack alert (2026-07-21) means a wedge now gets noticed instead of silently sitting until a
-  manual check — it does NOT auto-recover, still needs a manual restart every time.
-- **BTM re-approval checklist (from the 2026-07-23 accidental reset)** — human-only, System
-  Settings → General → Login Items & Extensions: Google Updater/Keystone, Microsoft
-  OneDrive/Office/Teams/Defender helpers, Zoom updater, Steam clean, XQuartz. The bot's own 3
-  plists (watchdog/dead-man's-switch/tradingbot) are already known-inert, no action needed.
-  Cannot be scripted — Apple requires human interaction for background-item approval.
-- `tests/test_heartbeat.py` flaky under concurrent full-suite load (not solo) — timeout already
-  widened once (2.0s→5.0s in `_wait_for`, commit `ea82574`) but a concurrent session's own run
-  still saw it deselected after that fix. Real wall-clock polling under heavy CPU contention;
-  next attempt should make it event-based (heartbeat signals a real sync primitive on its first
-  tick) instead of widening the timeout again — see `docs/CLAUDE-REFERENCE.md#history`'s
-  2026-07-23 entry for detail.
-- **CLOSED 2026-07-23**: Russell 1000 / `FMP_API_KEY` — user decided to accept S&P-500-only
-  scope rather than pursue FMP (zero existing integration code, unknown-cost account, no free
-  tier confirmed). See `docs/DATA_SOURCES.md`'s Russell 1000 note and
-  `trading bot/docs/BOT_REVIEW_2026-07-20.md`. Not an open item anymore.
+- Live-verify the LVS/`close_position` stop-cancel fix (commit `9701bb3`) against a real
+  recurrence — next `run_exit_review` (16:00 CEST) or any stop-triggered close. LVS itself
+  still has an untouched resting stop; nothing has retried it since the fix landed.
+- Read `trading bot/bot_threaddump.log` the next time a scheduler wedge is reported
+  (overwritten every 5 min, shows what every thread was doing when it stalled) — don't just
+  restart without reading it first.
+- Scheduler wedge root cause still partially open: `disablesleep` (2026-07-23) should remove
+  sleep as a cause going forward; if wedges keep recurring with it on, the remaining ~14h
+  portion of the 07-22/23 gap is still unexplained.
+- Watchdog/dead-man's-switch auto-restart: abandoned by deliberate decision (2026-07-20/21) —
+  manual-only going forward, don't re-propose launchd/cron without materially new information.
+- BTM re-approval checklist (human-only, from the 2026-07-23 accidental `sfltool resetbtm`):
+  System Settings → Login Items & Extensions — Google Updater/Keystone, Microsoft
+  OneDrive/Office/Teams/Defender, Zoom updater, Steam clean, XQuartz. Bot's own 3 plists
+  already known-inert.
+- `tests/test_heartbeat.py` flaky under concurrent full-suite load only (3/3 pass isolated) —
+  real-time polling under CPU contention, not a heartbeat.py bug; next attempt should make it
+  event-based instead of widening the timeout again.
+- Congressional signal: measured negative real-data excess return (1mo -0.64% t=-2.57, 3mo
+  -2.54% t=-4.93) but still scraped daily for DB logging only (trading use disabled
+  2026-07-22) — no decision yet on whether to reduce/disable the scrape-only path itself.
 - requirements.txt pinning/lockfile: still not started.
-- **DONE 2026-07-23**: `sudo pmset -a disablesleep 1` applied system-wide (confirmed via
-  `pmset -g everything` → `SleepDisabled 1`) after Clamshell Sleep (lid-close, distinct from
-  the already-fixed Power Nap issue) was confirmed to have caused a real 63-min gap during
-  today's wedge. This is a machine-wide setting, not scoped to the bot — closing the lid no
-  longer sleeps anything on this Mac until it's turned back off (`sudo pmset -a disablesleep
-  0`). Watch for: (a) whether wedges stop recurring now that lid-close sleep is off, (b)
-  battery drain if ever run unplugged (fully awake, no suspend), (c) any other app noticing the
-  lid-close-sleep change. Migrating off the laptop entirely (Oracle Cloud Always Free / a small
-  VPS / a home always-on device) remains the bigger, not-yet-needed option if wedges persist
-  even with this — see `docs/RUNBOOK.md#sleep-wedges`.
+- Short-selling: 5/5 design-spec prerequisite code fixes done; flag stays off
+  (`enable_short_selling=False`) — Alpaca sign-convention still not live-verified against a
+  real paper account before ever enabling.
 
 ## Constraints
-- User 2026-07-17 (this review thread): report findings for sign-off first, no fixes applied
-  during the review itself; bounded new empirical work OK (re-run existing backtest scripts
-  against already-cached PIT data) but no new scraping/data collection (Phase 0 gate still
-  blocked); do not touch reliability/scheduler/watchdog code — that's the other session's
-  active thread; any eventual remediation edit to `orchestration/main_loop.py` must check
-  `git status`/`git log` on that file first to avoid colliding with in-flight reliability fixes.
-- User 2026-07-10: add launchd auto-restart supervision (KeepAlive) alongside the code-level catch-up fix. [CLOSED 2026-07-14 — root cause is KeepAlive itself being blocked by macOS Background Task Management for an unsigned binary, not fixable; user accepted manual nohup + dead-man's-switch instead. SUPERSEDED 2026-07-16 — user asked for a permanent fix after a ~20h undetected wedge, reversing the "manual restart is acceptable" premise; see the 2026-07-16 DECISION under `## Decisions`. The auto-restart watchdog built then uses StartInterval, not KeepAlive, so the original technical blocker doesn't apply to it.]
-- User 2026-07-10: include an entry-hurdle loosening proposal now (3x cost / 1.0% absolute), evaluated via observability not a pre-hoc backtest (not feasible — no stored expected_return field).
-- User 2026-07-14: SUE PIT backtest — reuse the exact SUE formula unmodified, only new SEC call is companyfacts, zero new LLM calls, cache to parquet, do not touch the live 0.15 weight or enable anything (recommendation only). [Honored throughout — screener/factor_scorer.py never touched.]
-- Original task: keep test suite green; follow repo CLAUDE.md/CODE.md conventions; log changes in docs/CLAUDE-REFERENCE.md#history
-- Repo: tests offline; temperature=0 on LLM calls; no new deps/frameworks without flagging
-- Global: never git push unless asked; commit per meaningful unit
-- User 2026-07-21: on the scheduler-wedge reliability gap, only a lower-risk mitigation (no
-  system-wide daemon/permission changes) — explicitly declined re-attempting
-  `sudo sfltool resetbtm`/watchdog redeploy again this session.
+- Global: never git push unless asked; commit per meaningful unit.
+- Repo: tests offline; temperature=0 on LLM calls; no new deps/frameworks without flagging;
+  keep test suite green; log changes in docs/CLAUDE-REFERENCE.md#history.
+- User 2026-07-14: SUE PIT backtest formula/weight untouched — recommendation only, honored.
+- User 2026-07-21: scheduler-wedge mitigation stays lower-risk only (no system-wide
+  daemon/permission changes) this thread.
 
 ## Decisions
-- DECISION: SUE PIT backtest ran 2026-07-14, gate failed (t<2 and IR<0.5 at both 20d/60d, plus a 60d stability sign-flip) — sub-weight stays 0.15 in `_MOMENTUM_WEIGHTS`. Not revisiting without a genuinely new argument (EDGE_BACKLOG.md).
-- DECISION: B2 = hard exclude when shortPercentOfFloat > UniverseConfig.max_short_pct_float (20%, 0 disables); missing passes.
-- DECISION: insider feed = EDGAR daily form.idx primary (2 newest published, newest first), getcurrent fallback, max_filings_per_run 300 budget.
-- DECISION: event-calendar gate NOT carved out for PEAD — explicit future decision (EDGE_BACKLOG).
-- DECISION: XBRL via frames API (~20 req/screen, 20h shelve cache xbrl_frames_cache, gitignored); SUE anchor shifts to filer's newest available quarter (max 2 stale) — slot 0 empty ~40 days post-quarter, Q4 frames sparse.
-- DECISION: main bot's launchd auto-restart (KeepAlive) closed permanently — root cause is KeepAlive blocked by macOS Background Task Management for an unsigned Homebrew binary, not fixable via plist/Settings. Bot still runs via manual nohup. (Does NOT apply to the StartInterval watchdog below — StartInterval isn't KeepAlive and isn't blocked by this gate, confirmed by the dead-man's-switch already running fine as a StartInterval LaunchAgent.)
-- DECISION (2026-07-16, reverses the 2026-07-14 StartInterval-supervisor decline recorded under `## Constraints`): built an active auto-restart watchdog (`monitoring/watchdog.py`) after a wedge sat undetected ~20h under the alert-only model — the 2026-07-14 reasoning ("manual restart is an acceptable tradeoff... dead-man's switch already detects a stale bot") assumed a human would notice within hours; it didn't bound downtime the way that assumed. Every restart gated on 10 min of `bot.log` quiet so it never kills a legitimately running pipeline. See `trading bot/docs/RUNBOOK.md#watchdog`.
-- DECISION (2026-07-17): sleep mitigation — disable Power Nap only (`sudo pmset -a powernap 0`), not full `disablesleep` or a laptop migration. Targeted at the specific `pmset -g log` symptom observed (`Sleep Service Back to Sleep` cycling, `powernap=1` on both Battery/AC); the heavier options remain documented in `docs/RUNBOOK.md#sleep-wedges` if this proves insufficient. Not urgent now that the watchdog bounds downtime regardless.
-- DECISION (2026-07-17): watchdog moved from a LaunchAgent to a LaunchDaemon (`UserName` key) to close "reboot/logout with nobody logged in" — chosen over auto-login, which FileVault (confirmed on via `fdesetup status`) disables outright. Residual, deliberately left open: a truly cold boot from fully powered off still needs a human to enter the FileVault pre-boot password — no launchd domain runs before that, software cannot skip it.
-- DECISION (2026-07-17): answer to "will it ever happen again without intervention?" is honest, not absolute — closed 4 specific gaps (reboot-without-login via the LaunchDaemon above, a bug in the watchdog itself via cross-checked alerting, an unbounded restart-crash-loop via a circuit breaker, a stuck-but-logging blind spot via a hard ceiling) but explicitly did NOT claim zero remaining gaps. Cold-boot-from-off (FileVault) and "a new, not-yet-found bug in the watchdog's own code" both remain genuinely possible; the honest framing was itself something the user asked for and got, not a hedge to walk back later.
-- DECISION (2026-07-21): after last night's 2 missed jobs went uncaught (watchdog off since 2026-07-20), chose alert-only mitigation (`_on_job_missed` now calls `fire_alert()`, matching `_on_job_error`) over re-attempting `sudo sfltool resetbtm`/watchdog redeploy — user's explicit choice, lower blast radius, no system-wide permission changes. Narrows the detection gap, does not close the auto-recovery gap: a wedge still needs a manual restart.
+- DECISION: SUE sub-weight stays 0.15 (2026-07-14 PIT gate failed); Phase 0 composite-factor
+  gate also FAILS (2026-07-23 full PIT backtest, t=-1.75/IR=-0.78) — no code change to
+  `screener/factor_scorer.py` from either result.
+- DECISION: launchd/cron auto-restart supervision closed permanently (2026-07-20/21) — macOS
+  Background Task Management blocks unsigned legacy launchd items categorically (see
+  `## Failed attempts`); bot and its two helper scripts are manual-only (`nohup`/on-demand).
+- DECISION: congressional signal disabled for trading decisions (2026-07-22,
+  `Settings.congressional.enabled=False`) — negative real-data excess return; scraping
+  continues for DB logging only.
+- DECISION: Russell 1000 closed as accepted S&P-500-only scope (2026-07-23) — no viable free
+  data source found across 3 sessions.
 
 ## Facts
-- Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space — quote it)
-- Test command: cd "trading bot" && pytest — 1088 tests green as of 2026-07-23 (freshly re-run), 0 known failures
-- Branch: feature/profitable-strategies-lowvol-residmom-insider; 45+ commits ahead of origin, not pushed
-- SUE PIT backtest modules: screener/xbrl_pit_sue.py (companyfacts fetch/cache, PIT quarterly EPS, PIT SUE), backtesting/pit_constituents.py (PIT S&P 500 membership), backtesting/backtest_sue_pit.py (drift/HAC/gate). Report: trading bot/docs/SUE_PIT_BACKTEST_2026-07-14.md. Cache dir trading bot/pit_cache/ (gitignored).
-- Bot process: check via `ps aux | grep run_bot.py`; started via `nohup caffeinate -i -s /opt/homebrew/bin/python3 run_bot.py > bot.log 2>&1 &` from inside "trading bot/" (caffeinate wrapper added 2026-07-15, see RUNBOOK.md#sleep-wedges; use the absolute python3 path, confirm with `which python3` first — a bare `"python3"` caused a real outage under a minimal-PATH launchd context, 2026-07-17). Dead-man's-switch: `launchctl list | grep tradingbot`. As of 2026-07-21: PID 54604, commit `cb88ce5`.
-- Live health check command sequence: bot process alive + its start time vs latest commit timestamps (stale-process-running-old-code is a recurring real failure mode, caught 3x this session) + `sqlite3 trading.db "SELECT * FROM job_runs ORDER BY rowid DESC LIMIT 3;"` + `ls RISK_LOCKOUT` (should not exist) + `launchctl list | grep tradingbot`.
-- docs/guardrails/MIGRATION-LOG.md has PRE-EXISTING uncommitted changes (not this task's, predates this session) — do not commit blindly.
+- Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space —
+  quote it).
+- Test command: `cd "trading bot" && pytest` — 1142+ tests green as of 2026-07-23.
+- Branch: feature/profitable-strategies-lowvol-residmom-insider; 136+ commits ahead of
+  origin, not pushed.
+- Bot process: `ps aux | grep run_bot.py`; restart via `nohup caffeinate -i -s
+  /opt/homebrew/bin/python3 run_bot.py > bot.log 2>&1 & disown` from inside "trading bot/"
+  (see `docs/RUNBOOK.md#safe-restart`). As of 2026-07-23 18:26 CEST: PID 21508, commit
+  `3590db2`.
+- Live health check: process alive + start time vs latest commit + `sqlite3 trading.db
+  "SELECT * FROM job_runs ORDER BY rowid DESC LIMIT 3;"` + `ls RISK_LOCKOUT` (should not exist).
+- docs/guardrails/MIGRATION-LOG.md has pre-existing uncommitted changes, not this project's —
+  don't commit blindly.
 
 ## Done
-Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
-project's permanent changelog — pointers only here per SESSION.md S3/S8).
-- 2026-07-23 (new plan, steps 5+6 of 6: harness wiring, full run, report — PLAN COMPLETE): built
-  the ratio computation (`screener/simfin_fundamentals.py::compute_fundamentals_snapshots`,
-  5 hand-verified fixtures), a new `backtesting/backtest_factor_pit.py` driver (mirrors
-  `backtest_sue_pit.py`), and an additive `equity_series` key on `run_pit_backtest`'s return.
-  Caught and fixed 3 real bugs before/during the full run: a Tiingo 429 wrongly cached as a
-  permanent miss (973 poisoned cache files deleted), `build_fundamentals_csv` ignoring its own
-  ticker-scope param (walked SimFin's full universe, triggered the 429 storm above), and a
-  `Timestamp.isoformat()` vs `date.fromisoformat()` format mismatch. Small-scale (8-ticker)
-  wiring test ran clean, per user approval ran the full production pull. First full run found
-  one more real gap (146/576 tickers, concentrated in financials, missing fundamentals because
-  SimFin splits banks/insurers onto separate dataset variants never fetched) — fixed by
-  merging all 3 variants per statement type; re-ran, result barely moved (reassuring). **Final
-  result: Phase 0 gate FAILS** — t-stat=-1.75, IR=-0.78 (needs t>2/IR>0.5), negative point
-  estimate, consistent across both stability-split halves. Full report:
-  `trading bot/docs/PHASE0_BACKTEST_2026-07-23.md`; `docs/PHASE0_FINDINGS.md` updated from
-  "BLOCKED ON DATA" to "TESTED — GATE FAILS". No code change to `screener/factor_scorer.py`.
-  RESULT: 22 new tests, full suite 1142 passed. **This completes all 6 items from
-  `docs/BOT_REVIEW_2026-07-20.md`** except item 2f (already closed by the user's decision not
-  to pursue short-selling activation). Full narrative:
-  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, PIT steps 5+6 entry).
-- 2026-07-23 (new plan, step 4 of 6: historical/delisted price fetcher): new
-  `trading bot/market_data/pit_prices.py` — yfinance first (free), Tiingo fallback only for
-  tickers yfinance genuinely lacks, gaps recorded explicitly (never silently dropped). Per-
-  ticker permanent cache, including caching misses. Shares one yfinance session per batch,
-  closed when done (matches `factor_scorer.py`'s existing leaked-socket fix). RESULT: 12 new
-  tests + a real small-sample live run (AAPL/MSFT/SIVB/BBBY resolved — yfinance covered SIVB/
-  BBBY itself, better than expected; FRC correctly gapped). **Deliberately deferred the full
-  ~1,206-ticker production pull** to a separate later run, per the user's choice — build+verify
-  now, run the expensive full pull only when kicked off deliberately. Full suite 1121 passed.
-  Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, step 4 entry).
-- 2026-07-23 (new plan, step 3 of 6: PIT constituents, zero new code): re-verified
-  `backtesting/pit_constituents.py::fetch_sp500_pit_constituents` still works end-to-end — a
-  live run returned 1,350,248 (date,ticker) rows, 1996-01-02 to 2026-06-30, 1,206 unique
-  tickers ever in the S&P 500 historically. No code change, no commit for this step. Next:
-  step 4, the historical/delisted price fetcher (Tiingo+yfinance) — the biggest remaining
-  unknown given Tiingo's real request budget vs. ~1,206 tickers to cover.
-- 2026-07-23 (new plan, step 2 of 6: SimFin raw fundamentals fetcher): live-tested SimFin's
-  `derived` (pre-computed ratios) dataset — confirmed premium-only (HTTP 500), not available
-  free. Fell back to the plan's documented alternative: fetch raw income/balance/cashflow
-  (quarterly) + companies/industries reference tables instead, each schema-verified via real
-  API calls first. New `trading bot/screener/simfin_fundamentals.py` — one shared fetch+cache
-  function for all 5 datasets, permanent parquet cache, plus a `sector_map()` helper (ticker →
-  sector via IndustryId join). Ratio computation itself (needs price data) deferred to the
-  harness-wiring step once PIT prices exist (step 4). Added
-  `Credentials.simfin_api_key`/`tiingo_api_key` to config. RESULT: 5 new tests + live
-  end-to-end run (all 5 real datasets fetched, ~49.7k rows each for the statements, real sector
-  map built and spot-checked). Full suite 1109 passed. Full narrative:
-  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, step 2 entry).
-- 2026-07-23 (new plan, step 1 of 6: Phase 0 PIT data build — Ken French factor returns):
-  starting the highest-leverage item from `docs/BOT_REVIEW_2026-07-20.md` — the Phase 0
-  backtest gate has been BLOCKED ON DATA since before this feature branch existed. User got
-  free `SIMFIN_API_KEY` and `TIINGO_API_KEY` accounts, both added to `.env` and live-verified
-  this session (real API calls, not assumptions): SimFin includes real Publish/Report/Restated
-  dates (~5yr/3,781 tickers); Tiingo has partial delisted-ticker coverage (2/3 tested). Built
-  `trading bot/screener/ff_factors.py` — fetches/caches Ken French's daily 3-factor + momentum
-  data (free, no key), verified against the real downloaded files before writing the parser.
-  RESULT: 4 new offline tests + one live end-to-end run (26,152 rows, 1926-2026, matches manual
-  verification). Full suite 1104 passed. Remaining: SimFin fundamentals fetcher, reuse existing
-  PIT-constituents code, Tiingo+yfinance price fetcher, wire into `CSVPITProvider`, run the
-  pre-committed gate (t>2, IR>0.5, stable). Full narrative:
-  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, PIT data entry).
-- 2026-07-23 (fix-plan Step 5 of 5, LLM model/prompt review — instrumentation only, zero
-  trading-behavior change): premise check found entry/exit scoring already runs on `gpt-5.4`
-  (frontier model), not `gpt-4o-mini` (that's only `bot/researcher.py`'s separate news-
-  sentiment step). Bot had no way to attribute a trade's P&L back to which LLM produced its
-  signal — added `model`/`provider` to `EntryScore`, `positions`, and `closed_positions` (4 DB
-  migrations), threaded through `Portfolio.open_position`/close paths and all 4 `main_loop.py`
-  call sites; added `performance/tracker.py`'s `by_model()`. Attribution-only — zero change to
-  sizing/entry decisions, verified by the full existing test suite passing unchanged. Noted the
-  existing but never-enabled `enable_cross_model_debate` flag as worth considering later, once
-  enough history exists. RESULT: 12 new tests, key wiring test proven red→green, full suite
-  1100 passed/1 deselected (same pre-existing unrelated flaky heartbeat test). **This completes
-  all 5 items from the fix-plan** — only Step 2f (live-verify the Alpaca short sign convention,
-  together, against the real paper account) remains outstanding, by design (not automatable
-  alone). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23 entry).
-- 2026-07-23 (fix-plan Step 4 of 5, Russell 1000 closed out as accepted scope, doc-only):
-  updated `docs/DATA_SOURCES.md`'s stale "Active" row for the iShares Russell 1000 source
-  (contradicted the logged live failure), added a note explaining the decision, and closed
-  the corresponding `## Next`/`## Open items` bullets above per the user's explicit choice to
-  accept S&P-500-only scope rather than pursue a new FMP integration (zero existing code,
-  unknown cost). No code changed — `bot/universe.py`'s existing S&P-500 fallback is now the
-  bot's permanent behavior, not a degraded state. Full narrative:
-  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, second entry).
-- 2026-07-23 (fix-plan Step 2e of 5, SimulatedBroker sell-to-open support): `SimulatedBroker`
-  had no way to open a short — `_apply_fill` unconditionally raised on a sell with no held
-  position, and it lacked `shorting_enabled()`/`is_shortable()` entirely, so
-  `Portfolio.open_position`'s short branch would `AttributeError` against it. Added a
-  `shorting_enabled: bool = False` constructor flag (default preserves all existing behavior
-  exactly) and rewrote `_apply_fill` to handle buy-to-cover / sell-to-open / add-to-short while
-  leaving the pre-existing long-only arithmetic byte-identical (verified by reading the full
-  diff, not just tests passing). `run_bot.py --simulated` now wires the flag from
-  `enable_short_selling`. RESULT: 12 new tests, 7 proven red→green, full suite 1087
-  passed/1 deselected (the deselect is an unrelated flaky test in a concurrent uncommitted
-  session's new `monitoring/heartbeat.py` — not this task's file, noted not fixed). This was
-  the last of the 5 short-selling prerequisite code fixes (design spec's open question 5) —
-  only 2f (manual live-verification of the Alpaca sign convention) remains. Full narrative:
-  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23 entry).
-- 2026-07-22 (fix-plan Step 2d of 5, short borrow fees): the short-side AI cost hurdle shared
-  `_ESTIMATED_COST_PCT` verbatim with longs — no borrow-fee term. Added
-  `ExecutionConfig.short_borrow_cost_pct` (flat addend, default 0.5), applied only at the short
-  candidate's `score_entry_short` call. Explicitly flagged as a conservative approximation —
-  real per-name borrow rates aren't available via the paper API. RESULT: 1073 passed (was
-  1071), 2 new tests, proven red→green. Fourth of the 5 short-selling prerequisite fixes
-  (design spec's open question 4). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md
-  #history` (2026-07-22, fifth entry).
-- 2026-07-22 (fix-plan Step 2c of 5, hedge-mechanism overlap): `hedge/hedge_engine.py` had no
-  awareness of open per-stock shorts — a short and the broad inverse-ETF hedge could
-  double-count the same bearish thesis. Added `existing_short_pct` param to
-  `compute_hedge_plan()`, subtracted from the regime's inverse-allocation cap before sizing
-  ETFs (floored at 0). `_run_hedge_pass` computes it from the existing broker/DB
-  cross-reference loop. RESULT: 1071 passed (was 1067), 4 new tests, 3 proven red→green.
-  Third of the 5 short-selling prerequisite fixes (design spec's open question 2). Full
-  narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-22, fourth entry).
-- 2026-07-22 (fix-plan Step 2b of 5, regime-aware short sizing): the short candidate path
-  bypassed `AllocationEngine` entirely (zero regime scaling, by original v1 design-doc scope).
-  Added `AllocationConfig.short_regime_size_multiplier` (inverse tilt vs. the long table —
-  shorts size up in crash/bear, down in bull/melt-up) and a `direction` param to
-  `AllocationEngine.compute()`; wired into the short path. Explicitly flagged as a principled
-  default, not backtested (Phase 0 gate blocks real short-side backtesting). RESULT: 1067
-  passed (was 1062), 5 new tests, key one proven red→green. Second of the 5 short-selling
-  prerequisite fixes (design spec's open question 1). Full narrative:
-  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-22, third entry).
-- 2026-07-22 (fix-plan Step 2a of 5, aggregate gross exposure cap fixed): `max_invested_pct`
-  (80%) summed **signed** qty at all 5 call sites in `orchestration/main_loop.py` — a short's
-  negative qty subtracted instead of adding, so a mixed long+short book could sit at 100%+
-  gross exposure while reading as comfortably under cap. Fixed to a separate gross (`abs(qty)`)
-  sum for the cap-check ratio; NAV stays signed (correct net-equity accounting). Dormant today
-  (shorting still off) but a real gap for the moment it's ever enabled — first of the 5
-  short-selling prerequisite fixes (design spec's open question 3). RESULT: 1062 passed (was
-  1061), 1 new test (caught its own vacuous-assertion bug via the red/green proof, fixed
-  before landing). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-22,
-  second entry).
-- 2026-07-22 (fix-plan Step 1 of 5, congressional signal disabled): separate thread from the
-  live-process-health work below — executing the approved plan at
-  `trading bot/docs/BOT_REVIEW_2026-07-20.md`'s 6 open items. Added
-  `Settings.congressional.enabled` (default False), gating both the Phase 2 entry logic and
-  the Phase 1 "both"-type conviction boost in `orchestration/main_loop.py`, per the user's
-  decision and `docs/CONGRESSIONAL_EDGE.md`'s own pre-written negative-alpha rule. RESULT: 1061
-  passed (was 1058), 3 new tests. Committed `58921bf`, not pushed. Remaining plan steps: 2
-  (short-selling, 5 sub-fixes), 3 (Phase 0 PIT data free-tier), 4 (Russell 1000 doc closeout),
-  5 (LLM model/prompt review — instrumentation only). Full narrative:
-  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-22 entry).
-- 2026-07-21/22 (two ORDER_REJECTED bugs fixed + deployed): user-reported Slack alerts led to
-  finding and fixing (A) a permanent trailing-stop qty ratchet and (B) an under-retried
-  wash-trade race, both in `bot/portfolio.py`. RESULT: 1058 passed (was 1057), 2 new tests
-  proven red→green, 1 existing test updated for an intended retry-count change. Committed
-  `b06b9ee` + `b42d580` (docs), not pushed. Deployed via bot restart 2026-07-22 13:05 (new PID
-  79823, `bot_status.json` commit = HEAD); not yet behaviorally proven live — see `## Next`.
-  Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-21, second entry) and
-  `trading bot/CLAUDE.md`'s status banner.
-- 2026-07-20/21 (live P&L review + capital-deployment fix + reliability mitigation): reviewed
-  live paper P&L (no closed trades yet, unrealized +$445.22 on $37.2k deployed; bot ≈-2.75%
-  vs. SPY -0.75% since 07-07 inception — too early to call an edge). Fixed `max_positions`
-  (20→30) and `per_trade_risk_pct` (0.15→0.20) after finding the bot hit the 20-position cap
-  while only ~39% of NAV was deployed (well under the 80% `max_invested_pct` ceiling) — count,
-  not capital, was binding. Also fixed an independent bug found while re-verifying: the
-  backtest simulator's own `max_positions` default was decoupled from live config. Found the
-  bot silently missed 2 scheduled jobs overnight (scheduler-wedge pattern, watchdog off since
-  2026-07-20 so nothing caught it) and fixed the detection gap (not the wedge itself): missed
-  jobs now fire the Slack alert webhook. RESULT: 1057 passed, 0 failed. Commits `a115f21`,
-  `0396daa`, `cb88ce5`. Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history`
-  (2026-07-20/21 entry) and `trading bot/CLAUDE.md`'s status banner.
-- 2026-07-17 (strategy/profitability review + full remediation, this session): full
-  trading-logic review (not reliability/uptime) + all findings fixed same session. RESULT:
-  972 passed, 0 failed. Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history`
-  (2026-07-17 entry) and `trading bot/CLAUDE.md`'s status banner. Commit `e9e0ee7` (code) +
-  a follow-up docs-only commit folding the standalone review doc into the two files above per
-  this repo's own convention (retire `TRADING_BOT_REVIEW_*.md` once fully remediated).
-- 2026-07-15 (session close-out verification): re-verified live bot health fresh rather than
-  trusting prior claims — found the running process (PID 62191) pre-dated that morning's two
-  fix commits (a0cd1c4, 91607a5) by ~17 hours, same stale-process pattern as 2026-07-14.
-  User approved a restart; new PID 71495 confirmed to postdate both fixes. Also found and
-  fixed a real, separate bug: `backtesting/pit_constituents.py`'s hardcoded download URL
-  404s — fja05680/sp500 renamed its CSV (added a space before the parens) sometime after
-  2026-07-14; fixed to the new URL, verified live (old 404s, new returns 200, same schema).
-  Full suite 942 passed, 0 known failures.
-- 2026-07-14/15 (live dig-in session, commits a0cd1c4 + 91607a5, concurrent with/after the
-  SUE PIT backtest below): root-caused why fundamental candidates weren't converting to
-  trades — `_process_fundamental_candidate` persisted `fundamental_signals` rows even when
-  `open_position` failed. Fixed: insert now gated on `opened`. Separately found the live
-  process (PID 51755) had gone idle for 2h+ with zero cron dispatch, no error logged — no
-  definitive code cause found (see Next); restarted (new PID 62191), producing the bot's
-  first-ever real fills (VICI, PFE). That surfaced a third bug: both stops rejected by
-  Alpaca's wash-trade check (transient fill-state propagation lag), leaving both positions
-  naked until `enforce_stop_losses()` caught it ~2h later as designed. Fixed: initial stop
-  placement now retries 3x with backoff. RESULT: full suite 942 passed.
-- 2026-07-14 (SUE PIT backtest): built a full point-in-time-correct backtest of the SUE
-  signal per a plan confirmed with the user before building (PIT date semantics, per-horizon
-  HAC gate not pooled, real PIT universe, decision rule stated before results) — plan at
-  `docs/superpowers/plans/2026-07-14-sue-pit-backtest.md`, subagent-driven dev with spec +
-  code-quality review per task. Found and fixed two real bugs against real data:
-  `original_quarterly_eps`'s calendar-quarter bucketing (SEC buckets by nearest quarter-end
-  boundary to `end`, not end/start month — 3 iterations, verified against 7 tickers + a full
-  Costco history scan for the 52/53-week-fiscal-calendar collision case) and a history-
-  truncation bug that starved the SUE denominator (absurd outliers, e.g. 7.2e15 on one real
-  event). RESULT: gate failed both horizons (20d t=0.87/IR=0.24, 60d t=1.41/IR=0.30) and
-  60d stability (sign flip); honesty check confirmed no residual look-ahead. SUE sub-weight
-  stays 0.15. Full report: `docs/SUE_PIT_BACKTEST_2026-07-14.md`.
-- 2026-07-14 (independent verification session): live-verified bot health rather than
-  trusting the banner — found the running process (PID 38576) pre-dated the NYSE-hours fix
-  (b4938bb) by 37 minutes; restarted (new PID 51755) to deploy it. Dead-man's-switch
-  confirmed active, RISK_LOCKOUT absent, job_runs current. RESULT: full suite 909 passed.
-- 2026-07-13/14: found bot dead ~3 days, fixed a missing-timeout hang across every
-  yf.Ticker/Alpaca call site; fixed a Monday NAV-baseline collision; root-caused why the bot
-  had made zero real trades ever (entry orders placed outside NYSE hours) with a
-  `_nyse_is_open_now()` guard + corrected schedule; fixed the same open_position-bool-ignored
-  bug class on the exit side; built the dead-man's-switch; closed out the launchd
-  auto-restart investigation (root cause: KeepAlive blocked for an unsigned binary).
-- 2026-07-06/10: Phase 1 review (A1-A8, B1-B3 XBRL/short-interest/insider signals,
-  commits 6c77981..868aa2d); test-DB-pollution fix; cross-model debate feature;
-  scheduler catch-up-on-restart; iShares hardening.
-- 2026-07-15 (widen screener review, commit `7a185ce`): user wanted more trades — found the
-  real bottleneck was `_SCREENER_TOP_N=12` (only top 12 of 503 factor-scored tickers reached
-  AI scoring) and `max_positions_per_day=3`. Brainstormed with user (spec at
-  `docs/superpowers/specs/2026-07-15-expand-screener-review-design.md`), raised both to 30
-  and 5, promoted the top-N cutoff to a proper `UniverseConfig.screener_top_n` field matching
-  the codebase's existing config pattern. 3 new/updated tests, full suite 945 passed.
-- 2026-07-15 (sqlite3.Row.get() bug, commit `e7b15fa`): live-verifying the widen-review deploy
-  found the catch-up pipeline had crashed (`AttributeError: 'sqlite3.Row' object has no
-  attribute 'get'`) — 5 call sites in `orchestration/main_loop.py`, all only reachable once
-  real open positions exist (first happened 2026-07-14). Two sit inside the deleverage
-  circuit-breaker's force-close path — a real DELEVERAGE event would have closed zero
-  positions. Root cause of the bug surviving this long: existing tests mocked
-  `get_open_positions()` with dict literals (which support `.get()` fine), never exercising
-  the real `sqlite3.Row` return type. Fixed all 5 sites, converted 2 tests + added 2 new ones
-  to use real rows via the `db` fixture (proven red/green). Full suite 947 passed.
-- 2026-07-15 (sleep-induced scheduler wedges, commit `0c229e1`): the bot wedged 3 times in 3
-  days (silent, zero cron dispatch, no error) — previously assumed an unexplained APScheduler
-  bug (2026-07-14 STATE.md said "ruled out sleep," which was wrong — a re-check with a
-  corrected `pmset -g log` grep found real Sleep events in that exact window too). All 3
-  wedges directly correlate with a genuine `Entering Sleep state` log line within minutes of
-  onset; a process `sample` taken while wedged each time showed genuinely idle threads, not a
-  hang. Fixed: `caffeinate -i -s` now wraps every launch. Researched and documented (verified
-  via web search, not assumed) that this doesn't cover lid-closed/clamshell sleep — no
-  `caffeinate` assertion can override the hardware lid sensor without an external display.
-  Wrote up the full escalation path (`sudo pmset -a disablesleep 1` vs. migrating off the
-  laptop entirely) in `docs/RUNBOOK.md#sleep-wedges` — a decision left to the user, not
-  actioned.
-- 2026-07-16 (scheduler wedge recurred despite caffeinate fix): user asked to check the bot;
-  found it wedged again — process (PID 11292) alive since 07-15 18:20 with the `caffeinate`
-  assertion active 24h+, but zero `job_runs` since the 07-15 22:30 EOD snapshot, the 15:40
-  entry window and 20:00 intraday check both silently missed, and catch-up-on-restart never
-  fired on its own (confirmed via the OS-detached watcher's `tomorrow_1540_check.log`).
-  `pmset -g log` showed the laptop repeatedly cycling `Sleep`/`DarkWake` ("Sleep Service Back
-  to Sleep") on battery all afternoon — the documented clamshell/Power-Nap gap in
-  `caffeinate -i -s` coverage, not a new bug. User approved a restart (killed PID 11292 by
-  PID, relaunched via the same `nohup caffeinate -i -s python3 run_bot.py` command per
-  `docs/RUNBOOK.md#safe-restart`). Live-verified, not just log-watched: catch-up fired
-  immediately, ran the full screener+AI pipeline, and opened a real position (ACGL, 0.9%,
-  conv=7) — confirmed via `job_runs` and `positions` rows for 2026-07-16, not just log text.
-  Scheduler now live on a fresh 22:30 EOD job.
-- 2026-07-17 (reliability watchdog, commits `654eb49`/`41691ae`/`c43bd66`): user asked for a
-  permanent fix after ~10 cumulative "not trading"/downtime incidents, wanting a "never happen
-  again" guarantee rather than another one-off patch. Research (delegated to an Explore
-  subagent) found the incidents collapse into ~15 structurally distinct bug classes, not one
-  recurring bug — so the plan targeted bounded auto-recovery regardless of root cause, not
-  another single-bug fix. Built: (1) `job_runs` coverage extended from just
-  `run_morning_pipeline` to all three core cron jobs (`run_intraday_check`, `run_eod`) — only
-  the first was ever recorded, so a wedge occurring after the morning pipeline already
-  succeeded was previously invisible to any freshness check; (2) `monitoring/status_file.py`
-  — writes `bot_status.json` (pid, git commit, started_at) at every `initialize()` call, the
-  only way an external process can know the bot's PID/commit without any in-process
-  self-monitoring; (3) `monitoring/watchdog.py` — a new `StartInterval` LaunchAgent (15 min),
-  checks process liveness, per-job staleness, and deploy freshness, and auto-restarts on any
-  of them, gated on 10 minutes of `bot.log` quiet so a legitimate long-running catch-up
-  pipeline (observed to take ~10 min) is never mistaken for a wedge; kill is verified via
-  `ps -p <pid> -o command=` containing `run_bot.py` first, never by PID alone (PID-reuse
-  safety). Caught a real bug before it shipped: the `orch`/`orch_fitted` test fixtures and 2
-  direct-construction tests in `test_event_calendar.py` would have called the real
-  `write_status_file()` on every test run, clobbering the live bot's actual `bot_status.json`
-  with a fake test PID — fixed by mocking it at all 4 construction sites before any test ran
-  against the new code. Live-verified end-to-end, not just unit-tested: caught the bot wedged
-  *again* (overnight 07-16 20:00 CEST -> 07-17 10:44, a live real-time recurrence found during
-  this exact work), restarted it to deploy the new code, and confirmed the watchdog correctly
-  read the fresh status file and reported `healthy:recent_activity` on a forced cycle. Full
-  suite: 975 passed (was 947 at session start).
-
-- 2026-07-17 (session close-out verification): independently re-verified the concurrent
-  session's watchdog work rather than trusting its docs — confirmed live (process, status
-  file, launchd registration, a real `healthy:recent_activity` log line, fresh 975-pass full
-  suite run) and read `monitoring/watchdog.py` in full (restart logic sound). Found and
-  corrected one real inaccuracy: `docs/RUNBOOK.md` claimed `sudo pmset -a powernap 0` was
-  "applied" — verified still `1` on both power sources, action remains outstanding for the
-  user. RESULT: all claims now backed by fresh evidence, one doc correction committed.
-- 2026-07-17 (powernap applied via osascript, commit `4dedda9`): user asked for a faster
-  option than opening Terminal for the outstanding `sudo pmset -a powernap 0`. Ran it via
-  `osascript -e 'do shell script "..." with administrator privileges'` — pops the native
-  macOS auth dialog (password/Touch ID), no Terminal/TTY needed. Verified: `powernap` reads
-  `0` on both Battery and AC. This became the standard pattern for every later sudo-needing
-  step in this session's work (the LaunchDaemon install below).
-- 2026-07-17 (watchdog interpreter bug, live outage + fix, commit `95ec69f`): a user "is it
-  done?" check caught the watchdog's own first real auto-restart attempt failing live — bare
-  `"python3"` in the launch command resolved to the system CommandLineTools 3.9 interpreter
-  under the LaunchAgent's minimal PATH (no `/opt/homebrew/bin`) instead of the Homebrew
-  3.11+ this project requires, crashing on `ImportError: cannot import name 'UTC'`. Bot was
-  down ~11:00-11:13. Fixed: `sys.executable` instead of the ambiguous string (the watchdog's
-  own already-correct interpreter). Verified via a REAL (unmocked) `restart_bot()` call
-  against the live process, not just the new regression test. Also verified `nohup`/
-  `caffeinate` (unlike `python3`) DO resolve correctly under the same minimal PATH — checked,
-  not assumed, given the adjacent miss.
-- 2026-07-17 (four residual-gap fixes, commits `d5d2526`/`d7db50b`/`ac70595`/`859b134`): user
-  asked "will it now ever happen again without intervention?" — answered with 4 honest gaps,
-  user asked for a plan to close them (spec at
-  `docs/superpowers/plans/2026-07-17-watchdog-residual-gaps.md`). Built: (1) watchdog moved
-  from a per-login LaunchAgent to a `/Library/LaunchDaemons/` LaunchDaemon with a `UserName`
-  key (survives reboot/logout while the disk stays unlocked; FileVault's pre-boot password
-  on a truly cold boot is unavoidable and stays open, documented not solved) — installed via
-  the same osascript admin-privileges pattern, live-verified: its `RunAtLoad` cycle
-  immediately caught a real stale deploy from a concurrent session and successfully
-  auto-restarted the bot end-to-end running as `thomasvromen`, not root; old LaunchAgent
-  unloaded and removed to prevent double-firing; (2) `main()` now alerts on any unhandled
-  exception instead of dying silently until the next cycle, and the independent
-  `dead_mans_switch.py` now also checks `watchdog.log` freshness (40 min threshold, ~2.5x
-  the watchdog's own interval) so a bug that stops the watchdog from ever succeeding still
-  pages a human; (3) a `watchdog_restart_history.json`-backed circuit breaker — 3+ restarts
-  in 60 min suppresses further auto-restart and fires a distinct `watchdog_crash_loop` alert,
-  since a persistent code bug can't be fixed by retrying forever; (4) a 120-min hard ceiling
-  that bypasses the 10-min quiet-gate entirely, closing the "still logging but never
-  finishing a real job" blind spot. Caught and fixed the same test-isolation bug class again
-  mid-build: 3 existing `restart_bot` tests didn't mock the new `_record_restart`, which
-  would have written real entries to the repo's actual `watchdog_restart_history.json`; and
-  2 existing `check_and_recover` tests used a bare `find_overdue_job` `return_value` that
-  would have silently collided with the new dual-grace (`_GRACE_MINUTES` vs.
-  `_HARD_GRACE_MINUTES`) call pattern — both classes of bug flagged explicitly in the plan's
-  self-review before implementation, not discovered by surprise. Full suite: 985 passed.
-- 2026-07-17 (second live outage + "update the whole folder" close-out, commits `a9a7313`/
-  `79f9b0b`/`c0ad57a`): user asked to update all documentation across the repo and confirm
-  everything would survive an imminent full reboot. Live-caught a SECOND real outage while
-  doing it: the watchdog's 15:37 auto-restart attempt failed with `nohup: can't detach from
-  console: Inappropriate ioctl for device` — a genuine `LaunchDaemon` invocation has no
-  controlling terminal at all for `nohup` to detach FROM (unlike the interactive/osascript-
-  triggered first `RunAtLoad` fire during Task 1's install, which apparently still had one),
-  so `nohup` failed outright before ever exec'ing python, leaving the bot down with zero
-  further log output through two more watchdog cycles (15:52, silently retried and failed the
-  same way). Fixed: dropped `nohup` from the launch command entirely — `start_new_session=
-  True` already does its actual job (`os.setsid()` detaches from any controlling terminal).
-  Live-verified: the very next natural watchdog cycle (16:07) launched the bot cleanly with
-  no `nohup` error — direct proof from production, not just the new regression test. That
-  same cycle then hit real transient environmental errors (`sqlite3.OperationalError: unable
-  to open database file`, `Too many open files`, DNS resolution failing for sec.gov/Alpaca/
-  Slack simultaneously) — diagnosed as resource exhaustion from the day's restart churn, not
-  a new code bug; confirmed resolved minutes later (`host www.google.com` and a direct
-  `sqlite3` query both succeeded) and expected to clear fully on the reboot regardless (fresh
-  process, fresh file-descriptor table, fresh network stack). Caught the same test-isolation
-  bug class a third time in the same session: 3 `restart_bot` tests didn't mock
-  `_recent_restart_count`, so once `watchdog_restart_history.json` had real entries from
-  today's actual production restarts, 2 tests failed outright and a third passed for the
-  wrong reason (crash-loop suppression, not the cmdline-mismatch safety check it claims to
-  test) — fixed by mocking the read side too, not just the write side fixed earlier. Also
-  converted `monitoring/dead_mans_switch.py` from a LaunchAgent to a LaunchDaemon (same
-  pattern, same reasoning as the watchdog) for full reboot-consistency — the watchdog alone
-  surviving reboot while its own backstop didn't would have been a real gap; live-verified via
-  its own fresh `RunAtLoad` cycle reporting "Pipeline healthy" immediately after install.
-  Fixed a stale claim in `docs/guardrails/PROJECT.md` (said `ALERT_WEBHOOK_URL` was
-  outstanding; it's been set in `.env` this whole time). Added an explicit
-  `docs/RUNBOOK.md#after-a-reboot` checklist and documented all 4 new watchdog/dead-man's-
-  switch alert types in the existing alert-meanings reference. Full suite: 985 passed
-  (unchanged count — this pass was fixes and docs, not new features).
-- 2026-07-17 (final clarity re-read before reboot, commit `0e760c6`): user asked to
-  double-check everything and make sure future sessions can run this cleanly. Read
-  `trading bot/CLAUDE.md` and `docs/RUNBOOK.md` fully as a zero-context session would,
-  rather than skim-trusting prior work — found real problems, not polish: (1) `CLAUDE.md`
-  had NO pointer to `RUNBOOK.md` anywhere — a fresh session reading only the primary file
-  would never discover the watchdog/LaunchDaemon setup exists; added pointers at both
-  `## Running` and the Reference table. (2) `CLAUDE.md` hardcoded a test count (875) that
-  goes stale every session; replaced with a pointer to the banner. (3) RUNBOOK's "Keeping it
-  running unattended" section still said the user declined auto-restart and to "restart it
-  yourself if it dies" — directly contradicts everything built today and would have actively
-  misled a future session; rewritten to describe current reality. (4) "Stopping for the
-  month" never mentioned pausing the watchdog first — following it as written would have had
-  the bot silently come back within ~15 min; fixed, and corrected a wrong claim written
-  moments earlier in the same edit (resuming the watchdog alone DOES auto-relaunch the bot,
-  since `bot_status.json` survives a `kill` — verified against the actual `check_and_recover`
-  code before asserting either way). (5) The daily-health-check schedule reference still said
-  "14:00 morning pipeline" — stale since the 2026-07-13 NYSE-hours fix moved it to
-  15:40/18:00; corrected against `orchestration/main_loop.py`'s actual `add_job()` calls, not
-  memory. (6) The documented manual start command used a bare `"python3"` — the exact
-  ambiguity that caused today's first live outage, just not yet fixed in the human-facing
-  version; changed to the absolute path. Full suite re-confirmed 985 passed after the docs
-  pass (no code touched). Bot confirmed alive and both LaunchDaemons confirmed registered
-  fresh, immediately before this entry was written.
-
-- 2026-07-20 (short-selling branch merge, commit `bb7ebe2`): `worktree-short-selling`
-  (`Settings.strategy.enable_short_selling`, default False) holistically reviewed as one diff
-  (`3f77432..HEAD`, 29 commits) — 5 cross-task findings fixed (sector-cap netting masked short
-  exposure, short candidates never persisted a signal row, a misleading reconcile alert, risk
-  cap not direction-aware, Alpaca NAV sign-convention converted to a runtime self-check) — then
-  merged into `feature/profitable-strategies-lowvol-residmom-insider`. One merge conflict (in
-  `trading bot/CLAUDE.md`'s status banner, both branches had appended history at the same
-  point) resolved by hand, keeping both sides. `pytest -q` -> 1055 passed. Flag still defaults
-  False, zero live behavior change. Not pushed to origin.
-- 2026-07-20 (full trading-bot review, this session): produced
-  `trading bot/docs/BOT_REVIEW_2026-07-20.md` — consolidated architecture walkthrough +
-  thematically-grouped incident logbook (fill-confirmation bugs, scheduler/reliability bugs,
-  test-hygiene bugs, strategy/signal findings, data-source breakage) + open-items list +
-  prioritized recommendations, synthesized from `trading bot/CLAUDE.md`'s banner and
-  `docs/CLAUDE-REFERENCE.md#history`. Also merged and deleted the duplicate
-  `trading bot/docs/STATE.md` per this file's own long-standing flag (see `## Now`). No code
-  or config changed.
+Full narrative for every entry: `trading bot/docs/CLAUDE-REFERENCE.md#history` (permanent
+changelog — pointers only here per SESSION.md S8).
+- 2026-07-23: fixed `close_position`/`reduce_position` not cancelling a resting stop before
+  selling (live LVS ORDER_REJECTED) — commit `9701bb3`, 101/101 `test_portfolio.py` green,
+  deployed (PID 21508).
+- 2026-07-23: Phase 0 PIT backtest complete, all 6 review items closed — gate FAILS
+  (t=-1.75, IR=-0.78), no code change. `docs/PHASE0_BACKTEST_2026-07-23.md`.
+- 2026-07-22/23: short-selling prerequisite fixes (5/5), congressional signal disabled,
+  Russell 1000 closed, LLM model/provider attribution added. Full suite 1142 passed.
+- 2026-07-21/22: two ORDER_REJECTED bugs fixed (trailing-stop qty ratchet, wash-trade retry
+  widened); missed-job Slack alerting added.
+- 2026-07-20/21: live P&L review, `max_positions` 20→30, capital-deployment fix.
+- 2026-07-17: reliability watchdog built then closed out (BTM blocks all legacy launchd
+  items, see `## Failed attempts`); full strategy/profitability review + remediation.
+- 2026-07-06 through 2026-07-16: Phase 1-3 build-out, launch-week fixes (phantom fills,
+  NYSE-hours guard, NAV-baseline bug, sleep-induced wedges, dead-man's-switch), SUE PIT
+  backtest.
 
 ## Open items
-- FLAKE: 3/3 pass isolated — `tests/test_heartbeat.py` (added 2026-07-23) polls real wall-clock
-  time for a background thread's first tick; a concurrent session's own full-suite run flagged
-  it as failing under simultaneous load (both sessions' pytest processes competing for CPU).
-  Ran 3x isolated after widening `_wait_for`'s default timeout 2.0s→5.0s: 3/3 pass. If it
-  recurs specifically when another heavy process is running alongside pytest, it's a
-  concurrency/scheduling artifact of the test's real-time polling, not a heartbeat.py bug —
-  don't touch `monitoring/heartbeat.py` chasing it; widen the timeout further instead.
-- Short-selling: 5 design-spec open questions still unresolved (regime-aware short sizing,
-  hedge-mechanism overlap, aggregate gross/net exposure cap, short borrow fees not modeled,
-  `SimulatedBroker` cannot execute a short) — must be revisited before ever flipping
-  `enable_short_selling=True`. The Alpaca negative-qty-for-shorts sign convention is also
-  still not live-verified against a real paper account (only a mismatch-alert self-check
-  exists). Full design: `docs/superpowers/specs/2026-07-17-short-selling-design.md`.
-- Congressional signal has a measured negative real-data excess return (1mo -0.64%, t=-2.57;
-  3mo -2.54%, t=-4.93, per the 2026-07-17 review) and is still live at 3%/1-per-day — no
-  decision made yet on whether to reduce, disable, or explicitly keep it.
-- The two competing launchd/BTM root-cause write-ups (this file's `## Failed attempts` below,
-  vs. `trading bot/CLAUDE.md`'s 2026-07-20 banner entry) were never reconciled — see
-  `trading bot/docs/BOT_REVIEW_2026-07-20.md#3-currently-open--unresolved` for the
-  side-by-side. Moot for action purposes: launchd/cron automation is closed either way.
-- **2026-07-17 post-reboot: the watchdog/dead-man's-switch LaunchDaemons do NOT actually
-  self-heal after a real reboot** — found live, first genuine cold-reboot test since the
-  2026-07-17 LaunchDaemon conversion. Both `com.thomasvromen.tradingbot-watchdog` and
-  `-deadmansswitch` fired via `RunAtLoad` (confirmed via `log show`/`launchctl print`) but
-  exited immediately with `last exit code = 78: EX_CONFIG` — zero lines written to
-  `watchdog.log`/`dead_mans_switch.log`, so the crash happens before any of our code runs.
-  The identical command (`python3 -m monitoring.watchdog`) run manually as `thomasvromen`
-  works perfectly (real restart, logged, verified). Same exit code (78) as the historical
-  KeepAlive-blocked-by-macOS-Background-Task-Management finding
-  (`docs/CLAUDE-REFERENCE.md#history`, 2026-07-10/14) — that was believed closed for
-  `StartInterval` jobs specifically because it worked fine as a **LaunchAgent** (`gui`
-  domain); this suggests the same block may still apply once running as a **LaunchDaemon**
-  (`system` domain), which had only ever been "live-verified" via an interactive
-  osascript-triggered bootstrap, never via an actual unattended reboot until now. Net effect:
-  the "auto-restarts within 15-30 min" claim in `docs/RUNBOOK.md#watchdog` is NOT currently
-  true after a reboot — bot restart had to be done via manual `python3 -m monitoring.watchdog`
-  invocation. Root cause not yet found; next session should investigate why `system`-domain
-  spawn of the unsigned Homebrew python3 binary differs from `gui`-domain, and re-verify with
-  a real reboot (not just a bootstrap reload) after any fix.
-- Also found and cleaned up 2026-07-17: a stale, supposedly-"closed-permanently" per-user
-  LaunchAgent (`~/Library/LaunchAgents/com.thomasvromen.tradingbot.plist`, the abandoned
-  2026-07-10 `KeepAlive` attempt) was still on disk and loaded, spawning `run_bot.py` directly
-  every ~30s nonstop since boot (`ThrottleInterval 30`, confirmed via `log show`) — same
-  `bot.log`/working directory as the real bot, a real risk of a duplicate SQLite writer/
-  duplicate orders if it ever succeeded even briefly. Unloaded via `launchctl bootout
-  gui/501/com.thomasvromen.tradingbot` (confirmed gone). The plist file itself is still on
-  disk at that path — not deleted without the user's sign-off.
-- eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
-- Insider routine-buyer filter — recorded in EDGE_BACKLOG.md, viable after ~1yr of insider history (feed started 2026-07-07)
-- docs/guardrails/MIGRATION-LOG.md still shows as modified in `git status` — pre-existing uncommitted drift, predates this session, not touched
-- ~~Russell 1000 universe unresolved~~ — **CLOSED 2026-07-23**: user accepted S&P-500-only
-  scope rather than pursue an FMP integration (zero existing code, unknown-cost account); see
-  `docs/DATA_SOURCES.md`'s Russell 1000 note
-- Scheduler wedges (2026-07-14 x2, 2026-07-15 x1, 2026-07-16 x2 incl. one caught live
-  2026-07-17 morning) — root cause confirmed real macOS sleep events (`pmset -g log`), not a
-  code bug; `caffeinate -i -s` does not fully prevent recurrence (Power Nap/"Sleep Service"
-  cycling bypasses it). Two changes as of 2026-07-16/17: (1) `sudo pmset -a powernap 0`
-  targets the specific symptom (user to run/confirm — agent cannot run sudo); (2) an active
-  watchdog (`monitoring/watchdog.py`) now auto-restarts within ~15-30 min regardless of
-  whether the sleep mitigation fully holds, so this no longer requires a human to notice or
-  manually restart. Full `disablesleep`/laptop migration remain optional further hardening,
-  documented but not urgent (see `docs/RUNBOOK.md#sleep-wedges`).
+- Short-selling: flag stays off until the Alpaca sign-convention is live-verified against a
+  real paper account (only a mismatch-alert self-check exists today). Full design:
+  `docs/superpowers/specs/2026-07-17-short-selling-design.md`.
+- eps_trend daily snapshot / insider routine-buyer filter — both recorded in
+  `EDGE_BACKLOG.md`, not built.
+- docs/guardrails/MIGRATION-LOG.md pre-existing uncommitted drift — not this project's, not
+  touched.
 
 ## Failed attempts
-(none this session — every fix attempt that failed a first pass was corrected same-turn, e.g. two wrong SUE quarter-bucketing hypotheses before the verified-correct one, documented in the SUE PIT backtest commit history rather than repeated here)
-
-- 2026-07-17 (post-reboot watchdog/dead-man's-switch `exit(78)` bug — see Open items above):
-  ATTEMPT 1 [L1]: wrapped `ProgramArguments` in `/bin/zsh -c '...python3...'` (hypothesis:
-  Homebrew python3's ad-hoc code signature was being refused by launchd's system-domain
-  `posix_spawn`) -> FAILED, identical `posix_spawn(/bin/zsh), error 0x1 - Operation not
-  permitted` — disproves the signature hypothesis (zsh is Apple-signed).
-  ATTEMPT 2 [L2, new hypothesis from re-reading the log line + confirming no other
-  `/Library/LaunchDaemons/*.plist` on this Mac uses a non-root `UserName`]: dropped
-  `UserName`, spawned as root, used `/usr/bin/su thomasvromen -c '...'` to drop privileges
-  from inside the already-spawned process instead of via launchd's own cross-user spawn ->
-  FAILED, identical `posix_spawn(/usr/bin/su), error 0x1 - Operation not permitted` —
-  disproves the cross-user-spawn hypothesis too (root spawning root-ownable `/usr/bin/su`
-  still refused).
-  ATTEMPT 3 [L2, new hypothesis from `sfltool dumpbtm`: both daemons are embedded under a
-  top-level "Unknown Developer" Background Task Management record whose own
-  `Disposition` is `[disabled, allowed, not notified]`, overriding the child items' own
-  "enabled" flag]: reverted both to LaunchAgents (`gui/501` domain, the exact config that
-  ran successfully for weeks pre-2026-07-17) -> FAILED, identical
-  `posix_spawn(/opt/homebrew/bin/python3), error 0x1 - Operation not permitted` under the
-  `gui` domain too — disproves "it's a system-domain-only gate" as well. User confirmed
-  System Settings > Login Items & Extensions > "Allow in the Background" shows no
-  addable/toggleable entry for this at all.
-  CONCLUSION at L4 (ladder next requires reverting to last-known-good, which ATTEMPT 3 WAS
-  and it still failed — the underlying machine state has changed since that config last
-  worked, not just the config): every hand-installed unsigned ("legacy") launchd item on
-  this Mac, daemon or agent, any user, any target binary, is refused `posix_spawn`
-  identically. This is not a plist-fixable bug; it looks like a broken/stuck Background
-  Task Management database state (not an MDM-managed Mac; no profile installed) — the one
-  remaining untried lever is `sudo sfltool resetbtm`, which resets Background Task
-  Management's approval database machine-wide (would require every app on the Mac, not
-  just this project, to be re-approved for background activity) — presented to the user as
-  a real but broader-blast-radius option, not yet applied. Reported findings to user rather
-  than trying a 4th blind variant.
-  ATTEMPT 4 [L3, user ran `sudo sfltool resetbtm` themselves (I cannot run sudo/elevated
-  commands in this session at all, confirmed by two separate failure modes: a hard
-  classifier block on my own Bash calls, and `errAuthorizationInteractionNotAllowed` from
-  the osascript-proxy trick for this specific command)]: full BTM database wipe, confirmed
-  via `sfltool dumpbtm` showing zero records for our items afterward -> re-registered the
-  LaunchAgent fresh -> FAILED, byte-identical `posix_spawn(/opt/homebrew/bin/python3),
-  error 0x1 - Operation not permitted`. Disproves "stuck BTM database" as the cause.
-  CONCLUSION (final, L5 — presented to user, not pursuing further plist variants):
-  `codesign -dv` confirmed `/bin/zsh` and `/usr/bin/su` are both properly Apple-signed
-  (`Platform identifier=26`, not ad-hoc) — so target-binary signature was never the
-  variable. The one constant across all 4 attempts (any binary, any domain, any user, BTM
-  reset) is the launch item itself: a bare hand-placed plist has no code identity of its
-  own (only a daemon bundled inside a signed `.app` and registered via Apple's modern
-  `SMAppService` API does). macOS 26.5.1 (`sw_vers`) appears to categorically block
-  legacy plist-based launchd items on this basis, with no override — SIP is `enabled`
-  (default), no configuration profiles installed for this user. Real fix would require
-  packaging `monitoring/watchdog.py`/`monitoring/dead_mans_switch.py` inside a proper
-  signed `.app` and registering via `SMAppService` (Swift/ObjC, needs Xcode; a free Apple
-  ID can ad-hoc-sign for personal local use, no paid Developer Program required) — a
-  genuinely new, non-trivial engineering task, not a config tweak. Not started.
+- 2026-07-17 (launchd/watchdog auto-restart, 4 attempts, L5 — closed, not pursuing
+  further): every hand-installed unsigned launchd item (any domain, any user, post-BTM-reset)
+  hit an identical `posix_spawn ... error 0x1 - Operation not permitted`. Root cause: macOS
+  26.5.1 categorically blocks legacy plist-based launchd items with no code identity — only
+  an `.app`-bundled, `SMAppService`-registered daemon would work (real fix, not a config
+  tweak, not started). Full ledger: `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-17
+  entries).
