@@ -1,0 +1,138 @@
+"""Point-in-time SEC EDGAR Form 4 daily-index history — a historical,
+date-range-capable sibling of `bot/insider.py`'s live "last few days"
+walker. Companion to `bot/insider.py`, which is the LIVE production
+scraper (walks back from today only, no CIK exposed in its index parse) —
+this module exists ONLY to backtest the insider signal against a real
+historical PIT sample; it does not touch `bot/insider.py` and is not used
+by the live pipeline.
+
+Reuses `bot/insider.py`'s pure per-filing XML parser (`parse_form4_xml`)
+and per-filing fetcher (`_fetch_form4_xml`) unmodified via import — those
+need no historical-specific changes. Only the daily-index WALK is new
+here: the live version only supports "today minus a small lookback" and
+its own `parse_form_idx` doesn't return CIK, which this module needs to
+pre-filter candidates to the S&P 500 PIT universe *before* spending a
+request on any individual filing's XML — that pre-filter is what keeps a
+multi-year historical pull tractable (SEC's daily index lists every
+filer, not just ours).
+"""
+from __future__ import annotations
+
+import logging
+import re
+import time
+from datetime import date, timedelta
+from pathlib import Path
+
+import pandas as pd
+import requests
+
+from bot.insider import _fetch_form4_xml, _headers, _INTER_REQUEST_SLEEP, parse_form4_xml  # noqa: F401 (re-exported for callers)
+
+log = logging.getLogger(__name__)
+
+_DAILY_INDEX_URL = "https://www.sec.gov/Archives/edgar/daily-index/{year}/QTR{quarter}/form.{yyyymmdd}.idx"
+_IDX_FILE_RE = re.compile(r"edgar/data/(\d+)/([\d\-]+)\.txt")
+_INDEX_COLUMNS = ["cik", "accession", "href", "filing_date"]
+
+
+def _daily_index_cache_path(cache_dir: Path, d: date) -> Path:
+    return Path(cache_dir) / f"{d.isoformat()}.parquet"
+
+
+def _parse_form_idx_with_cik(text: str, filing_date: str) -> pd.DataFrame:
+    """Parse one day's form.idx into Form 4 rows, including CIK — the one
+    field `bot/insider.py::parse_form_idx` doesn't expose (it only needs
+    the href it builds from CIK; this module also needs the CIK itself for
+    the universe pre-filter). A close mirror of that function's ~10-line
+    body, not an import, since the return shape genuinely differs."""
+    rows = []
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "4":
+            continue
+        m = _IDX_FILE_RE.search(parts[-1])
+        if not m:
+            continue
+        cik, accession = m.group(1), m.group(2)
+        rows.append({
+            "cik": int(cik),
+            "accession": accession,
+            "href": f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession.replace('-', '')}",
+            "filing_date": filing_date,
+        })
+    return pd.DataFrame(rows, columns=_INDEX_COLUMNS)
+
+
+def fetch_form4_index_for_date(d: date, cache_dir: Path) -> pd.DataFrame:
+    """Fetch (or load from permanent per-day cache) one day's EDGAR daily
+    index, filtered to Form 4 rows. A confirmed-not-published day
+    (weekend/holiday, HTTP 404) caches an empty frame — permanent, since a
+    holiday never later publishes an index. A transient network failure is
+    NOT cached (mirrors the Tiingo-429-cached-as-a-permanent-miss bug found
+    and fixed in Phase 0 — see `market_data/pit_prices.py`'s
+    `TiingoRateLimited` handling) so a later run can still find real data."""
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = _daily_index_cache_path(cache_dir, d)
+    if cache_path.exists():
+        return pd.read_parquet(cache_path)
+
+    time.sleep(_INTER_REQUEST_SLEEP)  # only real network fetches pace themselves
+    url = _DAILY_INDEX_URL.format(
+        year=d.year, quarter=(d.month - 1) // 3 + 1, yyyymmdd=d.strftime("%Y%m%d"),
+    )
+    empty = pd.DataFrame(columns=_INDEX_COLUMNS)
+    try:
+        resp = requests.get(url, headers=_headers(), timeout=30)
+        if resp.status_code == 404:  # not published — weekend/holiday, permanent
+            empty.to_parquet(cache_path)
+            return empty
+        resp.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        log.warning("EDGAR daily index fetch failed (%s): %s", url, exc)
+        return empty  # NOT cached — a later run can retry
+
+    df = _parse_form_idx_with_cik(resp.text, d.isoformat())
+    df.to_parquet(cache_path)
+    return df
+
+
+def walk_daily_indexes(start: date, end: date, cache_dir: Path,
+                        cik_filter: set[int] | None = None) -> pd.DataFrame:
+    """Walk every calendar day in [start, end], fetching (or loading
+    cached) each day's Form 4 index entries, optionally restricted to
+    cik_filter (the S&P 500 PIT universe's CIKs) before any per-filing XML
+    is ever fetched — this pre-filter is what keeps a full historical pull
+    tractable."""
+    frames = []
+    d = start
+    while d <= end:
+        day_df = fetch_form4_index_for_date(d, cache_dir)
+        if not day_df.empty and cik_filter is not None:
+            day_df = day_df[day_df["cik"].isin(cik_filter)]
+        if not day_df.empty:
+            frames.append(day_df)
+        d += timedelta(days=1)
+    if not frames:
+        return pd.DataFrame(columns=_INDEX_COLUMNS)
+    return pd.concat(frames, ignore_index=True)
+
+
+def pilot_request_volume(start: date, end: date, cache_dir: Path,
+                          cik_filter: set[int]) -> dict:
+    """Measure real request volume for a representative window before
+    committing to the full historical pull (the plan's Step 4b decision
+    checkpoint). Counts index-file fetches and CIK-in-universe candidate
+    filings found; deliberately does NOT fetch any individual Form 4 XML
+    (the expensive per-filing cost — 2 requests each, directory listing +
+    document — that the full pull would incur) so the pilot itself stays
+    cheap."""
+    candidates = walk_daily_indexes(start, end, cache_dir, cik_filter=cik_filter)
+    window_days = (end - start).days + 1
+    return {
+        "window_days": window_days,
+        "index_requests": window_days,
+        "candidate_filings_in_universe": len(candidates),
+        "candidates": candidates,
+    }
