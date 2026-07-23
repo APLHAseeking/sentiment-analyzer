@@ -148,3 +148,78 @@ def pilot_request_volume(start: date, end: date, cache_dir: Path,
         "candidate_filings_in_universe": len(candidates),
         "candidates": candidates,
     }
+
+
+_TX_COLUMNS = ["id", "insider_name", "ticker", "title", "transaction_type",
+               "transaction_date", "disclosure_date", "amount_usd", "scraped_at"]
+
+
+def _transactions_cache_path(cache_dir: Path, d: date) -> Path:
+    return Path(cache_dir) / f"{d.isoformat()}.parquet"
+
+
+def fetch_form4_transactions_for_date(
+    d: date, index_cache_dir: Path, transactions_cache_dir: Path,
+    cik_filter: set[int] | None = None,
+) -> pd.DataFrame:
+    """Fetch (or load from permanent per-day cache) every open-market
+    purchase transaction from that day's Form 4 filings, restricted to
+    cik_filter. Resumable at day granularity — a 7+ hour historical pull
+    needs to survive interruption without re-fetching everything; if
+    interrupted mid-day, only that one day's remaining candidates (at
+    most ~a few hundred) are re-fetched on the next run, not the whole
+    history. Reuses bot/insider.py's _fetch_form4_xml/parse_form4_xml
+    unmodified — one inter-request sleep per FILING (not per sub-request
+    inside a filing), mirroring run_insider_scraper()'s own pacing."""
+    transactions_cache_dir = Path(transactions_cache_dir)
+    transactions_cache_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = _transactions_cache_path(transactions_cache_dir, d)
+    if cache_path.exists():
+        return pd.read_parquet(cache_path)
+
+    day_index = fetch_form4_index_for_date(d, index_cache_dir)
+    if cik_filter is not None and not day_index.empty:
+        day_index = day_index[day_index["cik"].isin(cik_filter)]
+    # A single filing can be indexed once per associated CIK (issuer +
+    # each reporting owner) — dedup by accession so it's never fetched
+    # twice, same rationale as run_insider_scraper()'s own dedup.
+    day_index = day_index.drop_duplicates(subset="accession")
+
+    rows: list[dict] = []
+    for _, cand in day_index.iterrows():
+        xml_text = _fetch_form4_xml(cand["accession"], cand["href"])
+        time.sleep(_INTER_REQUEST_SLEEP)
+        if not xml_text:
+            continue
+        rows.extend(parse_form4_xml(xml_text, cand["accession"], cand["filing_date"]))
+
+    result = pd.DataFrame(rows, columns=_TX_COLUMNS)
+    result.to_parquet(cache_path)
+    return result
+
+
+def fetch_form4_transactions(start: date, end: date, index_cache_dir: Path,
+                              transactions_cache_dir: Path,
+                              cik_filter: set[int] | None = None) -> pd.DataFrame:
+    """Walk every calendar day in [start, end], fetching (or loading
+    cached) each day's open-market purchase transactions. This is the
+    Step 4c full historical pull — expensive (one request pair per
+    candidate filing) but fully resumable via the per-day cache, so an
+    interrupted run can simply be re-invoked."""
+    frames = []
+    d = start
+    n_days = (end - start).days + 1
+    i = 0
+    while d <= end:
+        i += 1
+        day_df = fetch_form4_transactions_for_date(
+            d, index_cache_dir, transactions_cache_dir, cik_filter=cik_filter,
+        )
+        if not day_df.empty:
+            frames.append(day_df)
+        if i % 50 == 0 or i == n_days:
+            log.info("Insider PIT history: %d/%d days processed (%s)", i, n_days, d.isoformat())
+        d += timedelta(days=1)
+    if not frames:
+        return pd.DataFrame(columns=_TX_COLUMNS)
+    return pd.concat(frames, ignore_index=True)

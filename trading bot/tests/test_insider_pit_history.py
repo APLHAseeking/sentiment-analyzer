@@ -6,11 +6,14 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import pytest
 import requests
 
 from screener.insider_pit_history import (
     _parse_form_idx_with_cik,
     fetch_form4_index_for_date,
+    fetch_form4_transactions,
+    fetch_form4_transactions_for_date,
     pilot_request_volume,
     walk_daily_indexes,
 )
@@ -184,3 +187,127 @@ def test_pilot_request_volume_reports_window_and_candidate_counts(tmp_path, mock
     # Same _FORM_IDX served both days (mocked) -> 1 in-universe candidate/day
     assert result["candidate_filings_in_universe"] == 2
     assert len(result["candidates"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# fetch_form4_transactions_for_date / fetch_form4_transactions (Step 4c)
+# ---------------------------------------------------------------------------
+
+_FORM4_XML = """<?xml version="1.0"?>
+<ownershipDocument>
+  <issuer><issuerTradingSymbol>BAR</issuerTradingSymbol></issuer>
+  <reportingOwner>
+    <reportingOwnerId><rptOwnerName>Doe Jane</rptOwnerName></reportingOwnerId>
+    <reportingOwnerRelationship><isOfficer>1</isOfficer><officerTitle>CFO</officerTitle></reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2023-06-01</value></transactionDate>
+      <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>1000</value></transactionShares>
+        <transactionPricePerShare><value>50</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>"""
+
+
+def test_fetch_form4_transactions_for_date_uses_cache_without_refetch(tmp_path, mocker):
+    index_dir = tmp_path / "insider_index"
+    tx_dir = tmp_path / "insider_tx"
+    tx_dir.mkdir()
+    cached = pd.DataFrame(
+        [{"id": "a:0", "insider_name": "X", "ticker": "BAR", "title": "CFO",
+          "transaction_type": "buy", "transaction_date": "2023-06-01",
+          "disclosure_date": "2023-06-01", "amount_usd": 50000.0, "scraped_at": "t"}]
+    )
+    cached.to_parquet(tx_dir / "2023-06-01.parquet")
+
+    fetch_xml = mocker.patch("screener.insider_pit_history._fetch_form4_xml")
+    result = fetch_form4_transactions_for_date(date(2023, 6, 1), index_dir, tx_dir)
+
+    fetch_xml.assert_not_called()
+    assert len(result) == 1
+    assert result.iloc[0]["ticker"] == "BAR"
+
+
+def test_fetch_form4_transactions_for_date_fetches_filters_and_caches(tmp_path, mocker):
+    index_dir = tmp_path / "insider_index"
+    tx_dir = tmp_path / "insider_tx"
+    resp = mocker.MagicMock(status_code=200, text=_FORM_IDX)
+    resp.raise_for_status = mocker.MagicMock()
+    mocker.patch("screener.insider_pit_history.requests.get", return_value=resp)
+    mocker.patch("screener.insider_pit_history.time.sleep")
+    fetch_xml = mocker.patch(
+        "screener.insider_pit_history._fetch_form4_xml", return_value=_FORM4_XML,
+    )
+
+    # _FORM_IDX has CIKs 777888 and 888999 on that day — restrict to one.
+    result = fetch_form4_transactions_for_date(
+        date(2026, 7, 6), index_dir, tx_dir, cik_filter={777888},
+    )
+
+    assert fetch_xml.call_count == 1  # only the in-universe candidate fetched
+    assert len(result) == 1
+    assert result.iloc[0]["ticker"] == "BAR"
+    assert result.iloc[0]["amount_usd"] == pytest.approx(50_000.0)
+    assert (tx_dir / "2026-07-06.parquet").exists()
+
+    # Second call must hit the transaction cache, not re-fetch.
+    fetch_xml.reset_mock()
+    fetch_form4_transactions_for_date(date(2026, 7, 6), index_dir, tx_dir, cik_filter={777888})
+    fetch_xml.assert_not_called()
+
+
+def test_fetch_form4_transactions_for_date_dedups_by_accession(tmp_path, mocker):
+    """A filing indexed once per associated CIK (issuer + each reporting
+    owner) must only be fetched once — mirrors run_insider_scraper()'s own
+    dedup rationale."""
+    index_dir = tmp_path / "insider_index"
+    tx_dir = tmp_path / "insider_tx"
+    dup_idx = """Form Type   Company Name                          CIK         Date Filed  File Name
+4           Bar Inc                               777888      20260706    edgar/data/777888/0001234567-26-000123.txt
+4           Bar Inc (owner)                       111111      20260706    edgar/data/777888/0001234567-26-000123.txt
+"""
+    resp = mocker.MagicMock(status_code=200, text=dup_idx)
+    resp.raise_for_status = mocker.MagicMock()
+    mocker.patch("screener.insider_pit_history.requests.get", return_value=resp)
+    mocker.patch("screener.insider_pit_history.time.sleep")
+    fetch_xml = mocker.patch(
+        "screener.insider_pit_history._fetch_form4_xml", return_value=_FORM4_XML,
+    )
+
+    fetch_form4_transactions_for_date(
+        date(2026, 7, 6), index_dir, tx_dir, cik_filter={777888, 111111},
+    )
+
+    assert fetch_xml.call_count == 1
+
+
+def test_fetch_form4_transactions_walks_date_range_and_is_resumable(tmp_path, mocker):
+    index_dir = tmp_path / "insider_index"
+    tx_dir = tmp_path / "insider_tx"
+    resp = mocker.MagicMock(status_code=200, text=_FORM_IDX)
+    resp.raise_for_status = mocker.MagicMock()
+    mocker.patch("screener.insider_pit_history.requests.get", return_value=resp)
+    mocker.patch("screener.insider_pit_history.time.sleep")
+    fetch_xml = mocker.patch(
+        "screener.insider_pit_history._fetch_form4_xml", return_value=_FORM4_XML,
+    )
+
+    result = fetch_form4_transactions(
+        date(2026, 7, 6), date(2026, 7, 7), index_dir, tx_dir, cik_filter={777888},
+    )
+
+    assert len(result) == 2  # 1 per day, 2 days
+    assert fetch_xml.call_count == 2
+
+    # Re-invoking must be fully cache-resumable — zero new fetches.
+    fetch_xml.reset_mock()
+    result2 = fetch_form4_transactions(
+        date(2026, 7, 6), date(2026, 7, 7), index_dir, tx_dir, cik_filter={777888},
+    )
+    fetch_xml.assert_not_called()
+    assert len(result2) == 2
