@@ -1278,3 +1278,45 @@ closed market.
 > flagged as an open item for a future pass to make deterministic (event-based sync instead of
 > timeout polling) rather than widening the timeout again. Test count: **1100** (full suite
 > green aside from the noted heartbeat-under-load flake).
+> 2026-07-23 (Phase 0 PIT data build, step 1 of 6 from the new fix-plan: Ken French factor
+> returns): the bot's Phase 0 backtest gate (`docs/PHASE0_FINDINGS.md`) has been BLOCKED ON
+> DATA since before this feature branch existed — every quoted backtest number is survivor-
+> only/look-ahead-biased today-data, not real point-in-time history. This session got both
+> free-tier API keys needed to actually clear it: `SIMFIN_API_KEY` and `TIINGO_API_KEY` added
+> to `.env`, each live-verified with a real API call before writing any code against them —
+> SimFin's quarterly income-statement bulk dataset (`https://prod.simfin.com/api/bulk-download/
+> s3?dataset=income&variant=quarterly&market=us`, header `Authorization: api-key <KEY>`)
+> confirmed to include `Publish Date`/`Report Date`/`Restated Date` on every row (exactly what
+> PIT correctness needs), ~3,781 US tickers, 2020-08-31 through 2025-06-30 (~5yr, the documented
+> free-tier limit, now confirmed for real rather than assumed); Tiingo's daily-prices endpoint
+> (`https://api.tiingo.com/tiingo/daily/{ticker}/prices`, header `Authorization: Token <KEY>`)
+> confirmed to have **partial** delisted-ticker coverage — 2 of 3 tested 2023-collapse tickers
+> (SIVB, BBBY) had data, one (FRC) returned 404 — real but incomplete, an honest gap to carry
+> forward rather than a reason to distrust the source entirely.
+>
+> Built `screener/ff_factors.py` (step 1 of the 4-dataset build — the free, no-auth piece, done
+> first): fetches and permanently caches daily Fama-French 3 factors (Mkt-RF/SMB/HML/RF) +
+> momentum (Mom) from Ken French's Dartmouth data library. These are published as two *separate*
+> zip files that must be merged by date — not previously wired up anywhere in this repo.
+> Verified the real file structure directly (downloaded both files, inspected them) before
+> writing the parser, rather than guessing from secondhand docs: a variable number of free-text
+> description lines precede the real header row in each file (factors header at line 4,
+> momentum header at line 13 of the raw CSV — confirmed NOT a fixed offset), the header row
+> itself has an empty first cell (e.g. `,Mkt-RF,SMB,HML,RF` or `,Mom,` with a trailing empty
+> column), and the daily data table is terminated by a blank line (an "Annual Factors" section
+> can follow after, which must not be parsed as daily rows). Output matches
+> `backtesting/attribution.py`'s existing `load_factor_returns()` format exactly (first column
+> `Date` as `YYYY-MM-DD`, remaining columns as decimals — source files are in percent, divided
+> by 100 during parsing). Cached permanently (no TTL), matching this repo's other PIT caches
+> (`screener/xbrl_pit_sue.py`, `backtesting/pit_constituents.py`) — historical daily factor
+> figures don't get revised. 4 new offline tests (mocked HTTP, covering the header-offset
+> variability, the blank-line daily/annual boundary, decimal conversion, and cache-hit-skips-
+> network behavior) plus one deliberate live end-to-end run against the real Ken French
+> servers, confirming 26,152 merged daily rows spanning 1926-2026 — matching a manual
+> verification pass byte-for-byte. Test count: **1104** (full suite green aside from the
+> pre-existing unrelated flaky heartbeat test). Next: SimFin fundamentals fetcher (step 2),
+> reusing the existing `backtesting/pit_constituents.py` for constituents (step 3, zero new
+> code), a Tiingo+yfinance historical-price fetcher (step 4), then wiring all three into
+> `backtesting/pit_data.py`'s existing `CSVPITProvider` and running the pre-committed gate
+> (t-stat > 2, IR > 0.5, stable across periods) via `backtesting/backtest_sue_pit.py`'s
+> already-generic `hac_mean_tstat()`.

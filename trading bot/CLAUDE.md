@@ -417,6 +417,18 @@
 > `test_ai_analyst.py`/`test_performance.py`/`test_orchestrator.py`; the orchestrator wiring
 > test proven red then green. Full suite as run this session: **1100 passed, 1 deselected**
 > (same pre-existing unrelated flaky heartbeat test noted in the 2e entry above).
+> 2026-07-23 (Phase 0 PIT data build, step 1 of 6: Ken French factor returns): both SimFin and
+> Tiingo free-tier API keys added to `.env` and live-verified this session (SimFin: real
+> `Publish Date`/`Report Date`/`Restated Date` fields confirmed present, ~5yr/3,781-ticker
+> coverage; Tiingo: partial delisted-ticker coverage confirmed — 2/3 tested 2023 collapses had
+> data). New `screener/ff_factors.py` fetches and permanently caches daily Fama-French 3
+> factors + momentum from Ken French's Dartmouth data library (free, no key) — two separate
+> files merged by date, decimal-converted, matching `backtesting/attribution.py`'s
+> `load_factor_returns()` format. Parsing logic (variable-offset description-header detection,
+> blank-line-terminated daily table) verified against the real downloaded files before writing
+> any test. 4 new offline tests plus one live end-to-end run against the real Ken French
+> servers (26,152 rows, 1926-2026). Test count: **1104** (full suite green aside from the
+> same pre-existing unrelated flaky heartbeat test).
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

@@ -115,6 +115,19 @@ session: check `## Next` below.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-23 (new plan, step 1 of 6: Phase 0 PIT data build — Ken French factor returns):
+  starting the highest-leverage item from `docs/BOT_REVIEW_2026-07-20.md` — the Phase 0
+  backtest gate has been BLOCKED ON DATA since before this feature branch existed. User got
+  free `SIMFIN_API_KEY` and `TIINGO_API_KEY` accounts, both added to `.env` and live-verified
+  this session (real API calls, not assumptions): SimFin includes real Publish/Report/Restated
+  dates (~5yr/3,781 tickers); Tiingo has partial delisted-ticker coverage (2/3 tested). Built
+  `trading bot/screener/ff_factors.py` — fetches/caches Ken French's daily 3-factor + momentum
+  data (free, no key), verified against the real downloaded files before writing the parser.
+  RESULT: 4 new offline tests + one live end-to-end run (26,152 rows, 1926-2026, matches manual
+  verification). Full suite 1104 passed. Remaining: SimFin fundamentals fetcher, reuse existing
+  PIT-constituents code, Tiingo+yfinance price fetcher, wire into `CSVPITProvider`, run the
+  pre-committed gate (t>2, IR>0.5, stable). Full narrative:
+  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, PIT data entry).
 - 2026-07-23 (fix-plan Step 5 of 5, LLM model/prompt review — instrumentation only, zero
   trading-behavior change): premise check found entry/exit scoring already runs on `gpt-5.4`
   (frontier model), not `gpt-4o-mini` (that's only `bot/researcher.py`'s separate news-
