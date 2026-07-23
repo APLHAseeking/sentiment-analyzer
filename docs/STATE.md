@@ -48,9 +48,10 @@ read `bot_threaddump.log` before doing anything else.
   urgent: the new missed-job Slack alert (2026-07-21) means a wedge now gets noticed instead
   of silently sitting until a manual check — it does NOT auto-recover, still needs a manual
   restart every time.
-- Once user adds `FMP_API_KEY` to trading bot/.env: live-test FMP's `russell1000_constituent`
-  endpoint (existence unconfirmed), wire up if it works. 4 free/no-signup alternates tried
-  across sessions (iShares, FTSE Russell, stockanalysis.com, SlickCharts) — none viable.
+- **CLOSED 2026-07-23**: Russell 1000 / `FMP_API_KEY` — user decided to accept S&P-500-only
+  scope rather than pursue FMP (zero existing integration code, unknown-cost account, no free
+  tier confirmed). See `docs/DATA_SOURCES.md`'s Russell 1000 note and
+  `trading bot/docs/BOT_REVIEW_2026-07-20.md`. Not an open item anymore.
 - requirements.txt pinning/lockfile: still not started.
 - Remaining sleep-wedge hardening (Power Nap disabled 2026-07-17; root cause of wedges is
   confirmed real macOS sleep events, not a code bug): if wedges keep recurring despite that,
@@ -101,6 +102,14 @@ read `bot_threaddump.log` before doing anything else.
 ## Done
 Full narrative for every entry below: trading bot/docs/CLAUDE-REFERENCE.md#history (this
 project's permanent changelog — pointers only here per SESSION.md S3/S8).
+- 2026-07-23 (fix-plan Step 4 of 5, Russell 1000 closed out as accepted scope, doc-only):
+  updated `docs/DATA_SOURCES.md`'s stale "Active" row for the iShares Russell 1000 source
+  (contradicted the logged live failure), added a note explaining the decision, and closed
+  the corresponding `## Next`/`## Open items` bullets above per the user's explicit choice to
+  accept S&P-500-only scope rather than pursue a new FMP integration (zero existing code,
+  unknown cost). No code changed — `bot/universe.py`'s existing S&P-500 fallback is now the
+  bot's permanent behavior, not a degraded state. Full narrative:
+  `trading bot/docs/CLAUDE-REFERENCE.md#history` (2026-07-23, second entry).
 - 2026-07-23 (fix-plan Step 2e of 5, SimulatedBroker sell-to-open support): `SimulatedBroker`
   had no way to open a short — `_apply_fill` unconditionally raised on a sell with no held
   position, and it lacked `shorting_enabled()`/`is_shortable()` entirely, so
@@ -419,6 +428,13 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
   or config changed.
 
 ## Open items
+- FLAKE: 3/3 pass isolated — `tests/test_heartbeat.py` (added 2026-07-23) polls real wall-clock
+  time for a background thread's first tick; a concurrent session's own full-suite run flagged
+  it as failing under simultaneous load (both sessions' pytest processes competing for CPU).
+  Ran 3x isolated after widening `_wait_for`'s default timeout 2.0s→5.0s: 3/3 pass. If it
+  recurs specifically when another heavy process is running alongside pytest, it's a
+  concurrency/scheduling artifact of the test's real-time polling, not a heartbeat.py bug —
+  don't touch `monitoring/heartbeat.py` chasing it; widen the timeout further instead.
 - Short-selling: 5 design-spec open questions still unresolved (regime-aware short sizing,
   hedge-mechanism overlap, aggregate gross/net exposure cap, short borrow fees not modeled,
   `SimulatedBroker` cannot execute a short) — must be revisited before ever flipping
@@ -462,7 +478,9 @@ project's permanent changelog — pointers only here per SESSION.md S3/S8).
 - eps_trend daily snapshot collection (estimate revisions) — recorded in EDGE_BACKLOG.md, not built
 - Insider routine-buyer filter — recorded in EDGE_BACKLOG.md, viable after ~1yr of insider history (feed started 2026-07-07)
 - docs/guardrails/MIGRATION-LOG.md still shows as modified in `git status` — pre-existing uncommitted drift, predates this session, not touched
-- Russell 1000 universe unresolved — genuinely blocked on the user obtaining `FMP_API_KEY` (or a paid data source); no free/no-signup alternative found after 4 sources tried across sessions
+- ~~Russell 1000 universe unresolved~~ — **CLOSED 2026-07-23**: user accepted S&P-500-only
+  scope rather than pursue an FMP integration (zero existing code, unknown-cost account); see
+  `docs/DATA_SOURCES.md`'s Russell 1000 note
 - Scheduler wedges (2026-07-14 x2, 2026-07-15 x1, 2026-07-16 x2 incl. one caught live
   2026-07-17 morning) — root cause confirmed real macOS sleep events (`pmset -g log`), not a
   code bug; `caffeinate -i -s` does not fully prevent recurrence (Power Nap/"Sleep Service"

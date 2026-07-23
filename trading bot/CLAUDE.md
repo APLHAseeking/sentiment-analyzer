@@ -369,6 +369,13 @@
 > diff against. This closes the 5th and final code-level short-selling design-spec open
 > question — only 2f (live-verifying the Alpaca sign convention against a real paper account)
 > remains before the feature is fully prepped, and that stays a manual step, not automated.
+> 2026-07-23 (Russell 1000 closed out, item 4 of 6, doc-only): user decided to accept
+> S&P-500-only scope rather than pursue a new FMP-based integration (zero existing code,
+> unknown-cost account, no free tier confirmed after ~7 sources tried across sessions).
+> `docs/DATA_SOURCES.md`'s stale "Active" row for the iShares source (contradicted the logged
+> live bot-protection-HTML failure) corrected; `docs/STATE.md`'s open items closed. No code
+> changed — `bot/universe.py`'s S&P-500 fallback is the bot's permanent scope now, not a
+> degraded state.
 
 **Purpose:** a regime-aware, paper-only systematic equity trading bot. It combines a fundamental factor screener (primary signal), congressional-disclosure trades (supplementary signal), an HMM market-regime overlay, and an independent risk manager. Built as research/paper-trading for a finance thesis. **Live (real-money) order execution is intentionally disabled — paper and simulated only.**
 

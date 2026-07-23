@@ -73,6 +73,7 @@ from risk.position_sizing import vol_target_size_pct, apply_conviction_tilt, atr
 from screener.factor_scorer import (
     run_factor_screen, run_factor_screen_short, prefetch_screener_data, FactorCandidate,
 )
+from monitoring.heartbeat import start_heartbeat
 from monitoring.logger import EventType, emit_event, setup_logging
 from monitoring.status_file import write_status_file
 from dashboard.data_store import DashboardStore
@@ -1880,6 +1881,12 @@ class RegimeAwareOrchestrator:
                 self.run_morning_pipeline()
             except Exception:
                 log.exception("Catch-up pipeline run failed")
+
+        # Diagnostic-only, no daemon/process/permission change (see
+        # docs/STATE.md's 2026-07-21 constraint on this topic): a heartbeat
+        # thread inside this same process so the next scheduler wedge leaves
+        # a thread-stack dump behind instead of a silent bot.log gap.
+        start_heartbeat()
 
         log.info("Regime-aware scheduler started (Amsterdam timezone, single-thread executor)")
         scheduler.start()

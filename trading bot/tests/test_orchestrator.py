@@ -32,6 +32,7 @@ def orch(mocker):
     mocker.patch("orchestration.main_loop.record_job_run")  # prevent real DB writes
     mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)  # prevent real DB writes
     mocker.patch("orchestration.main_loop.write_status_file")  # prevent clobbering the live bot's status file
+    mocker.patch("orchestration.main_loop.start_heartbeat")  # prevent spawning a real thread / writing bot_threaddump.log
 
     from system.config import settings
     o = RegimeAwareOrchestrator(settings)
@@ -360,6 +361,7 @@ def orch_fitted(mocker):
     mocker.patch("orchestration.main_loop.record_job_run")  # prevent real DB writes
     mocker.patch("orchestration.main_loop.insert_fundamental_signal", return_value=1)  # prevent real DB writes
     mocker.patch("orchestration.main_loop.write_status_file")  # prevent clobbering the live bot's status file
+    mocker.patch("orchestration.main_loop.start_heartbeat")  # prevent spawning a real thread / writing bot_threaddump.log
 
     from system.config import settings
     o = RegimeAwareOrchestrator(settings)
