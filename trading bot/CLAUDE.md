@@ -17,6 +17,17 @@
 > stop before selling** — a same-qty stop reserves 100% of the position at the broker, so the
 > close/reduce sell itself got rejected (`available: 0`), live-reproduced on LVS. See
 > `docs/CLAUDE-REFERENCE.md#history` for full detail.
+> **2026-07-24: fixed `pytest` leaking real Slack alerts** — `tests/conftest.py` stubbed 6
+> secrets to keep `system/config.py`'s `load_dotenv()` from loading real values, but missed
+> `ALERT_WEBHOOK_URL`; any test hitting one of `bot/portfolio.py`'s 7 `alert=True` call sites
+> posted fixture data (fake tickers/order IDs) to the real Slack channel. Now stubbed to `""`
+> like the others. See `docs/CLAUDE-REFERENCE.md#history` for full detail.
+> **2026-07-24: bot found down after a Mac reboot (~8h, no watchdog to catch it), restarted;
+> re-checked `docs/BOT_REVIEW_2026-07-20.md`'s 6 recommendations** — 3 confirmed closed
+> (congressional decision, Phase 0 gate, Russell 1000), rec #4 (short sign-convention
+> live-verify) and #6 (reboot supervision decision) confirmed still open, rec #5 (monitor new
+> risk params) confirmed in-progress with insufficient data yet. See
+> `docs/CLAUDE-REFERENCE.md#history` for full detail.
 > Phase 0 gate: **BLOCKED ON DATA** — real point-in-time data not yet acquired; all historical
 > performance numbers are look-ahead biased until then. See `docs/PHASE0_FINDINGS.md` for gate
 > decision rules and required datasets.
@@ -594,7 +605,7 @@ python backtesting/backtest_price_factors.py  # PIT backtest of low-vol/BAB + re
 pytest tests/test_simulation.py -q    # example: a single module
 ```
 
-- Tests must run **offline** — mock yfinance / Alpaca / scraper / LLM calls (see `tests/conftest.py`). New code needs offline unit tests.
+- Tests must run **offline** — mock yfinance / Alpaca / scraper / LLM calls (see `tests/conftest.py`), and never fire a real alert: `tests/conftest.py`'s `_DEFAULTS` block stubs `ALERT_WEBHOOK_URL=""` alongside every other secret so `alert=True` code paths fall back to the log-only sender. New code needs offline unit tests.
 - Set `temperature=0` on any LLM call you add or touch (reproducibility).
 
 ## Reference (on-demand — Read the anchor before touching the named area)

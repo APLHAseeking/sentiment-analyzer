@@ -43,6 +43,16 @@ def test_fire_alert_delegates_to_sender(mocker):
     mock_sender.send.assert_called_once_with("startup", "Hello", {"k": "v"})
 
 
+def test_conftest_never_leaks_the_real_alert_webhook_into_tests():
+    """A test that exercises an alert=True code path (e.g. an ORDER_REJECTED
+    close_position rejection) must never reach the real Slack webhook -- the
+    real .env ALERT_WEBHOOK_URL was leaking in via system.config's unconditional
+    load_dotenv() because conftest.py pre-stubbed every other secret except
+    this one. conftest.py's _DEFAULTS block must stub it to "" too."""
+    import os
+    assert os.environ.get("ALERT_WEBHOOK_URL", "") == ""
+
+
 def test_fire_alert_uses_log_sender_when_no_url_configured(mocker):
     from monitoring import alerts
     # Reset cache so _build_sender is called fresh

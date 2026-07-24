@@ -5,37 +5,43 @@ Fix why the live paper bot isn't trading and keep it trading reliably; investiga
 factor edges without deploying unvetted ones. Bot is live, restarted, healthy.
 
 ## Now
-2026-07-23: bot live and healthy, PID 21508, commit `3590db2` (includes the LVS stop-cancel
-fix, `9701bb3`). Deployed via safe restart at 18:26 CEST; last job before restart completed
-cleanly, nothing mid-run. Not yet behaviorally proven against a real order rejection — needs
-a natural close/reduce event on a position with a resting stop (see `## Next`).
+2026-07-24, second session (concurrent with the reboot-recovery session above): user reported
+a Slack "order rejected" alert that didn't match any real bot activity. Root-caused to a
+`pytest` leak, not the live bot: `tests/conftest.py` stubbed 6 secrets so `system/config.py`'s
+`load_dotenv()` couldn't load real values, but missed `ALERT_WEBHOOK_URL` — any test hitting
+one of `bot/portfolio.py`'s 7 `alert=True` call sites posted fixture data to the real Slack
+channel. This is very likely what actually produced the 2026-07-23 "AAPL/XOM/TSLA/GHOST/
+b5b24e9e-fake" alert too (`docs/CLAUDE-REFERENCE.md#history` — that entry left it
+unconfirmed). Fixed: `ALERT_WEBHOOK_URL=""` added to conftest's `_DEFAULTS`, same pattern as
+the other 6. Regression test proven red (printed the real URL — flagged to user, one-time
+exposure in this session's transcript only) then green; full suite 1180 passed. Bot process
+confirmed already live/healthy (PID 7179, commit `a06f5fb`) from the concurrent session above
+— this session did not need to restart it.
+
+2026-07-24 session closed. Bot live and healthy, PID 7179, commit `a06f5fb` (naked-stop-on-
+rejected-sell restore fix, deployed this session). Mac rebooted overnight (~02:07 CEST) and
+killed the prior `nohup` process (PID 21508, stale commit `3590db2` — `a06f5fb` had been
+committed but never deployed before the crash); watchdog auto-restart is abandoned (manual-
+only), so nothing brought it back on its own — restarted manually 10:29 CEST after confirming
+the last job pre-reboot (`run_eod` 2026-07-23 20:30 UTC) completed cleanly, no `RISK_LOCKOUT`.
 
 ## Next
-- Live-verify the LVS/`close_position` stop-cancel fix (commit `9701bb3`) against a real
-  recurrence — next `run_exit_review` (16:00 CEST) or any stop-triggered close. LVS itself
-  still has an untouched resting stop; nothing has retried it since the fix landed.
+- Live-verify the naked-stop-restore fix (commit `a06f5fb`, built on `9701bb3`) against a
+  real recurrence — nothing has retried it since it landed.
+- `docs/BOT_REVIEW_2026-07-20.md` follow-up — status re-checked 2026-07-24, 3/6 closed, see
+  `## Open items` for the 3 still open/in-progress.
 - Read `trading bot/bot_threaddump.log` the next time a scheduler wedge is reported
-  (overwritten every 5 min, shows what every thread was doing when it stalled) — don't just
-  restart without reading it first.
-- Scheduler wedge root cause still partially open: `disablesleep` (2026-07-23) should remove
-  sleep as a cause going forward; if wedges keep recurring with it on, the remaining ~14h
-  portion of the 07-22/23 gap is still unexplained.
-- Watchdog/dead-man's-switch auto-restart: abandoned by deliberate decision (2026-07-20/21) —
-  manual-only going forward, don't re-propose launchd/cron without materially new information.
+  (overwritten every 5 min) — don't just restart without reading it first.
+- Scheduler wedge root cause partially open: `disablesleep` (2026-07-23) should remove sleep
+  as a cause going forward; if wedges recur with it on, the remaining ~14h portion of the
+  07-22/23 gap is still unexplained.
 - BTM re-approval checklist (human-only, from the 2026-07-23 accidental `sfltool resetbtm`):
   System Settings → Login Items & Extensions — Google Updater/Keystone, Microsoft
   OneDrive/Office/Teams/Defender, Zoom updater, Steam clean, XQuartz. Bot's own 3 plists
   already known-inert.
 - `tests/test_heartbeat.py` flaky under concurrent full-suite load only (3/3 pass isolated) —
-  real-time polling under CPU contention, not a heartbeat.py bug; next attempt should make it
-  event-based instead of widening the timeout again.
-- Congressional signal: measured negative real-data excess return (1mo -0.64% t=-2.57, 3mo
-  -2.54% t=-4.93) but still scraped daily for DB logging only (trading use disabled
-  2026-07-22) — no decision yet on whether to reduce/disable the scrape-only path itself.
+  next attempt should make it event-based instead of widening the timeout again.
 - requirements.txt pinning/lockfile: still not started.
-- Short-selling: 5/5 design-spec prerequisite code fixes done; flag stays off
-  (`enable_short_selling=False`) — Alpaca sign-convention still not live-verified against a
-  real paper account before ever enabling.
 
 ## Constraints
 - Global: never git push unless asked; commit per meaningful unit.
@@ -66,8 +72,9 @@ a natural close/reduce event on a position with a resting stop (see `## Next`).
   origin, not pushed.
 - Bot process: `ps aux | grep run_bot.py`; restart via `nohup caffeinate -i -s
   /opt/homebrew/bin/python3 run_bot.py > bot.log 2>&1 & disown` from inside "trading bot/"
-  (see `docs/RUNBOOK.md#safe-restart`). As of 2026-07-23 18:26 CEST: PID 21508, commit
-  `3590db2`.
+  (see `docs/RUNBOOK.md#safe-restart`). As of 2026-07-24 10:29 CEST: PID 7179, commit
+  `a06f5fb`. A reboot kills this process outright (no watchdog) — check `ps aux`/
+  `bot_status.json` first thing after any Mac restart.
 - Live health check: process alive + start time vs latest commit + `sqlite3 trading.db
   "SELECT * FROM job_runs ORDER BY rowid DESC LIMIT 3;"` + `ls RISK_LOCKOUT` (should not exist).
 - docs/guardrails/MIGRATION-LOG.md has pre-existing uncommitted changes, not this project's —
@@ -76,26 +83,44 @@ a natural close/reduce event on a position with a resting stop (see `## Next`).
 ## Done
 Full narrative for every entry: `trading bot/docs/CLAUDE-REFERENCE.md#history` (permanent
 changelog — pointers only here per SESSION.md S8).
-- 2026-07-23: fixed `close_position`/`reduce_position` not cancelling a resting stop before
-  selling (live LVS ORDER_REJECTED) — commit `9701bb3`, 101/101 `test_portfolio.py` green,
-  deployed (PID 21508).
-- 2026-07-23: Phase 0 PIT backtest complete, all 6 review items closed — gate FAILS
-  (t=-1.75, IR=-0.78), no code change. `docs/PHASE0_BACKTEST_2026-07-23.md`.
-- 2026-07-22/23: short-selling prerequisite fixes (5/5), congressional signal disabled,
-  Russell 1000 closed, LLM model/provider attribution added. Full suite 1142 passed.
-- 2026-07-21/22: two ORDER_REJECTED bugs fixed (trailing-stop qty ratchet, wash-trade retry
-  widened); missed-job Slack alerting added.
-- 2026-07-20/21: live P&L review, `max_positions` 20→30, capital-deployment fix.
+- 2026-07-24: fixed `pytest` leaking real Slack alerts (`tests/conftest.py` missing
+  `ALERT_WEBHOOK_URL` stub) — 1180 tests green, no bot code changed.
+- 2026-07-24: post-reboot recovery (bot down ~8h, restarted PID 7179/`a06f5fb`, no data
+  loss) + `docs/BOT_REVIEW_2026-07-20.md` status re-check (read-only, no code change) — of
+  its 6 recommendations, items 1-3 (congressional decision, Phase 0 gate, Russell 1000)
+  confirmed closed; items 4/6 confirmed still open, item 5 confirmed in-progress
+  (insufficient data). Detail in `## Open items`.
+- 2026-07-23: naked-stop-restore fix (commit `a06f5fb`, builds on `9701bb3`), 1169 tests
+  green; Phase 0 PIT backtest complete — gate FAILS (t=-1.75, IR=-0.78), no code change
+  (`docs/PHASE0_BACKTEST_2026-07-23.md`); short-selling prerequisite fixes (5/5); Russell
+  1000 closed; LLM model/provider attribution added.
+- 2026-07-20/22: full bot review (`docs/BOT_REVIEW_2026-07-20.md`, 6 recommendations — see
+  `## Open items` for current status) + live P&L review, `max_positions` 20→30,
+  capital-deployment fix; two ORDER_REJECTED bugs fixed; missed-job Slack alerting added;
+  congressional signal disabled for trading.
 - 2026-07-17: reliability watchdog built then closed out (BTM blocks all legacy launchd
-  items, see `## Failed attempts`); full strategy/profitability review + remediation.
+  items, see `## Failed attempts`); separate strategy/profitability review + remediation.
 - 2026-07-06 through 2026-07-16: Phase 1-3 build-out, launch-week fixes (phantom fills,
   NYSE-hours guard, NAV-baseline bug, sleep-induced wedges, dead-man's-switch), SUE PIT
   backtest.
 
 ## Open items
-- Short-selling: flag stays off until the Alpaca sign-convention is live-verified against a
-  real paper account (only a mismatch-alert self-check exists today). Full design:
+- `docs/BOT_REVIEW_2026-07-20.md` rec #4: short-selling flag stays off until the Alpaca
+  negative-qty sign convention is live-verified against a real paper account (only a
+  mismatch-alert self-check exists today). Full design:
   `docs/superpowers/specs/2026-07-17-short-selling-design.md`.
+- `docs/BOT_REVIEW_2026-07-20.md` rec #5: monitor books at `per_trade_risk_pct=0.20`/
+  `max_positions=30` for 1-2 weeks before any further loosening — re-checked 2026-07-24,
+  only 4 days of `portfolio_log` data (NAV flat, +0.29%), zero closed trades and zero
+  `risk_events` in the window (no evidence either way yet), and position count is already
+  saturated at 30/30 — same binding-cap pattern that triggered the 20→30 raise. Revisit once
+  more `portfolio_log` rows/closed trades accumulate.
+- `docs/BOT_REVIEW_2026-07-20.md` rec #6: no supervisor restarts the bot after a reboot —
+  flagged as "worth an explicit decision," never decided; 2026-07-24 turned it from
+  hypothetical to real (bot down ~8h after the overnight reboot, manual restart required).
+  Needs an explicit call: accept as a standing manual-check habit, or revisit supervision
+  (last attempt closed 2026-07-20/21, see Decisions/Failed attempts — don't re-propose
+  launchd/cron without materially new information).
 - eps_trend daily snapshot / insider routine-buyer filter — both recorded in
   `EDGE_BACKLOG.md`, not built.
 - docs/guardrails/MIGRATION-LOG.md pre-existing uncommitted drift — not this project's, not

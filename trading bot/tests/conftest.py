@@ -7,6 +7,11 @@ _DEFAULTS = {
     "ALPACA_SECRET_KEY": "test-alpaca-secret",
     "PROPUBLICA_API_KEY": "test-propublica-key",
     "ALPACA_BASE_URL": "https://paper-api.alpaca.markets",
+    # Empty, not omitted: system.config's load_dotenv() would otherwise fill
+    # in the real ALERT_WEBHOOK_URL from .env, and any alert=True code path
+    # a test exercises (e.g. an ORDER_REJECTED rejection) posts to the real
+    # Slack channel with fake fixture data.
+    "ALERT_WEBHOOK_URL": "",
 }
 for _k, _v in _DEFAULTS.items():
     os.environ.setdefault(_k, _v)

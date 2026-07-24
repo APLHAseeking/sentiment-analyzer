@@ -1564,3 +1564,48 @@ closed market.
 > passed**. Per the user's explicit choice, the 25 positions already naked on the live book at
 > the time were NOT re-protected (a separate, one-off `enforce_stop_losses()` call was offered
 > and declined) — this fix closes the *cause* for future trades only.
+>
+> 2026-07-24 (test-webhook leak confirmed and closed, after a Mac reboot): the 07-23 entry
+> above left one thing unconfirmed — whether `pytest` running with the real `ALERT_WEBHOOK_URL`
+> loaded was actually what posted that fixture-data alert to Slack. This session's Mac-reboot
+> bot restart surfaced a fresh, real "order rejected" Slack message the user didn't recognize;
+> traced it the same way — `bot/portfolio.py:211-218`'s `close_position` rejection path fires
+> `emit_event(..., alert=True)` on every non-fill, and the previous night's `a06f5fb` added
+> `test_close_position_restores_stop_when_sell_rejected` (a fake `AAPL` sell rejected with
+> `reason="market closed"`) without mocking `fire_alert` — matching the alert almost exactly.
+> Root cause confirmed this time, not just suspected: `tests/conftest.py`'s `_DEFAULTS` block
+> pre-stubs 6 other secrets via `os.environ.setdefault` specifically so `system/config.py`'s
+> unconditional `load_dotenv()` can't pull the real values in, but omitted
+> `ALERT_WEBHOOK_URL` — confirmed via a regression test asserting `os.environ["ALERT_WEBHOOK_URL"]
+> == ""`, proven red (printed the real webhook URL) then green after adding the omitted key
+> with an empty-string default, mirroring the existing pattern exactly. This was a standing
+> gap since whenever `ALERT_WEBHOOK_URL` was first added to `.env` (2026-07-17) — every
+> `pytest` run touching one of the 7 `alert=True` call sites in `bot/portfolio.py` since then
+> could have posted fixture data to the real Slack channel; the 07-23 entry above was very
+> likely an earlier instance of this exact bug, not a one-off. Full suite: **1180 passed**.
+> The real webhook URL was printed once during the red-test proof (into this session's own
+> transcript, not committed anywhere) — flagged to the user; rotating it in Slack is a
+> reasonable precaution but not done here (out of scope, user's call).
+>
+> 2026-07-24 (reboot recovery + `BOT_REVIEW_2026-07-20.md` status re-check, no code change):
+> a Mac reboot (~02:07 CEST) killed the bot's plain `nohup` process outright — watchdog
+> auto-restart was abandoned 2026-07-20/21 (manual-only), so nothing brought it back on its
+> own, leaving the bot down ~8h into a trading day. Confirmed safe before restarting: last
+> completed job pre-reboot (`run_eod`, 2026-07-23 20:30 UTC) finished cleanly, no
+> `RISK_LOCKOUT`. Restarted manually (`nohup caffeinate -i -s ... run_bot.py`); `bot_status.json`
+> confirmed PID 7179 on commit `a06f5fb` — the naked-stop-restore fix that had been committed
+> the previous night but never deployed before the crash.
+>
+> Then re-checked the 6 recommendations from `docs/BOT_REVIEW_2026-07-20.md` §4 against
+> current repo/DB state rather than assuming a 4-day-old review was stale: #1 (congressional
+> signal decision), #2 (Phase 0 PIT gate), and #3 (Russell 1000 scope) are all genuinely
+> closed, each with a dated `DECISION`/commit already on record. #4 (live-verify the Alpaca
+> short-qty sign convention before ever enabling `enable_short_selling`) is still open — no
+> commit or log evidence of it happening. #5 (monitor `per_trade_risk_pct=0.20`/
+> `max_positions=30` for 1-2 weeks) is genuinely in-progress, not done: only 4 days of
+> `portfolio_log` exist (2026-07-21 through 07-23, NAV $100,135 → $100,424, +0.29%), zero
+> `closed_positions` and zero `risk_events` in that window (no evidence either way yet on the
+> new limits), and open position count is already saturated at 30/30 — the same binding-cap
+> symptom that triggered the original 20→30 raise. #6 (nothing restarts the bot after a
+> reboot — "worth an explicit decision") was never decided, and this session's own outage is
+> a live instance of exactly that gap, no longer hypothetical.
