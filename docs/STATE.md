@@ -5,25 +5,9 @@ Fix why the live paper bot isn't trading and keep it trading reliably; investiga
 factor edges without deploying unvetted ones. Bot is live, restarted, healthy.
 
 ## Now
-2026-07-24, second session (concurrent with the reboot-recovery session above): user reported
-a Slack "order rejected" alert that didn't match any real bot activity. Root-caused to a
-`pytest` leak, not the live bot: `tests/conftest.py` stubbed 6 secrets so `system/config.py`'s
-`load_dotenv()` couldn't load real values, but missed `ALERT_WEBHOOK_URL` — any test hitting
-one of `bot/portfolio.py`'s 7 `alert=True` call sites posted fixture data to the real Slack
-channel. This is very likely what actually produced the 2026-07-23 "AAPL/XOM/TSLA/GHOST/
-b5b24e9e-fake" alert too (`docs/CLAUDE-REFERENCE.md#history` — that entry left it
-unconfirmed). Fixed: `ALERT_WEBHOOK_URL=""` added to conftest's `_DEFAULTS`, same pattern as
-the other 6. Regression test proven red (printed the real URL — flagged to user, one-time
-exposure in this session's transcript only) then green; full suite 1180 passed. Bot process
-confirmed already live/healthy (PID 7179, commit `a06f5fb`) from the concurrent session above
-— this session did not need to restart it.
-
-2026-07-24 session closed. Bot live and healthy, PID 7179, commit `a06f5fb` (naked-stop-on-
-rejected-sell restore fix, deployed this session). Mac rebooted overnight (~02:07 CEST) and
-killed the prior `nohup` process (PID 21508, stale commit `3590db2` — `a06f5fb` had been
-committed but never deployed before the crash); watchdog auto-restart is abandoned (manual-
-only), so nothing brought it back on its own — restarted manually 10:29 CEST after confirming
-the last job pre-reboot (`run_eod` 2026-07-23 20:30 UTC) completed cleanly, no `RISK_LOCKOUT`.
+2026-07-24 session closed (both sessions this date, folded together). Bot live and healthy,
+PID 7179, commit `a06f5fb`. Reboot recovery, the naked-stop-restore fix, and the pytest
+alert-leak fix are all done and committed (`5772877`) — see `## Done`. Nothing in flight.
 
 ## Next
 - Live-verify the naked-stop-restore fix (commit `a06f5fb`, built on `9701bb3`) against a
@@ -63,6 +47,14 @@ the last job pre-reboot (`run_eod` 2026-07-23 20:30 UTC) completed cleanly, no `
   continues for DB logging only.
 - DECISION: Russell 1000 closed as accepted S&P-500-only scope (2026-07-23) — no viable free
   data source found across 3 sessions.
+- DECISION: real-time Slack-alert-to-Claude-Code integration (so a "rejected order" alert
+  gets auto-evaluated against live bot state) explored and dropped, user's call, 2026-07-24 —
+  the `RemoteTrigger` routine tool only supports cron (min 1h) or one-time triggers, no
+  inbound-webhook trigger type; and cloud routines can't see the local Mac at all
+  (`trading.db`/`bot.log`/`ps aux` don't exist in a cloud git checkout) regardless. The only
+  real local option (`CronCreate` polling inside this Claude Code session) is session-bound
+  (dies on exit, 7-day cap) — not worth the tradeoff since the actual leak causing false
+  alerts is now fixed. Don't re-propose without a materially different mechanism.
 
 ## Facts
 - Repo root: /Users/thomasvromen/Documents/Claude code test; bot in "trading bot/" (space —
@@ -98,11 +90,10 @@ changelog — pointers only here per SESSION.md S8).
   `## Open items` for current status) + live P&L review, `max_positions` 20→30,
   capital-deployment fix; two ORDER_REJECTED bugs fixed; missed-job Slack alerting added;
   congressional signal disabled for trading.
-- 2026-07-17: reliability watchdog built then closed out (BTM blocks all legacy launchd
-  items, see `## Failed attempts`); separate strategy/profitability review + remediation.
-- 2026-07-06 through 2026-07-16: Phase 1-3 build-out, launch-week fixes (phantom fills,
-  NYSE-hours guard, NAV-baseline bug, sleep-induced wedges, dead-man's-switch), SUE PIT
-  backtest.
+- 2026-07-06 through 2026-07-17: Phase 1-3 build-out + launch-week fixes (phantom fills,
+  NYSE-hours guard, NAV-baseline bug, sleep-induced wedges, dead-man's-switch, SUE PIT
+  backtest, reliability watchdog built then closed out — BTM blocks legacy launchd, see
+  `## Failed attempts`). Full narrative: `trading bot/docs/CLAUDE-REFERENCE.md#history`.
 
 ## Open items
 - `docs/BOT_REVIEW_2026-07-20.md` rec #4: short-selling flag stays off until the Alpaca
